@@ -1,0 +1,13 @@
+# Normalise line endings in the repository, so the stored form does not depend on
+# whoever happened to commit.
+#
+# Text files are stored as LF and checked out in whatever is native to the machine.
+# Without this, the behaviour comes from each contributor's local core.autocrlf: a
+# clone with different settings can rewrite every line ending in a file on a one-line
+# edit, which buries the real change in the diff and ruins git blame for that file.
+* text=auto
+
+# Belt and braces. Git normally detects this as binary on its own, but the client mod
+# archive is what the server hands to joining players and what the updater fetches, so
+# it must never be eligible for line-ending conversion.
+*.zip binary

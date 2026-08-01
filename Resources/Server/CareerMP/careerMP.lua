@@ -1,11 +1,24 @@
---CareerMP (SERVER) by Dudekahedron, 2026
+--CareerMP 0.39 (SERVER)
+--Based on CareerMP by Dudekahedron, 2026
 --Thanks to Bouboule, and Lion and Luuk from BeamPaint, for http request examples
+--
+--Targets BeamNG.drive 0.39. This file touches no game Lua -- it is pure BeamMP
+--API (MP.*, Util.*, FS.*) -- so it is version-agnostic and carried over from
+--0.0.37 almost unchanged. The drag relay events are the exception: the client
+--now drives BeamNG 0.39's own multiplayer drag implementation, so the nine
+--tx*/rx* display events were replaced by six state-sync events.
 
-local HARD_CLIENT_VERSION = {major = 0, minor = 0, revision = 37}
-local HARD_SERVER_VERSION = {major = 0, minor = 0, revision = 37}
+-- Identifies which CareerMP line these files belong to. The updater refuses any remote
+-- version file that does not carry this exact value, which is what stops upstream's
+-- higher-numbered releases from being pulled over this fork. Keep it in sync with the
+-- `lineage` field in versions/client.json and versions/server.json.
+local LINEAGE = "vladmaksimenko-0/CareerMP-0.39"
+
+local HARD_CLIENT_VERSION = {major = 0, minor = 0, revision = 1, lineage = LINEAGE}
+local HARD_SERVER_VERSION = {major = 0, minor = 0, revision = 1, lineage = LINEAGE}
 
 local RAW = "https://raw.githubusercontent.com/"
-local GITHUB_REPO = "StanleyDudek/CareerMP/"
+local GITHUB_REPO = "vladmaksimenko-0/CareerMP-0.39/"
 local BRANCH = "main/"
 local CLIENT_PATH = "Resources/Client/"
 local CLIENT_FILE = "CareerMP.zip"
@@ -54,7 +67,23 @@ local defaultConfig = {
 		skipOtherPlayersVehicles = false,
 		trafficSmartSelections = true,
 		trafficSimpleVehicles = true,
-		trafficAllowMods = false
+		trafficAllowMods = false,
+		-- Head-to-head drag racing. On by default.
+		--
+		-- This un-stubs BeamNG 0.39's own multiplayer drag racing
+		-- (gameplay/drag/core.lua getDragGamemode, which ships hard-wired to nil), so
+		-- staging, the tree, timers and the result screen are the game's, driven over
+		-- BeamMP. Two players drive to a strip, stage, and race on one synchronised tree.
+		--
+		-- Verified with two players at one strip on west_coast_usa, including solo runs,
+		-- false starts and leaving AI drag missions alone. NOT verified with more than
+		-- two, so treat a busy strip as untested.
+		--
+		-- Set false to go back to stock behaviour: drag racing still works exactly as it
+		-- does in single player, just not synchronised between players. Worth doing if a
+		-- BeamNG update breaks it - the client logs why on join, and falls back on its
+		-- own rather than failing hard.
+		nativeDragSyncEnabled = true
 	}
 }
 
@@ -111,7 +140,18 @@ end
 
 local function needsUpdate(installedVersion, latest)
     local components = { "major", "minor", "revision" }
-    for _, key in pairs(components) do
+    -- ipairs, not pairs: this must compare major before minor before revision, and
+    -- pairs does not guarantee order. It went unnoticed for 37 releases because they
+    -- only ever differed in revision (0.0.36 -> 0.0.37), where order cannot change the
+    -- answer. Any release that bumps major or minor would expose it: compared
+    -- revision-first, 0.0.37 -> 0.1.0 sees 0 < 37, returns "no update", and servers
+    -- silently never pick the release up.
+    --
+    -- Note this fork restarts numbering at 0.0.1 rather than continuing Dudek's, so
+    -- 0.0.1 is *lower* than upstream's 0.0.37. A server still holding upstream's
+    -- versions/*.json will therefore not auto-update onto this fork -- the first
+    -- install has to be manual. That is a consequence of the version choice, not a bug.
+    for _, key in ipairs(components) do
         local i, l = installedVersion[key] or 0, latest[key] or 0
         if l > i then
             return true
@@ -123,80 +163,108 @@ local function needsUpdate(installedVersion, latest)
     return false
 end
 
-local function updateClient()
-    local installedVersion = ReadJson(SERVER_PATH .. CLIENT_VERSION_FILE)
-	local installed = FS.Exists(CLIENT_PATH .. CLIENT_FILE)
-	if not installed then
-		print("[CareerMP] ---------- CareerMP Update Client not installed, downloading...")
-		downloadFile(CLIENT_URL, CLIENT_PATH .. CLIENT_FILE)
+-- Fetches a remote version file to a scratch path.
+--
+-- 0.0.37 downloaded it straight over the *installed* version record, so the local
+-- record became whatever the remote claimed whether or not the update was applied.
+-- That destroys the only evidence of what is actually installed, so the record is
+-- now written only after an update really lands.
+local function fetchRemoteVersion(url)
+	local tempPath = SERVER_PATH .. "versions/.remote.json"
+	local data = downloadVersionFile(url, tempPath)
+	if not data then return nil end
+	return Util.JsonDecode(data)
+end
+
+-- Refuses content from a different lineage.
+--
+-- Version numbers alone cannot tell "a newer release of this fork" from "an unrelated
+-- codebase with a higher number". This fork restarts numbering at 0.0.1, so upstream's
+-- 0.0.37 always compares as newer -- meaning a stock updater will happily pull upstream
+-- over this fork and, with autoExit on, shut the server down afterwards. Upstream's
+-- version files carry no lineage field, so a mismatch is decisive.
+local function lineageMatches(remote)
+	return remote.lineage == LINEAGE
+end
+
+local function describeVersion(v)
+	if not v then return "unknown" end
+	return string.format("%s.%s.%s", tostring(v.major), tostring(v.minor), tostring(v.revision))
+end
+
+-- Shared by the client and server updaters, which were duplicates of each other.
+local function runUpdate(opts)
+	local installedVersion = ReadJson(SERVER_PATH .. opts.versionFile)
+
+	if not FS.Exists(opts.filePath) then
+		print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " not installed, downloading...")
+		downloadFile(opts.fileUrl, opts.filePath)
 	end
+
 	if not installedVersion then
-        print("[CareerMP] ---------- CareerMP Update Applying self version!")
-		installedVersion = HARD_CLIENT_VERSION
-		WriteJson(SERVER_PATH .. CLIENT_VERSION_FILE, HARD_CLIENT_VERSION)
+		print("[CareerMP] ---------- CareerMP Update Applying self version!")
+		installedVersion = opts.hardVersion
+		WriteJson(SERVER_PATH .. opts.versionFile, opts.hardVersion)
 	end
-    local latestVersionFile = downloadVersionFile(CLIENT_UPDATE_URL, SERVER_PATH .. CLIENT_VERSION_FILE)
-	local latest = Util.JsonDecode(latestVersionFile)
-    if not latest then
-        print("[CareerMP] ---------- CareerMP Update Failed to fetch latest client version!")
-        return
-    end
-	local update = needsUpdate(installedVersion, latest)
-    if installedVersion then
-        print("[CareerMP] ---------- CareerMP Update Client installed: " .. installedVersion.major .. "." .. installedVersion.minor .. "." .. installedVersion.revision)
-        print("[CareerMP] ---------- CareerMP Update Client latest: " .. latest.major .. "." .. latest.minor .. "." .. latest.revision)
-        if update then
-			print("[CareerMP] ---------- CareerMP Update Updating client...")
-			downloadFile(CLIENT_URL, CLIENT_PATH .. CLIENT_FILE)
-			print("[CareerMP] ---------- CareerMP Update Client updated to " ..  latest.major .. "." .. latest.minor .. "." .. latest.revision .. "! Restart the server to apply the update!")
-		else
-			print("[CareerMP] ---------- CareerMP Update Client up to date!")
-			return
-		end
-	else
-		print("[CareerMP] ---------- CareerMP Update Client version not found.")
-        downloadFile(CLIENT_URL, CLIENT_PATH .. CLIENT_FILE)
-        print("[CareerMP] ---------- CareerMP Update Client version updated to " ..  latest.major .. "." .. latest.minor .. "." .. latest.revision .. "! Restart the server to apply the update!")
-    end
-	return update
+
+	local latest = fetchRemoteVersion(opts.updateUrl)
+	if not latest then
+		print("[CareerMP] ---------- CareerMP Update Failed to fetch latest " .. opts.label:lower() .. " version!")
+		return false
+	end
+
+	if not lineageMatches(latest) then
+		print("[CareerMP] ---------- CareerMP Update REFUSED for " .. opts.label .. ": remote is a different lineage")
+		print("[CareerMP] ----------   expected lineage: " .. LINEAGE)
+		print("[CareerMP] ----------   remote lineage:   " .. tostring(latest.lineage or "none (upstream CareerMP?)"))
+		print("[CareerMP] ----------   Nothing was changed. Check that the update repository is correct,")
+		print("[CareerMP] ----------   or set server.autoUpdate to false while testing local changes.")
+		return false
+	end
+
+	print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " installed: " .. describeVersion(installedVersion))
+	print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " latest: " .. describeVersion(latest))
+
+	if needsUpdate(installedVersion, latest) then
+		print("[CareerMP] ---------- CareerMP Update Updating " .. opts.label:lower() .. "...")
+		downloadFile(opts.fileUrl, opts.filePath)
+		-- Record the new version only now that the file behind it is actually in place.
+		WriteJson(SERVER_PATH .. opts.versionFile, latest)
+		print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " updated to " .. describeVersion(latest) .. "! Restart the server to apply the update!")
+		return true
+	end
+
+	-- Same lineage but older: a rollback on the remote, or a stale branch. Never applied
+	-- silently, because that would overwrite a working install with an older one.
+	if needsUpdate(latest, installedVersion) then
+		print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " remote is OLDER than installed - refusing to downgrade")
+		return false
+	end
+
+	print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " up to date!")
+	return false
+end
+
+local function updateClient()
+	return runUpdate({
+		label = "Client",
+		versionFile = CLIENT_VERSION_FILE,
+		filePath = CLIENT_PATH .. CLIENT_FILE,
+		fileUrl = CLIENT_URL,
+		updateUrl = CLIENT_UPDATE_URL,
+		hardVersion = HARD_CLIENT_VERSION,
+	})
 end
 
 local function updateServer()
-    local installedVersion = ReadJson(SERVER_PATH .. SERVER_VERSION_FILE)
-	local installed = FS.Exists(SERVER_PATH .. SERVER_FILE)
-	if not installed then
-		print("[CareerMP] ---------- CareerMP Update Server not installed, downloading...")
-		downloadFile(SERVER_URL, SERVER_PATH .. SERVER_FILE)
-	end
-	if not installedVersion then
-        print("[CareerMP] ---------- CareerMP Update Applying self version!")
-		installedVersion = HARD_SERVER_VERSION
-		WriteJson(SERVER_PATH .. SERVER_VERSION_FILE, HARD_SERVER_VERSION)
-	end
-    local latestVersionFile = downloadVersionFile(SERVER_UPDATE_URL, SERVER_PATH .. SERVER_VERSION_FILE)
-    local latest = Util.JsonDecode(latestVersionFile)
-    if not latest then
-        print("[CareerMP] ---------- CareerMP Update Failed to fetch latest server version")
-        return
-    end
-	local update = needsUpdate(installedVersion, latest)
-    if installedVersion then
-        print("[CareerMP] ---------- CareerMP Update Server installed: " .. installedVersion.major .. "." .. installedVersion.minor .. "." .. installedVersion.revision)
-        print("[CareerMP] ---------- CareerMP Update Server latest: " .. latest.major .. "." .. latest.minor .. "." .. latest.revision)
-        if update then
-			print("[CareerMP] ---------- CareerMP Update Updating server...")
-			downloadFile(SERVER_URL, SERVER_PATH .. SERVER_FILE)
-			print("[CareerMP] ---------- CareerMP Update Server updated to " ..  latest.major .. "." .. latest.minor .. "." .. latest.revision .. "! Restart the server to apply the update!")
-		else
-			print("[CareerMP] ---------- CareerMP Update Server up to date!")
-			return
-		end
-	else
-		print("[CareerMP] ---------- CareerMP Update Server version not found.")
-        downloadFile(SERVER_URL, SERVER_PATH .. SERVER_FILE)
-        print("[CareerMP] ---------- CareerMP Update Server version updated to " ..  latest.major .. "." .. latest.minor .. "." .. latest.revision .. "! Restart the server to apply the update!")
-    end
-	return update
+	return runUpdate({
+		label = "Server",
+		versionFile = SERVER_VERSION_FILE,
+		filePath = SERVER_PATH .. SERVER_FILE,
+		fileUrl = SERVER_URL,
+		updateUrl = SERVER_UPDATE_URL,
+		hardVersion = HARD_SERVER_VERSION,
+	})
 end
 
 local function parseQuotedString(input, startIndex)
@@ -320,15 +388,10 @@ function onInit()
 	MP.RegisterEvent("careerVehSyncRequested","careerVehSyncRequested")
 	MP.RegisterEvent("careerVehicleActiveHandler","careerVehicleActiveHandler")
 
-	MP.RegisterEvent("txUpdateDisplay", "txUpdateDisplay")
-	MP.RegisterEvent("txUpdateWinnerLight", "txUpdateWinnerLight")
-	MP.RegisterEvent("txUpdateBlueLight", "txUpdateBlueLight")
-	MP.RegisterEvent("txUpdatePreStageLight", "txUpdatePreStageLight")
-	MP.RegisterEvent("txUpdateStageLight", "txUpdateStageLight")
-	MP.RegisterEvent("txUpdateDisqualifiedLight", "txUpdateDisqualifiedLight")
-	MP.RegisterEvent("txUpdateTreeLights", "txUpdateTreeLights")
-	MP.RegisterEvent("txClearDisplay", "txClearDisplay")
-	MP.RegisterEvent("txClearAll", "txClearAll")
+	-- Drag racing. One enveloped relay carries BeamNG 0.39's own multiplayer drag
+	-- protocol; the server routes and elects the host but never interprets a message.
+	MP.RegisterEvent("dragMP", "dragMP")
+	MP.RegisterEvent("dragAuthorityRequest", "dragAuthorityRequest")
 
 	MP.RegisterEvent("speedTrap", "speedTrap")
 	MP.RegisterEvent("redLight", "redLight")
@@ -465,74 +528,188 @@ function payPlayer(player_id, data)
 	end
 end
 
-function txUpdateDisplay(player_id, data)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxUpdateDisplay", data)
+--== Drag racing relay =======================================================
+-- BeamNG 0.39 ships a complete multiplayer drag protocol (16 message types, see
+-- gameplay/drag/mpDragHandlers.lua) but no transport. This carries it.
+--
+-- The server deliberately does not understand any of it: every message is an opaque
+-- envelope { msg, to, data } that gets routed and forwarded. That keeps the protocol
+-- entirely client-side, so a BeamNG update that changes it needs no server change.
+--
+-- Routing targets:
+--   "all"   every player except the sender
+--   "host"  the player holding the strip the message concerns
+--   {ids}   a specific set of player ids (bridge.sendToClientIds)
+
+-- Drag authority, elected per strip rather than per session.
+--
+-- Election lives here rather than on the clients: working out who arrived first needs
+-- everyone's presence, which only a neutral party has, and the server is what notices
+-- disconnects. Doing it client-side would mean every client agreeing independently, and
+-- re-agreeing whenever anyone joins or leaves.
+--
+-- The first design made one player -- lowest connected id -- authoritative for all drag
+-- racing. That is wrong in a way that stops racing outright: the authority decides when
+-- everyone is staged by reading its OWN local drag state, so a player who is off doing
+-- deliveries has no drag data and the countdown never fires for anybody.
+--
+-- The authority must therefore be someone standing at the strip. It is elected here
+-- rather than by the clients because working out who arrived first needs everyone's
+-- presence, which only a neutral party has, and because the server notices disconnects.
+--
+-- dragPresence[stripId][playerId] = arrival sequence number
+local dragPresence = {}
+local dragAuthority = {}
+local dragArrivalSeq = 0
+
+local function electAuthority(stripId)
+	local best, bestSeq = nil, nil
+	for playerId, seq in pairs(dragPresence[stripId] or {}) do
+		if MP.IsPlayerConnected(playerId) and (bestSeq == nil or seq < bestSeq) then
+			best, bestSeq = playerId, seq
+		end
+	end
+	return best
+end
+
+local function updateAuthority(stripId)
+	local elected = electAuthority(stripId)
+	if elected ~= dragAuthority[stripId] then
+		dragAuthority[stripId] = elected
+		if elected then
+			print("[CareerMP] ---------- Drag authority for '" .. stripId .. "' is player " .. tostring(elected))
+		else
+			print("[CareerMP] ---------- Drag strip '" .. stripId .. "' is empty")
+		end
+		MP.TriggerClientEventJson(-1, "rxDragAuthority", { stripId = stripId, playerId = elected })
+	end
+end
+
+local function noteArrival(playerId, stripId)
+	if not stripId then return end
+	dragPresence[stripId] = dragPresence[stripId] or {}
+	if not dragPresence[stripId][playerId] then
+		dragArrivalSeq = dragArrivalSeq + 1
+		dragPresence[stripId][playerId] = dragArrivalSeq
+		updateAuthority(stripId)
+	end
+end
+
+local function noteDeparture(playerId, stripId)
+	if stripId then
+		if dragPresence[stripId] then
+			dragPresence[stripId][playerId] = nil
+			updateAuthority(stripId)
+		end
+		return
+	end
+	-- No strip given: the player is gone entirely, so drop them everywhere.
+	for id, players in pairs(dragPresence) do
+		if players[playerId] then
+			players[playerId] = nil
+			updateAuthority(id)
 		end
 	end
 end
 
-function txUpdateWinnerLight(player_id, data)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxUpdateWinnerLight", data)
+--- Called when a player leaves the server.
+function releaseDragPresence(player_id)
+	noteDeparture(player_id, nil)
+end
+
+--- Which player should a "to host" message go to?
+---
+--- Most messages name their strip. Finish times do not: phaseHandlers.lua:875 sends
+--- dragRaceFinishTime with nothing but a raceId, and that is the one message that must
+--- not be misrouted, because the authority attributes the win from it.
+---
+--- Race ids are built as "<stripId>-<number>" by the lobby, so the strip is recoverable
+--- from the id itself. Matching the longest one guards against a strip whose id is a
+--- prefix of another's.
+local function resolveAuthorityFor(d)
+	if not d then return nil end
+
+	local named = d.stripId or d.lobbyId
+	if named and dragAuthority[named] then return dragAuthority[named] end
+
+	local raceId = d.raceId
+	if type(raceId) == "string" then
+		local best
+		for stripId, holder in pairs(dragAuthority) do
+			if holder and raceId:sub(1, #stripId + 1) == stripId .. "-" then
+				if not best or #stripId > #best then best = stripId end
+			end
 		end
+		if best then return dragAuthority[best] end
+	end
+
+	-- Nothing matched. If exactly one strip is in play the answer is unambiguous anyway;
+	-- with several, guessing would hand a finish time to the wrong race, so send nothing.
+	local only, count = nil, 0
+	for _, holder in pairs(dragAuthority) do
+		if holder then only, count = holder, count + 1 end
+	end
+	if count == 1 then return only end
+	return nil
+end
+
+--- A client asking who holds a strip (on join, or after reconnecting).
+function dragAuthorityRequest(player_id, data)
+	local req = Util.JsonDecode(data)
+	local stripId = req and req.stripId
+	if stripId then
+		MP.TriggerClientEventJson(player_id, "rxDragAuthority",
+			{ stripId = stripId, playerId = dragAuthority[stripId] })
+		return
+	end
+	for id, holder in pairs(dragAuthority) do
+		MP.TriggerClientEventJson(player_id, "rxDragAuthority", { stripId = id, playerId = holder })
 	end
 end
 
-function txUpdateBlueLight(player_id, data)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxUpdateBlueLight", data)
-		end
-	end
-end
+function dragMP(player_id, data)
+	local envelope = Util.JsonDecode(data)
+	if not envelope or not envelope.msg then return end
 
-function txUpdatePreStageLight(player_id, data)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxUpdatePreStageLight", data)
-		end
-	end
-end
+	-- Stamp the sender server-side; a client must not be able to claim to be someone
+	-- else, since finish times are attributed by sender id.
+	envelope.from = player_id
 
-function txUpdateStageLight(player_id, data)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxUpdateStageLight", data)
-		end
-	end
-end
+	local to = envelope.to
+	local payload = Util.JsonEncode(envelope)
 
-function txUpdateDisqualifiedLight(player_id, data)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxUpdateDisqualifiedLight", data)
-		end
+	-- Our own lobby messages carry strip presence; the server reads those (and only
+	-- those) so it can elect the per-strip authority. BeamNG's protocol stays opaque.
+	local d = envelope.data
+	if envelope.msg == "careerMPDragJoin" and d then
+		noteArrival(player_id, d.stripId)
+	elseif envelope.msg == "careerMPDragLeave" and d then
+		noteDeparture(player_id, d.stripId)
 	end
-end
 
-function txUpdateTreeLights(player_id, data)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxUpdateTreeLights", data)
+	if to == "host" then
+		-- To whoever holds the strip this message concerns.
+		local target = resolveAuthorityFor(d)
+		if target and MP.IsPlayerConnected(target) then
+			MP.TriggerClientEvent(target, "rxDragMP", payload)
 		end
+		return
 	end
-end
 
-function txClearDisplay(player_id)
-	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxClearDisplay", "")
+	if type(to) == "table" then
+		for _, id in pairs(to) do
+			local pid = tonumber(id)
+			if pid and pid ~= player_id and MP.IsPlayerConnected(pid) then
+				MP.TriggerClientEvent(pid, "rxDragMP", payload)
+			end
 		end
+		return
 	end
-end
 
-function txClearAll(player_id)
+	-- default: everyone but the sender
 	for id in pairs(MP.GetPlayers()) do
-		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxClearAll", "")
+		if id ~= player_id then
+			MP.TriggerClientEvent(id, "rxDragMP", payload)
 		end
 	end
 end
@@ -577,6 +754,9 @@ end
 
 function careerPrefabSync(player_id, data)
 	local prefab = Util.JsonDecode(data)
+	if not prefab then return end
+	-- Guard: a player disconnecting mid-sync clears their loadedPrefabs entry.
+	loadedPrefabs[player_id] = loadedPrefabs[player_id] or {}
 	if prefab.pLoad == true then
 		loadedPrefabs[player_id][prefab.pName] = prefab
 	elseif prefab.pLoad == false then
@@ -591,7 +771,10 @@ end
 
 function careerSyncRequested(player_id)
 	MP.TriggerClientEventJson(player_id, "rxCareerSync", Config.client)
-	pendingActivation[player_id].careerActive = true
+	-- Guard: the entry is gone if the player disconnected between join and sync.
+	if pendingActivation[player_id] then
+		pendingActivation[player_id].careerActive = true
+	end
 end
 
 function prefabSyncRequested(player_id)
@@ -670,6 +853,9 @@ function onVehicleDeletedHandler(player_id, vehicle_id)
 end
 
 function onPlayerDisconnectHandler(player_id)
+	-- Release their strip presence first: if they held a strip, someone still standing
+	-- there has to inherit it or an in-progress race loses its authority.
+	releaseDragPresence(player_id)
 	loadedPrefabs[player_id] = nil
 	ledger.send[player_id] = nil
 	ledger.receive[player_id] = nil
@@ -682,7 +868,9 @@ function onConsoleInputHandler(message)
 		return ""
 	end
 	local commandPrefix = message:sub(1, space)
-	if commandPrefix == "CareerMP " or "CMP " then
+	-- NOTE: 0.0.37 wrote `== "CareerMP " or "CMP "`, which is always truthy, so
+	-- every console line containing a space was parsed as a CareerMP command.
+	if commandPrefix == "CareerMP " or commandPrefix == "CMP " then
 		local prefixLen = commandPrefix:len()
 		message = message:sub(prefixLen + 1)
 		local command = message

@@ -4,7 +4,12 @@
 
 var connected = false;
 var players = [];
-let pingList = [];
+// NOTE: must be `var`, not `let`. 0.39's UI app service re-evaluates app.js in the
+// same scope on refresh (see the ?uiAppRefresh= query it appends). A top-level `let`
+// throws "Identifier 'pingList' has already been declared" on the second evaluation,
+// which aborts the script before angular.module(...).directive() runs, so the
+// careermpplayerlist directive never registers and the app silently fails to load.
+var pingList = [];
 var nickname = "";
 var app = angular.module('beamng.apps');
 app.directive('careermpplayerlist', [function () {
@@ -43,7 +48,7 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 		setPLDirection(localStorage.getItem('plHorizontal'));
 		setPLDirection(localStorage.getItem('plVertical'));
 		if (localStorage.getItem('plShown') == 1) showList();
-		bngApi.engineLua("guihooks.trigger('updateCustomButtons', UI.getCustomButtonNames())")
+		bngApi.engineLua("guihooks.trigger('onBeamMPUpdateCustomButtons', UI.getCustomButtonNames())")
 		
 		// Apply style on init
 		applyPlayerListStyle(Settings.values.useUiAppRedesign);
@@ -114,7 +119,7 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 		else setPLDirection("top");
 	}
 
-	$scope.$on('playerPings', function(event, data) {
+	$scope.$on('onBeamMPPlayerPings', function(event, data) {
 		pingList = JSON.parse(data);
 		for(let i = 0; i < pingList.length; i++) {
 			pingList[i] = pingList[i]-16;
@@ -124,13 +129,13 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 
 	var customButtons = []
 
-	$scope.$on('updateCustomButtons', function(event, data) {
+	$scope.$on('onBeamMPUpdateCustomButtons', function(event, data) {
 		if (Array.isArray(data)) {
 			customButtons = data;
 		}
 	})
 
-	$scope.$on('playerList', function(event, data) {
+	$scope.$on('onBeamMPPlayerList', function(event, data) {
 		let playersList = document.getElementById("players-table");
 		let parsedList = JSON.parse(data);
 		
@@ -286,13 +291,13 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 		players = parsedList; //store player list as an array for the next update
 	})
 
-	$scope.$on('setNickname', function(event, data) {
+	$scope.$on('onBeamMPSetNickname', function(event, data) {
 		nickname = data
 	})
 
 	$scope.queuedPlayers = []
 
-	$scope.$on('setQueue', function(event, data) {
+	$scope.$on('onBeamMPSetQueue', function(event, data) {
 		$scope.queuedPlayers = []
 
 		if (!data.queuedPlayers) {

@@ -2,7 +2,7 @@
   "domElement": "<careermpplayerlist></careermpplayerlist>",
   "name": "CareerMP Player List",
   "types": [
-    "ui.apps.categories.multiplayer"
+    "ui.apps.categories.beammp"
   ],
   "css": {
   	"right": "0px",

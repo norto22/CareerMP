@@ -6,6 +6,9 @@ local M = {}
 
 M.dependencies = {"career_career"}
 
+-- CareerMP 0.39: widened from 4/1 metres. Multiplayer position sync jitters
+-- the player around the garage computer, and the stock tether is tight enough
+-- that the jitter alone closes the menu mid-interaction.
 local computerTetherRangeSphere = 25 --meter
 local computerTetherRangeBox = 25 --meter
 local tether
@@ -36,11 +39,7 @@ local function openMenu(computerFacility, resetActiveVehicleIndex, activityEleme
   end
 
   menuData.computerFacility = computerFacility
-  if not career_modules_linearTutorial.getTutorialFlag("partShoppingComplete") then
-    menuData.tutorialPartShoppingActive = true
-  elseif not career_modules_linearTutorial.getTutorialFlag("tuningComplete") then
-    menuData.tutorialTuningActive = true
-  end
+  menuData.hasBoughtStarterVehicle = career_career.hasBoughtStarterVehicle()
 
   extensions.hook("onComputerAddFunctions", menuData, computerFunctions)
 
@@ -54,8 +53,8 @@ local function openMenu(computerFacility, resetActiveVehicleIndex, activityEleme
     tether = career_modules_tether.startSphereTether(computerPos, computerTetherRangeSphere, M.closeMenu)
   end
 
-  guihooks.trigger('ChangeState', {state = 'computer'})
-  extensions.hook("onComputerOpened")
+  extensions.ui_router.navigate("career.computer")
+  extensions.hook("onComputerMenuOpened")
 end
 
 local function computerButtonCallback(buttonId, inventoryId)
@@ -71,6 +70,9 @@ end
 
 local function getComputerUIData()
   local data = {}
+  if not computerFunctions then
+    return data
+  end
   local computerFunctionsForUI = deepcopy(computerFunctions)
   computerFunctionsForUI.vehicleSpecific = {}
 
@@ -118,6 +120,10 @@ M.reasons = {
   tutorialActive = {
     type = "text",
     label = "Disabled during tutorial."
+  },
+  hasBoughtStarterVehicle = {
+    type = "text",
+    label = "You need to buy a starter vehicle first."
   },
   needsRepair = {
     type = "needsRepair",
