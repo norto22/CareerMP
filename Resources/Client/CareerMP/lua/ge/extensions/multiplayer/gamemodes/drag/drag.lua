@@ -139,10 +139,35 @@ local function inForegroundMission()
 	return ok and id ~= nil and id ~= false
 end
 
+--- Is the career performance test running?
+---
+--- The performance index is a drag race in disguise. career/modules/vehiclePerformance.lua
+--- loads alderStrip's own settings file (:182), sets the racers, and calls
+--- startDragRaceActivity (:211) -- so with drag sync on, our layer treated the player's
+--- certification run as a multiplayer race and put the head-to-head UI over it.
+---
+--- The strip data cannot tell the two apart: the performance test loads the very same
+--- alderStrip.dragSettings.json that our races resolve, so data.context is identical
+--- either way. vehiclePerformance's own flag is the discriminator, and it is exported
+--- (:634), set at :119 and cleared on both exit paths (:414, :434).
+local function inPerformanceTest()
+	local vp = career_modules_vehiclePerformance
+	if not vp or type(vp.isTestInProgress) ~= "function" then return false end
+	local ok, running = pcall(vp.isTestInProgress)
+	return ok and running ~= nil and running ~= false
+end
+
+--- Any single-player drag activity that happens to use a strip we also race on.
+local function inSoloDragActivity()
+	return inForegroundMission() or inPerformanceTest()
+end
+
+M.inSoloDragActivity = inSoloDragActivity
 M.inForegroundMission = inForegroundMission
+M.inPerformanceTest = inPerformanceTest
 
 function M.isMultiplayer()
-	return enabled and not inForegroundMission()
+	return enabled and not inSoloDragActivity()
 end
 
 --- "Host" here means the authority for the strip we are standing at, not a session-wide
@@ -176,7 +201,7 @@ end
 --- receiving end, where handleDragRaceTreeLightUpdate rejects anything sent to a
 --- non-host.
 function M.shouldSyncState()
-	return enabled and not inForegroundMission()
+	return enabled and not inSoloDragActivity()
 end
 
 --== race state ==============================================================

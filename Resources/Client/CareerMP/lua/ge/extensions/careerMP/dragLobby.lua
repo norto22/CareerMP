@@ -1200,8 +1200,8 @@ local function onUpdate(dtReal)
 	-- A mission took over the strip while we were standing on it. Let go of it quietly
 	-- rather than holding a lane the mission is trying to use.
 	local gm = gamemode()
-	if localContext and gm and gm.inForegroundMission and gm.inForegroundMission() then
-		log("I", logTag, "a mission owns the strip now - releasing it")
+	if localContext and gm and gm.inSoloDragActivity and gm.inSoloDragActivity() then
+		log("I", logTag, "a mission or performance test owns the strip now - releasing it")
 		M.clearLocalContext()
 		return
 	end

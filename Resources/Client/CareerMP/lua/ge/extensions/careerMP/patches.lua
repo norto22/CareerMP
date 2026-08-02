@@ -192,6 +192,170 @@ end
 -- therefore records the vehicle only after the hook it was meant to inform has
 -- already fired, so the handler saw a stale value - which is why opening part
 -- customisation while walking stopped seating the player in their car.
+--- A repair the player asked for while sitting in the car being repaired.
+--- { args = {...}, waited = seconds } until the exit completes; see the guard below.
+local pendingSeatedRepair = nil
+--- The garage computer facility the player last opened a menu on.
+---
+--- Recorded because the computer's own copy is a file-local (computer.lua:14) and the
+--- repair screen's originComputerId is another. Needed to refresh the menu after a
+--- deferred repair; see runHeldRepair.
+local lastComputerFacility = nil
+
+--- True while the held repair is being re-issued, so the guard lets it straight through.
+---
+--- Without this the guard recurses. setWalkingMode fires onEnterVehicleFinished
+--- SYNCHRONOUSLY, inside our own call to it, and at that instant the player is still in
+--- the driver's seat as far as be:getPlayerVehicleID(0) is concerned -- so re-issuing the
+--- repair from that handler lands right back in the guard, which sees "seated" again and
+--- asks to get out again. Observed nine times in 0.2 ms before it wedged.
+local runningHeldRepair = false
+
+--- How long to wait for the exit before giving up on a held repair.
+---
+--- Getting out can fail outright -- gameplay/walk.lua:90 dies on a stale unicycle, which
+--- our own walk guard then swallows -- and when it does, the player is left in free camera
+--- with no avatar and onEnterVehicleFinished never fires. Without a timeout the held
+--- repair would sit there for the rest of the session, and every later press would be
+--- refused by the "already holding one" check below.
+local SEATED_REPAIR_TIMEOUT = 6
+
+--- Work around a base-game crash that makes repairs unusable.
+---
+--- Repairing the vehicle you are sitting in is fatal in stock 0.39.2.1, single player
+--- included. insurance.lua writes the pending-repair record under one field name and
+--- reads it back under another:
+---
+---   :521  startRepairVehInfo = {inventoryId = vehInfo.id, repairTime = repairTime}
+---   :903  local vehInfo = career_modules_inventory.getVehicles()[startRepairVehInfo.vehId]
+---   :904  career_modules_inventory.removeVehicleObject(startRepairVehInfo.vehId)
+---
+--- `vehId` is never set, so removeVehicleObject(nil) reaches inventory.lua:369 and does
+--- `inventoryIdToVehId[nil] = nil` -- "table index is nil", fatal. Worse, it throws before
+--- `startRepairVehInfo = nil`, so the flag stays set and EVERY later attempt to enter a
+--- vehicle crashes the same way. That is what strands the car: you cannot get back in it,
+--- and you cannot retrieve it from storage. A restart is the only way out.
+--- (Also broken next to it: the resumed call passes no repairTime even though it stored one.)
+---
+--- We cannot fix it in place. Both the flag and startRepairDelayed are file-locals, the
+--- sandbox refuses debug.setupvalue, and rebuilding insurance.lua from source the way
+--- dragSync does for core.lua is not safe here -- this module keeps the player's policies
+--- and driver score in locals loaded from the save, so swapping in fresh closures
+--- mid-session would silently blank them.
+---
+--- So instead we make the broken branch unreachable. It is only entered when the vehicle
+--- being repaired is the one the player currently occupies, and all it does is put the
+--- player on foot and resume afterwards. We do that ourselves, correctly: hold the call,
+--- request walking mode, and run the original once the exit has finished. By then
+--- getCurrentVehicle() is nil, so the original takes its ordinary path -- remove the
+--- object, delay access, repair -- and never sets the flag that breaks everything.
+---
+--- The deferral is required rather than cosmetic: leaving the vehicle is asynchronous.
+--- inventory.enterVehicle routes through updatePartConditionsOfSpawnedVehicles(callback)
+--- whenever a vehicle is current (inventory.lua:530), so currentVehicle is still set when
+--- setWalkingMode returns. Calling the original straight away would land right back in the
+--- seated branch.
+--- The guard body, shared by both repair entry points.
+---
+--- Registering it on startRepair alone was not enough, and the reason is the same trap
+--- that cost days on the drag racing: startRepairInGarage (insurance.lua:1920) calls the
+--- *local* startRepair, not M.startRepair, so replacing the module field intercepts the
+--- screen's call not at all. The repair screen calls startRepairInGarage
+--- (repairScreen.lua:197), so that is the one that actually matters -- but both are
+--- exported and either can reach the broken branch, so both are guarded.
+--- Built per entry point so the held call can re-enter through the same one.
+local function makeSeatedRepairGuard(fnName)
+	return function(original, ...)
+		-- Our own re-issue: the player is out by now, so it must not be intercepted again.
+		if runningHeldRepair then return original(...) end
+
+		local args = {...}
+		local inventory = career_modules_inventory
+		if not inventory or type(inventory.getCurrentVehicle) ~= "function" then
+			return original(...)
+		end
+
+		-- Ask whether the player is PHYSICALLY in the car, not whether the career module
+		-- thinks it is their current vehicle.
+		--
+		-- getCurrentVehicle() is the module's logical notion, and the garage computer flow
+		-- clears it while the player is still sitting in the seat. Testing it therefore
+		-- missed the exact case this guard exists for: the repair went ahead, deleted the
+		-- car out from under the player, and left them with no vehicle and no unicycle --
+		-- so the game's own closeRepairMenu -> computer.openMenu -> getClosestGarage path
+		-- then died on `getPlayerVehicle(0):getPosition()` (inventory.lua:38).
+		local target = args[1] or inventory.getCurrentVehicle()
+		if not target then return original(...) end
+
+		local targetVehId = inventory.getVehicleIdFromInventoryId
+			and inventory.getVehicleIdFromInventoryId(target)
+		local playerVehId = be and be:getPlayerVehicleID(0)
+		if not targetVehId or not playerVehId or playerVehId == -1
+			or targetVehId ~= playerVehId then
+			return original(...)
+		end
+
+		if not gameplay_walk or type(gameplay_walk.setWalkingMode) ~= "function" then
+			return original(...)
+		end
+
+		-- Already holding one: ignore the press entirely.
+		--
+		-- Emphatically NOT `return original(...)`. startRepair takes payment and files the
+		-- insurance claim before it reaches the seated branch, so passing a second press
+		-- through would charge the player twice AND arm the very crash this exists to
+		-- prevent. Doing nothing is the only safe answer while a repair is in flight.
+		if pendingSeatedRepair then
+			log("I", "careerMP.patches",
+				"repair already waiting for the player to get out - ignoring the repeat press")
+			return
+		end
+
+		log("I", "careerMP.patches", string.format(
+			"repair requested while seated in vehicle %s - stepping out first, then repairing",
+			tostring(target)))
+
+		-- Hold BEFORE asking to get out: onEnterVehicleFinished can fire inside this call.
+		pendingSeatedRepair = { args = args, waited = 0, fnName = fnName }
+
+		-- force = true, the fourth argument.
+		--
+		-- Without it setWalkingMode returns false without doing anything whenever the car
+		-- is not "at parking speed" or toggling is disabled (walk.lua:131) -- and a repair
+		-- is exactly when both are likely, since the menu filters input. The game itself
+		-- passes force for every programmatic call of its own (inventory.lua:357, :501);
+		-- only the player's own keypress goes through unforced. The base game's seated
+		-- repair branch omits it, which is very likely why no unicycle ever appeared.
+		--
+		-- It returns (succeeded, unicycleId), and our own walk guard turns a throw into a
+		-- plain `false` -- so check the result rather than assume it worked.
+		local ok, walking = pcall(gameplay_walk.setWalkingMode, true, nil, nil, true)
+		if not ok or walking == false then
+			pendingSeatedRepair = nil
+			log("W", "careerMP.patches", string.format(
+				"could not get the player out of vehicle %s, so the repair was not started " ..
+				"(nothing was charged) - get out on foot and repair again",
+				tostring(target)))
+		end
+	end
+end
+
+--- Remember which computer the player is standing at.
+local function applyComputerRecorder()
+	wrap("career_modules_computer", "openMenu", function(_, args)
+		lastComputerFacility = args[1] or lastComputerFacility
+	end)
+end
+
+local function applySeatedRepairGuard()
+	-- startRepairInGarage is the one the repair screen calls; startRepair is guarded too
+	-- because other callers reach it directly.
+	replace("career_modules_insurance_insurance", "startRepairInGarage",
+		makeSeatedRepairGuard("startRepairInGarage"))
+	replace("career_modules_insurance_insurance", "startRepair",
+		makeSeatedRepairGuard("startRepair"))
+end
+
 local function applyRecorders()
 	-- tuning.start(inventoryId, originComputerId)
 	replace("career_modules_tuning", "start", function(original, ...)
@@ -436,6 +600,72 @@ function M.onComputerMenuOpened()
 	extensions.hook("onComputerOpenedMP")
 end
 
+--- The player is out of the car now, so the held repair can go ahead.
+---
+--- inventory.enterVehicleActual fires this after setting currentVehicle -- nil when the
+--- destination is "on foot" (inventory.lua:497, :513), which is what onBeforeWalkingModeToggled
+--- asks for. Clearing before the call matters: if the original throws we must not be left
+--- holding a repair that re-fires on every subsequent vehicle entry, which is the exact
+--- failure mode being worked around.
+--- The exit has been requested. Arm the held repair -- but do NOT run it here.
+---
+--- This fires synchronously from inside setWalkingMode, before the player has actually
+--- left the seat, so running the repair now re-enters the guard and recurses. Marking it
+--- ready lets onUpdate pick it up on a later frame, once the exit has settled.
+function M.onEnterVehicleFinished(inventoryId)
+	if pendingSeatedRepair then
+		pendingSeatedRepair.ready = true
+	end
+end
+
+--- Re-issue the held repair, once the player really is out of the car.
+local function runHeldRepair()
+	local held = pendingSeatedRepair
+	pendingSeatedRepair = nil
+
+	local insurance = career_modules_insurance_insurance
+	local fnName = held.fnName or "startRepair"
+	if not insurance or type(insurance[fnName]) ~= "function" then
+		log("W", "careerMP.patches", "insurance module went away before the held repair could run")
+		return
+	end
+
+	-- Re-enter through the SAME entry point. startRepairInGarage adds the teleport-to-garage
+	-- callback that startRepair alone does not, so calling the wrong one would repair the
+	-- car and leave it wherever it happened to be.
+	runningHeldRepair = true
+	local ok, err = xpcall(insurance[fnName], debug.traceback, unpack(held.args))
+	runningHeldRepair = false
+
+	if not ok then
+		log("E", "careerMP.patches", "held repair failed: " .. tostring(err))
+		return
+	end
+	log("I", "careerMP.patches", "player is out - repair resumed")
+
+	-- Refresh the garage computer, because deferring the repair left its menu stale.
+	--
+	-- The game closes the repair screen and immediately reopens the computer
+	-- (repairScreen.lua:34-40 -> computer.openMenu), which rebuilds the vehicle list from
+	-- getInventoryIdsInClosestGarage. That now happens BEFORE the repair we deferred, so
+	-- the list still shows the car as available -- and choosing Part Customization on a
+	-- vehicle that is away being repaired dies in partShopping.lua:466 on a nil
+	-- currentVehicleData. Reopening after the repair rebuilds the list correctly, and the
+	-- car simply is not in it.
+	--
+	-- Only for the garage path: startRepair on its own can be reached from places where
+	-- popping a computer menu open would be wrong.
+	if fnName ~= "startRepairInGarage" then return end
+	local computer = career_modules_computer
+	if not computer or type(computer.openMenu) ~= "function" or not lastComputerFacility then
+		return
+	end
+	local refreshed = pcall(computer.openMenu, lastComputerFacility)
+	log(refreshed and "I" or "W", "careerMP.patches",
+		refreshed and "garage computer refreshed after the repair"
+		or "could not refresh the garage computer after the repair")
+end
+
 -- Menus closing invalidates the recorded ids.
 function M.onPartShoppingCancelled()
 	pending.partShopping = nil
@@ -455,6 +685,8 @@ function M.apply()
 	applyEnrichments()
 	applyUnicyclePatch()
 	applyWalkGuard()
+	applySeatedRepairGuard()
+	applyComputerRecorder()
 
 	-- Only count as applied when everything landed. Marking it applied regardless
 	-- would let a call made before the career modules exist stick, and the retry
@@ -479,6 +711,9 @@ function M.apply()
 end
 
 function M.revert()
+	-- Drop any held repair with the wrappers that would have completed it.
+	pendingSeatedRepair = nil
+
 	for key, entry in pairs(originals) do
 		-- Restore against the LIVE module, not the one captured at wrap time: if the
 		-- extension was reloaded since, the captured table is stale and writing to it
@@ -525,6 +760,33 @@ local retryAccumulator = 0
 local RETRY_INTERVAL = 2 -- seconds
 
 local function onUpdate(dtReal)
+	-- A held repair that never completes must not wedge the feature.
+	if pendingSeatedRepair then
+		-- Armed by onEnterVehicleFinished, and only run once the player is genuinely out of
+		-- the car being repaired -- checked here rather than trusted, because the hook
+		-- arrives before the seat is actually vacated.
+		if pendingSeatedRepair.ready then
+			local inventory = career_modules_inventory
+			local target = pendingSeatedRepair.args and pendingSeatedRepair.args[1]
+			local targetVehId = target and inventory and inventory.getVehicleIdFromInventoryId
+				and inventory.getVehicleIdFromInventoryId(target)
+			local playerVehId = be and be:getPlayerVehicleID(0)
+			if not targetVehId or targetVehId ~= playerVehId then
+				runHeldRepair()
+				return
+			end
+		end
+
+		pendingSeatedRepair.waited = (pendingSeatedRepair.waited or 0) + (dtReal or 0)
+		if pendingSeatedRepair.waited >= SEATED_REPAIR_TIMEOUT then
+			pendingSeatedRepair = nil
+			log("W", "careerMP.patches", string.format(
+				"the player never left the vehicle within %ds, so the held repair was dropped " ..
+				"(nothing was charged) - repair again once out on foot",
+				SEATED_REPAIR_TIMEOUT))
+		end
+	end
+
 	if applied then return end
 
 	retryAccumulator = retryAccumulator + (dtReal or 0)
