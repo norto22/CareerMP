@@ -11,3 +11,4 @@
 # archive is what the server hands to joining players and what the updater fetches, so
 # it must never be eligible for line-ending conversion.
 *.zip binary
+*.png binary

@@ -1,17 +1,10 @@
---CareerMP 0.39 :: career.lua patches
+--CareerMP :: career.lua patches
 --
--- Replaces CareerMP 0.0.37's career/careerMP.lua -- a 617-line fork of
--- career.lua, loaded as career_careerMP, with careerMPEnabler then doing
--- `career_career = extensions.career_careerMP` to swap the global.
---
--- The entire fork existed for three changes:
+-- Three changes to the game's career.lua, made as runtime wrappers so the game's
+-- own career logic stays live:
 --   1. activateCareer: drop the `removeVehicles == nil -> true` default
 --   2. activateCareer: drop the `else removeNonTrafficVehicles()` branch
 --   3. createOrLoadCareerAndStart: call activateCareer(false)
---
--- All three spots still exist unchanged in 0.39, so they are expressed here as
--- wrappers instead. That keeps the game's core career logic live rather than
--- shipping a stale copy of it.
 --
 -- Why any of this matters: career activation assumes a single-player world and
 -- clears the level of vehicles it does not recognise. In multiplayer that means
@@ -149,17 +142,22 @@ function M.onCareerActive(active)
 	removeProtection()
 end
 
---- Kept for callers that want to protect an explicit block of work.
+local function pack(...)
+	return {n = select("#", ...), ...}
+end
+
+--- Runs fn with remote vehicles protected. Returns true and fn's results, or false and
+--- the error with its stack traceback, so the caller can report where it failed.
 local function withRemoteVehiclesProtected(fn, ...)
 	installProtection()
-	local results = {pcall(fn, ...)}
+	local args = pack(...)
+	local results = pack(xpcall(function() return fn(unpack(args, 1, args.n)) end, debug.traceback))
 	removeProtection()
-	local ok = table.remove(results, 1)
-	if not ok then
-		log("E", logTag, "protected call failed: " .. tostring(results[1]))
-		return nil
+	if not results[1] then
+		log("E", logTag, "protected call failed: " .. tostring(results[2]))
+		return false, tostring(results[2])
 	end
-	return unpack(results)
+	return unpack(results, 1, results.n)
 end
 
 M.withRemoteVehiclesProtected = withRemoteVehiclesProtected

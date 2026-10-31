@@ -1,15 +1,9 @@
---CareerMP 0.39 :: runtime patches
+--CareerMP :: runtime patches
 --
--- Replaces the shadow-fork approach of CareerMP 0.0.37.
---
--- The old mod shipped whole copies of career modules at the game's own paths so
--- its copy would win. Across 10 files and ~6,600 lines its actual intent was
--- ~136 changed lines, and most of those just added an argument to an
--- extensions.hook call so CareerMP could tell WHICH vehicle an event was about.
--- With no markers in the forked files, every game update meant re-forking blind.
---
--- Here we do the opposite: leave the game's files alone, and recover the missing
--- context ourselves.
+-- Several career events need to say WHICH vehicle they are about, and the stock
+-- extensions.hook calls do not. Rather than shipping copies of the game's career
+-- modules, the game's files are left alone and the missing context is recovered
+-- here.
 --
 --   * The stock hook still provides the TIMING (it fires where it always did).
 --   * A thin wrapper on the module's entry point records the WHICH.
@@ -26,19 +20,15 @@
 --   onPartShoppingTransactionCompleteMP(inventoryId)
 --   onInventorySpawnVehicleMP(inventoryId, vehId)
 --   onPerformanceTestStartedMP(vehId, inventoryId)
---
--- See docs/0.39-PORTING-RESEARCH.md.
 
 -- Walking avatar config. Career spawns the unicycle as
 -- vehicles/unicycle/without_mesh.pc -- invisible, which is fine in single player
 -- where nobody has to see you walking around. In multiplayer everyone else needs
 -- a visible avatar, so BeamMP ships a config with a mesh.
 --
--- CareerMP 0.0.37 forked all 440 lines of gameplay/walk.lua to change this one
--- string (plus an MPVehicleGE.isOwn() guard that 0.39 made unnecessary: the old
--- code scanned every vehicle for any inactive unicycle and could grab another
--- player's, whereas 0.39 tracks its own unicycleId). Wrapping the spawn call
--- gets the same result without the fork.
+-- Wrapping the spawn call swaps the config without copying gameplay/walk.lua. No
+-- ownership guard is needed: the game tracks its own unicycleId, so it never picks
+-- up another player's unicycle.
 local CAREER_UNICYCLE_CONFIG = "vehicles/unicycle/without_mesh.pc"
 local MP_UNICYCLE_CONFIG = "vehicles/unicycle/beammp_default.pc"
 
@@ -407,10 +397,9 @@ local function applyEnrichments()
 		pending.partShopping = nil
 	end)
 
-	-- vehiclePerformance never fires a start hook in 0.38.6 or 0.39, so
-	-- CareerMP 0.0.37's onPerformanceTestStarted binding was always dead and the
-	-- certification menu never pulled the player into the car. startDragTest is
-	-- exported, so wrapping it makes that case work for the first time.
+	-- vehiclePerformance fires no start hook of its own, so without this the
+	-- certification menu would never pull the player into the car. startDragTest is
+	-- exported, so it is wrapped instead.
 	wrap("career_modules_vehiclePerformance", "startDragTest", function()
 		local inventoryId = resolveInventoryId(nil)
 		extensions.hook("onPerformanceTestStartedMP", resolveVehId(inventoryId), inventoryId)
@@ -591,7 +580,7 @@ function M.onVehiclePaintingUiOpened()
 end
 
 -- 0.39 renamed the computer hook: onComputerMenuOpened -> onComputerOpened.
--- CareerMP's fork existed partly to rename it; listening to both costs nothing.
+-- Listening to both costs nothing.
 function M.onComputerOpened()
 	extensions.hook("onComputerOpenedMP")
 end

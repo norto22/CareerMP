@@ -162,11 +162,13 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 				var row = playersList.insertRow(playersList.rows.length);
 	
 				row.setAttribute("id", "playerlist-row-" + parsedList[i].id);
+				// Click handlers close over the name instead of pasting it into markup.
+				const playerName = parsedList[i].name;
 
 				// Insert a cell containing the player server id
 				var idCell = row.insertCell(0);
 				idCell.textContent = parsedList[i].id;
-				idCell.setAttribute("onclick", "restorePlayerVehicle('"+parsedList[i].name+"')");
+				idCell.onclick = function() { restorePlayerVehicle(playerName) };
 				if ($scope.showPlayerIDs) {
 					idCell.setAttribute("class", "player-id");
 				} else {
@@ -186,7 +188,7 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 						nameCell.setAttribute("onclick", "applyQueuesForPlayer('"+parsedList[i].id+"')");
 						break;
 					case 1:
-						nameCell.setAttribute("onclick", "showPlayerInfo('"+parsedList[i].name+"')");
+						nameCell.onclick = function() { showPlayerInfo(playerName) };
 						break;
 					case 2:
 						break;
@@ -195,7 +197,7 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 					case 4:
 						break;
 					case 5:
-						nameCell.setAttribute("onclick", "bngApi.engineLua(`setClipboard(require('mime').unb64('` + btoa(parsedList[i].name) + `'))`)");
+						nameCell.onclick = function() { bngApi.engineLua('setClipboard(' + luaString(playerName) + ')') };
 						break;
 				}
 
@@ -248,9 +250,9 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 						customButton.id = "pl-context-custom"
 						customButton.textContent = element;
 						customButton.onclick = function() {
-							bngApi.engineLua(`
-								UI.getCustomPlayerlistButtons()["` + element + `"]("` + parsedList[i].name + `", ` + parsedList[i].id + `)
-								`)
+							bngApi.engineLua(
+								'UI.getCustomPlayerlistButtons()[' + luaString(element) + '](' + luaString(parsedList[i].name) + ', ' + Number(parsedList[i].id) + ')'
+							)
 						}
 
 						playerlistContextmenu.appendChild(customButton);
@@ -326,8 +328,17 @@ function clearPlayerList() {
 	for(rowCount; rowCount > 0; rowCount--) playersList.deleteRow(1);
 }
 
+// Player names are chosen by other players, so they reach Lua base64-encoded (as UTF-8)
+// and are decoded there: no character of a name can end the string and become code.
+function luaString(text) {
+	var bytes = new TextEncoder().encode(String(text));
+	var binary = "";
+	for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+	return "require('mime').unb64('" + btoa(binary) + "')";
+}
+
 function payPlayer(targetPlayerName, amount) {
-	bngApi.engineLua('careerMPPlayerPayments.payPlayer("' + targetPlayerName + '", ' + amount + ')')
+	bngApi.engineLua('careerMPPlayerPayments.payPlayer(' + luaString(targetPlayerName) + ', ' + (parseInt(amount, 10) || 0) + ')')
 }
 
 function setOfflineInPlayerList() {

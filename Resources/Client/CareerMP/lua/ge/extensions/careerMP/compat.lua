@@ -1,11 +1,11 @@
---CareerMP 0.39 :: compat layer
+--CareerMP :: compat layer
 --
 -- Single point of contact for game APIs that BeamNG renames between versions.
--- Every call site in CareerMP 0.39 goes through here instead of calling the
--- game directly, so a future rename is a one-file fix rather than a hunt.
+-- Every call site in CareerMP goes through here instead of calling the game
+-- directly, so a future rename is a one-file fix rather than a hunt.
 --
--- Target: BeamNG.drive 0.39 (build 20859). Baseline for the mapping: 0.38.6.
--- See docs/0.39-PORTING-RESEARCH.md for how each entry was derived.
+-- Target: BeamNG.drive 0.39 (build 20859). Each entry also names the 0.38.6 API
+-- it replaces.
 
 local M = {}
 
@@ -118,6 +118,86 @@ function M.usesStartingOptions()
 	return career_career ~= nil and type(career_career.startingOptions) == "table"
 end
 
+-- The join path calls these on every frame, so a missing one is logged once, by name.
+local warnedMissing = {}
+
+local function pickOrWarn(module, moduleName, name, consequence)
+	local fn = pick(module, name)
+	if not fn and not warnedMissing[moduleName .. "." .. name] then
+		warnedMissing[moduleName .. "." .. name] = true
+		log("E", "careerMP.compat", moduleName .. "." .. name .. " missing - " .. consequence)
+	end
+	return fn
+end
+
+-- true or false, or nil when the game has no way to tell.
+function M.isCareerActive()
+	local fn = pickOrWarn(career_career, "career_career", "isActive",
+		"a career start that returned is taken as active")
+	if not fn then return nil end
+	return fn() == true
+end
+
+--== loading screen ==========================================================
+-- core_gamestate counts loading-screen requests by tag: the screen shows on the first
+-- request and hides once every tag is released. Tags used on a join: 'serverConnection'
+-- and 'worldReadyState' (the map load), 'careerActivate' (career.lua activateCareer)
+-- and 'careerVehicles' (career playerDriving's traffic setup).
+
+local function gamestateFunction(name)
+	return pickOrWarn(core_gamestate, "core_gamestate", name, "loading screen not managed")
+end
+
+function M.getLoadingStatus(tag)
+	local fn = gamestateFunction("getLoadingStatus")
+	return fn ~= nil and fn(tag) == true
+end
+
+function M.requestEnterLoadingScreen(tag)
+	local fn = gamestateFunction("requestEnterLoadingScreen")
+	if not fn then return false end
+	fn(tag)
+	return true
+end
+
+function M.requestExitLoadingScreen(tag)
+	local fn = gamestateFunction("requestExitLoadingScreen")
+	if not fn then return false end
+	fn(tag)
+	return true
+end
+
+-- The traffic setup's own ready handler (career playerDriving onTrafficOrParkingReady)
+-- releases 'careerVehicles' and, only while that tag is held, switches the special
+-- triggers off. Releasing the tag through it keeps that clean-up when traffic never
+-- reports ready; the bare release is the fallback when the handler is missing.
+function M.releaseCareerTrafficScreen()
+	local fn = pickOrWarn(career_modules_playerDriving, "career_modules_playerDriving", "onTrafficOrParkingReady",
+		"releasing 'careerVehicles' without its clean-up")
+	if fn then
+		local ok, err = xpcall(fn, debug.traceback)
+		if not ok then log("E", "careerMP.compat", "onTrafficOrParkingReady failed: " .. tostring(err)) end
+	end
+	if M.getLoadingStatus("careerVehicles") then M.requestExitLoadingScreen("careerVehicles") end
+end
+
+-- The step BeamMP takes when its loading screen clears (MPCoreNetwork onWorldReadyState):
+-- 0.39 resolves the screen behind the loading screen through the UI router.
+function M.navigateToPlay()
+	local router = extensions and extensions.ui_router
+	local fn = pickOrWarn(router, "ui_router", "navigate", "interface not moved to the in-game screen")
+	if not fn then return false end
+	fn("play")
+	return true
+end
+
+--== BeamMP session ==========================================================
+
+function M.isMPSession()
+	local fn = pickOrWarn(MPCoreNetwork, "MPCoreNetwork", "isMPSession", "loading screen not held on join")
+	return fn ~= nil and fn() == true
+end
+
 --== tutorial ================================================================
 -- 0.39 deleted career_modules_linearTutorial (and isLinearTutorialActive) and
 -- replaced it with career_modules_tutorial + a 9-step tutorial/ directory.
@@ -182,6 +262,9 @@ function M.report()
 		{"career_saveSystem.getAllSaveFolders/getAllAutosaves",    career_saveSystem, {"getAllSaveFolders", "getAllAutosaves"}},
 		{"career_saveSystem.getNewestSave/getAutosave",            career_saveSystem, {"getNewestSave", "getAutosave"}},
 		{"ui_apps.notifyLayoutsChanged/requestUIAppsData",         ui_apps,           {"notifyLayoutsChanged", "requestUIAppsData"}},
+		{"core_gamestate.getLoadingStatus",                        core_gamestate,    {"getLoadingStatus"}},
+		{"core_gamestate.requestEnterLoadingScreen",               core_gamestate,    {"requestEnterLoadingScreen"}},
+		{"core_gamestate.requestExitLoadingScreen",                core_gamestate,    {"requestExitLoadingScreen"}},
 	}
 
 	local missing = {}

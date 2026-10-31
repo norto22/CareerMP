@@ -1,4 +1,4 @@
---CareerMP 0.39 :: drag multiplayer activation
+--CareerMP :: drag multiplayer activation
 --
 -- Small by design. Its whole job is to decide *whether* native multiplayer drag racing
 -- is switched on, and to un-stub the one getter that gates it.
@@ -373,13 +373,13 @@ local function onExtensionUnloaded()
 	log("I", logTag, "CareerMP drag sync UNLOADED")
 end
 
-local function onServerLeave()
+local function onBeamMPServerLeave()
 	M.setActive(false)
 end
 
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
-M.onServerLeave = onServerLeave
+M.onBeamMPServerLeave = onBeamMPServerLeave
 
 M.onInit = function() setExtensionUnloadMode(M, 'manual') end
 

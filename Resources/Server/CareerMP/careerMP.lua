@@ -1,24 +1,22 @@
---CareerMP 0.39 (SERVER)
---Based on CareerMP by Dudekahedron, 2026
+--CareerMP (SERVER)
+--Created by Dudekahedron
 --Thanks to Bouboule, and Lion and Luuk from BeamPaint, for http request examples
 --
---Targets BeamNG.drive 0.39. This file touches no game Lua -- it is pure BeamMP
---API (MP.*, Util.*, FS.*) -- so it is version-agnostic and carried over from
---0.0.37 almost unchanged. The drag relay events are the exception: the client
---now drives BeamNG 0.39's own multiplayer drag implementation, so the nine
---tx*/rx* display events were replaced by six state-sync events.
+--This file touches no game Lua -- it is pure BeamMP API (MP.*, Util.*, FS.*) -- so it
+--does not depend on the BeamNG.drive version. The drag relay carries BeamNG's own
+--multiplayer drag protocol between clients without interpreting it.
 
 -- Identifies which CareerMP line these files belong to. The updater refuses any remote
--- version file that does not carry this exact value, which is what stops upstream's
--- higher-numbered releases from being pulled over this fork. Keep it in sync with the
+-- version file that does not carry this exact value, so another repository's
+-- higher-numbered releases are never pulled over this one. Keep it in sync with the
 -- `lineage` field in versions/client.json and versions/server.json.
-local LINEAGE = "vladmaksimenko-0/CareerMP-0.39"
+local LINEAGE = "norto22/CareerMP"
 
-local HARD_CLIENT_VERSION = {major = 0, minor = 0, revision = 1, lineage = LINEAGE}
-local HARD_SERVER_VERSION = {major = 0, minor = 0, revision = 1, lineage = LINEAGE}
+local HARD_CLIENT_VERSION = {major = 0, minor = 1, revision = 0, lineage = LINEAGE}
+local HARD_SERVER_VERSION = {major = 0, minor = 1, revision = 0, lineage = LINEAGE}
 
 local RAW = "https://raw.githubusercontent.com/"
-local GITHUB_REPO = "vladmaksimenko-0/CareerMP-0.39/"
+local GITHUB_REPO = "norto22/CareerMP/"
 local BRANCH = "main/"
 local CLIENT_PATH = "Resources/Client/"
 local CLIENT_FILE = "CareerMP.zip"
@@ -87,8 +85,16 @@ local defaultConfig = {
 	}
 }
 
+-- Players whose career has not started yet, by player id. A player is dropped with
+-- "CareerMP failed to load!" when no settings request arrives within activationThreshold
+-- seconds of joining, or, for a client that confirms its career start, when the client
+-- reports a failure or no confirmation arrives within startConfirmThreshold seconds of
+-- the settings request. A client that does not confirm (an older client mod) counts as
+-- started at its settings request.
 local pendingActivation = {}
 local activationThreshold = 90
+local startConfirmThreshold = 60
+local START_REASON_MAX_LENGTH = 200
 local vehicleStates = {}
 local loadedPrefabs = {}
 
@@ -109,48 +115,83 @@ local trapNames = {
 	[7] = "Island Port Southbound"
 }
 
-local function downloadVersionFile(url, path)
-	local response
-    if MP.GetOSName() == "Windows" then
-        response = os.execute('powershell -Command "Invoke-WebRequest -Uri ' .. url .. ' -OutFile ' .. path .. '"')
-    else
-        response = os.execute("wget -q -O " .. path .. " " .. url)
-    end
-	if response then
-		local file = io.open(path, "r")
-		if file then
-			local data = file:read("*all")
-			file:close()
-			return data
-		end
+-- Runs the platform's downloader. Returns true only when the command reports success.
+local function fetchTo(url, path)
+	local result
+	if MP.GetOSName() == "Windows" then
+		result = os.execute('powershell -Command "Invoke-WebRequest -Uri ' .. url .. ' -OutFile ' .. path .. '"')
 	else
-		return nil
+		result = os.execute("wget -q -O " .. path .. " " .. url)
 	end
+	return result == true or result == 0
 end
 
+local function fileSize(path)
+	local file = io.open(path, "rb")
+	if not file then return 0 end
+	local size = file:seek("end")
+	file:close()
+	return size or 0
+end
+
+local function downloadVersionFile(url, path)
+	if not fetchTo(url, path) then
+		return nil
+	end
+	local file = io.open(path, "r")
+	if not file then
+		return nil
+	end
+	local data = file:read("*all")
+	file:close()
+	return data
+end
+
+-- Downloads url over path without ever leaving path broken. The download lands in a
+-- temporary file; only once that is complete and non-empty is the installed file moved
+-- aside and the new one swapped in, and a failed swap puts the old file back.
+-- Returns true only when the new file is in place.
 local function downloadFile(url, path)
-	local response
-    if MP.GetOSName() == "Windows" then
-        response = os.execute('powershell -Command "Invoke-WebRequest -Uri ' .. url .. ' -OutFile ' .. path .. '"')
-    else
-        response = os.execute("wget -q -O " .. path .. " " .. url)
-    end
-	return response
+	local tempPath = path .. ".download"
+	local backupPath = path .. ".bak"
+	os.remove(tempPath)
+
+	if not fetchTo(url, tempPath) or fileSize(tempPath) == 0 then
+		os.remove(tempPath)
+		print("[CareerMP] ---------- CareerMP Update Download failed: " .. url)
+		return false
+	end
+
+	local hadInstalled = FS.Exists(path)
+	if hadInstalled then
+		os.remove(backupPath)
+		if not os.rename(path, backupPath) then
+			os.remove(tempPath)
+			print("[CareerMP] ---------- CareerMP Update Could not move " .. path .. " aside, nothing was changed")
+			return false
+		end
+	end
+
+	if not os.rename(tempPath, path) then
+		if hadInstalled then
+			os.rename(backupPath, path)
+		end
+		os.remove(tempPath)
+		print("[CareerMP] ---------- CareerMP Update Could not replace " .. path .. ", the installed file was kept")
+		return false
+	end
+
+	if hadInstalled then
+		os.remove(backupPath)
+	end
+	return true
 end
 
 local function needsUpdate(installedVersion, latest)
     local components = { "major", "minor", "revision" }
     -- ipairs, not pairs: this must compare major before minor before revision, and
-    -- pairs does not guarantee order. It went unnoticed for 37 releases because they
-    -- only ever differed in revision (0.0.36 -> 0.0.37), where order cannot change the
-    -- answer. Any release that bumps major or minor would expose it: compared
-    -- revision-first, 0.0.37 -> 0.1.0 sees 0 < 37, returns "no update", and servers
-    -- silently never pick the release up.
-    --
-    -- Note this fork restarts numbering at 0.0.1 rather than continuing Dudek's, so
-    -- 0.0.1 is *lower* than upstream's 0.0.37. A server still holding upstream's
-    -- versions/*.json will therefore not auto-update onto this fork -- the first
-    -- install has to be manual. That is a consequence of the version choice, not a bug.
+    -- pairs does not guarantee order. Compared revision-first, 0.9.9 -> 1.0.0 would
+    -- see 0 < 9, return "no update", and servers would silently never pick it up.
     for _, key in ipairs(components) do
         local i, l = installedVersion[key] or 0, latest[key] or 0
         if l > i then
@@ -163,12 +204,9 @@ local function needsUpdate(installedVersion, latest)
     return false
 end
 
--- Fetches a remote version file to a scratch path.
---
--- 0.0.37 downloaded it straight over the *installed* version record, so the local
--- record became whatever the remote claimed whether or not the update was applied.
--- That destroys the only evidence of what is actually installed, so the record is
--- now written only after an update really lands.
+-- Fetches a remote version file to a scratch path, never over the installed version
+-- record: that record is the only evidence of what is actually installed, so it is
+-- written only after an update really lands.
 local function fetchRemoteVersion(url)
 	local tempPath = SERVER_PATH .. "versions/.remote.json"
 	local data = downloadVersionFile(url, tempPath)
@@ -178,11 +216,10 @@ end
 
 -- Refuses content from a different lineage.
 --
--- Version numbers alone cannot tell "a newer release of this fork" from "an unrelated
--- codebase with a higher number". This fork restarts numbering at 0.0.1, so upstream's
--- 0.0.37 always compares as newer -- meaning a stock updater will happily pull upstream
--- over this fork and, with autoExit on, shut the server down afterwards. Upstream's
--- version files carry no lineage field, so a mismatch is decisive.
+-- Version numbers alone cannot tell "a newer release of this repository" from "an
+-- unrelated codebase with a higher number". Without this check, an update source with
+-- higher numbers would be pulled over this install and, with autoExit on, shut the
+-- server down afterwards.
 local function lineageMatches(remote)
 	return remote.lineage == LINEAGE
 end
@@ -198,7 +235,10 @@ local function runUpdate(opts)
 
 	if not FS.Exists(opts.filePath) then
 		print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " not installed, downloading...")
-		downloadFile(opts.fileUrl, opts.filePath)
+		if not downloadFile(opts.fileUrl, opts.filePath) then
+			print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " could not be downloaded!")
+			return false
+		end
 	end
 
 	if not installedVersion then
@@ -227,7 +267,10 @@ local function runUpdate(opts)
 
 	if needsUpdate(installedVersion, latest) then
 		print("[CareerMP] ---------- CareerMP Update Updating " .. opts.label:lower() .. "...")
-		downloadFile(opts.fileUrl, opts.filePath)
+		if not downloadFile(opts.fileUrl, opts.filePath) then
+			print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " update failed, staying on " .. describeVersion(installedVersion))
+			return false
+		end
 		-- Record the new version only now that the file behind it is actually in place.
 		WriteJson(SERVER_PATH .. opts.versionFile, latest)
 		print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " updated to " .. describeVersion(latest) .. "! Restart the server to apply the update!")
@@ -265,6 +308,18 @@ local function updateServer()
 		updateUrl = SERVER_UPDATE_URL,
 		hardVersion = HARD_SERVER_VERSION,
 	})
+end
+
+-- Checks both parts. Either one updating is enough to restart, when autoExit allows it.
+local function checkForUpdates()
+	if not FS.IsDirectory(SERVER_PATH .. "/versions") then
+		FS.CreateDirectory(SERVER_PATH .. "/versions")
+	end
+	local clientUpdated = updateClient()
+	local serverUpdated = updateServer()
+	if (clientUpdated or serverUpdated) and Config.server.autoExit then
+		willExit = true
+	end
 end
 
 local function parseQuotedString(input, startIndex)
@@ -384,6 +439,7 @@ function onInit()
 
 	MP.RegisterEvent("careerPrefabSync","careerPrefabSync")
 	MP.RegisterEvent("careerSyncRequested","careerSyncRequested")
+	MP.RegisterEvent("careerStartResult","careerStartResult")
 	MP.RegisterEvent("prefabSyncRequested","prefabSyncRequested")
 	MP.RegisterEvent("careerVehSyncRequested","careerVehSyncRequested")
 	MP.RegisterEvent("careerVehicleActiveHandler","careerVehicleActiveHandler")
@@ -417,15 +473,7 @@ function onInit()
 	prepareConfig()
 
 	if Config.server.autoUpdate then
-		if not FS.IsDirectory(SERVER_PATH .. "/versions") then
-			FS.CreateDirectory(SERVER_PATH .. "/versions")
-		end
-		local update
-		update = updateClient()
-		update = updateServer()
-		if update and Config.server.autoExit then
-			willExit = true
-		end
+		checkForUpdates()
 	end
 
 	print("[CareerMP] ---------- CareerMP Loaded!")
@@ -509,11 +557,27 @@ local function attemptTransaction(sender_id, receiver_id, amount, now)
 	return true
 end
 
+-- The client is not trusted with the amount or the target: only a whole number of
+-- dollars above zero, no more than a sender may send in a session, going to another
+-- connected player, is ever relayed.
+local function isValidPayment(sender_id, paymentData)
+	local amount = paymentData.money
+	if type(amount) ~= "number" or amount ~= amount or amount <= 0 or amount % 1 ~= 0 then
+		return false
+	end
+	if amount > Config.server.sessionSendingMax then
+		return false
+	end
+	local target = paymentData.target_player_id
+	return type(target) == "number" and target ~= sender_id and MP.IsPlayerConnected(target) == true
+end
+
 function payPlayer(player_id, data)
 	local paymentData = Util.JsonDecode(data)
+	if type(paymentData) ~= "table" then return end
 	paymentData.sender = MP.GetPlayerName(player_id)
 	if Config.server.allowTransactions then
-		if MP.IsPlayerConnected(paymentData.target_player_id) then
+		if isValidPayment(player_id, paymentData) then
 			if attemptTransaction(player_id, paymentData.target_player_id, paymentData.money, signalTimer:GetCurrent()) then
 				MP.TriggerClientEventJson(paymentData.target_player_id, "rxPayment", paymentData)
 				MP.TriggerClientEventJson(player_id, "rxConfirmation", paymentData)
@@ -769,11 +833,57 @@ function careerPrefabSync(player_id, data)
 	end
 end
 
-function careerSyncRequested(player_id)
+local function decodeTable(data)
+	if type(data) ~= "string" or data == "" then return nil end
+	local ok, decoded = pcall(Util.JsonDecode, data)
+	if ok and type(decoded) == "table" then return decoded end
+	return nil
+end
+
+-- Console-safe text from a client: control characters removed, length capped.
+local function consoleText(text)
+	return (tostring(text):gsub("%c", " "):sub(1, START_REASON_MAX_LENGTH))
+end
+
+local function describePlayer(player_id)
+	return string.format("%s (%s)", consoleText(MP.GetPlayerName(player_id) or "?"), tostring(player_id))
+end
+
+local function dropUnstartedPlayer(player_id, why)
+	local entry = pendingActivation[player_id]
+	if not entry or entry.dropped then return end
+	entry.dropped = true
+	print("[CareerMP] Dropping " .. describePlayer(player_id) .. ": " .. why)
+	MP.DropPlayer(player_id, "CareerMP failed to load!")
+end
+
+function careerSyncRequested(player_id, data)
 	MP.TriggerClientEventJson(player_id, "rxCareerSync", Config.client)
 	-- Guard: the entry is gone if the player disconnected between join and sync.
-	if pendingActivation[player_id] then
-		pendingActivation[player_id].careerActive = true
+	local entry = pendingActivation[player_id]
+	if not entry or entry.careerActive then return end
+	local request = decodeTable(data)
+	if request and request.confirmsStart == true then
+		entry.confirmsStart = true
+		entry.settingsRequestedAt = signalTimer:GetCurrent()
+	else
+		entry.careerActive = true
+	end
+end
+
+-- The client's own report of its career start: {"started": true} or
+-- {"started": false, "reason": "..."}. Only accepted from a client that said it
+-- confirms its start, after its settings request; the reason is printed, never used.
+function careerStartResult(player_id, data)
+	local entry = pendingActivation[player_id]
+	if not entry or not entry.confirmsStart or entry.careerActive or entry.dropped then return end
+	local result = decodeTable(data)
+	if not result then return end
+	if result.started == true then
+		entry.careerActive = true
+		print("[CareerMP] " .. describePlayer(player_id) .. " started their career")
+	elseif result.started == false then
+		dropUnstartedPlayer(player_id, "career start failed: " .. consoleText(result.reason or "no reason given"))
 	end
 end
 
@@ -801,16 +911,17 @@ function careerVehicleActiveHandler(player_id, data)
 end
 
 function validateCareerMPActivation()
+	local now = signalTimer:GetCurrent()
 	for id in pairs(MP.GetPlayers()) do
-		if MP.IsPlayerConnected(id) then
-			if pendingActivation[id] then
-				if not pendingActivation[id].careerActive then
-					if pendingActivation[id].joinTimestamp then
-						if signalTimer:GetCurrent() - pendingActivation[id].joinTimestamp >= activationThreshold then
-							MP.DropPlayer(id, "CareerMP failed to load!")
-						end
-					end
+		local entry = pendingActivation[id]
+		if entry and not entry.careerActive and not entry.dropped and MP.IsPlayerConnected(id) then
+			if entry.settingsRequestedAt then
+				if now - entry.settingsRequestedAt >= startConfirmThreshold then
+					dropUnstartedPlayer(id, string.format("no career start confirmed within %d s of the settings request",
+						startConfirmThreshold))
 				end
+			elseif entry.joinTimestamp and now - entry.joinTimestamp >= activationThreshold then
+				dropUnstartedPlayer(id, string.format("no settings request within %d s of joining", activationThreshold))
 			end
 		end
 	end
@@ -868,8 +979,8 @@ function onConsoleInputHandler(message)
 		return ""
 	end
 	local commandPrefix = message:sub(1, space)
-	-- NOTE: 0.0.37 wrote `== "CareerMP " or "CMP "`, which is always truthy, so
-	-- every console line containing a space was parsed as a CareerMP command.
+	-- Compare against each prefix: `== "CareerMP " or "CMP "` would always be truthy and
+	-- treat every console line containing a space as a CareerMP command.
 	if commandPrefix == "CareerMP " or commandPrefix == "CMP " then
 		local prefixLen = commandPrefix:len()
 		message = message:sub(prefixLen + 1)
@@ -930,15 +1041,7 @@ function SetConfig(arguments)
 end
 
 function Update(arguments)
-	if not FS.IsDirectory(SERVER_PATH .. "/versions") then
-		FS.CreateDirectory(SERVER_PATH .. "/versions")
-	end
-	local update
-	update = updateClient()
-	update = updateServer()
-	if update and Config.server.autoExit then
-		willExit = true
-	end
+	checkForUpdates()
 end
 
 function Help(arguments)

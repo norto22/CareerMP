@@ -1,4 +1,4 @@
---CareerMP 0.39 :: drag lobby
+--CareerMP :: drag lobby
 --
 -- The one part of multiplayer drag racing BeamNG did not write.
 --
@@ -10,8 +10,7 @@
 -- Design notes:
 --
 --  * No lobby UI. Driving up to a lane is the join signal: players drive up, stage and
---    race, which is how drag racing worked in CareerMP 0.0.37 and what people expect on a
---    freeroam server.
+--    race, which is what people expect on a freeroam server.
 --
 --    We work out where we are ourselves (scanForStrip) rather than waiting for poi.lua to
 --    tell us. It looks like the obvious source -- it already calls the gamemode's
@@ -1277,14 +1276,14 @@ local function onExtensionUnloaded()
 	log("I", logTag, "CareerMP drag lobby UNLOADED")
 end
 
-local function onServerLeave()
+local function onBeamMPServerLeave()
 	M.reset()
 end
 
 M.onUpdate = onUpdate
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
-M.onServerLeave = onServerLeave
+M.onBeamMPServerLeave = onBeamMPServerLeave
 
 M.onInit = function() setExtensionUnloadMode(M, 'manual') end
 

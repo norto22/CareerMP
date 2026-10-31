@@ -1,4 +1,4 @@
---CareerMP 0.39 :: drag multiplayer transport
+--CareerMP :: drag multiplayer transport
 --
 -- BeamNG 0.39 ships a complete multiplayer drag racing implementation -- the receive
 -- handlers (gameplay/drag/mpDragHandlers.lua, 16 message types), the state application
@@ -14,7 +14,7 @@
 --   * routing of inbound messages into gameplay_drag_mpDragHandlers.handle
 --
 -- Deliberately thin. The protocol lives entirely in BeamNG's code, so if a game update
--- changes it, this file should not need to. See docs/0.39-PORTING-RESEARCH.md.
+-- changes it, this file should not need to.
 
 local M = {}
 
@@ -385,14 +385,14 @@ local function onExtensionUnloaded()
 	log("I", logTag, "CareerMP drag transport UNLOADED")
 end
 
-local function onServerLeave()
+local function onBeamMPServerLeave()
 	authorityByStrip = {}
 	M.reset()
 end
 
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
-M.onServerLeave = onServerLeave
+M.onBeamMPServerLeave = onBeamMPServerLeave
 
 M.onInit = function() setExtensionUnloadMode(M, 'manual') end
 

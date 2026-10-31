@@ -1,6 +1,4 @@
---CareerMP 0.39 :: player payments (CLIENT)
---
--- Port of CareerMP 0.0.37's careerMPPlayerPayments. Original by Dudekahedron, 2026.
+--CareerMP :: player payments (CLIENT)
 --
 -- Career money is per-save and entirely client-side, so there is no way to hand
 -- another player cash. This adds one: the sender deducts locally only after the
@@ -8,8 +6,8 @@
 -- holds the rate-limit ledger (short/long window plus session caps) and is the
 -- only thing that can authorise a transfer -- see Resources/Server.
 --
--- Every game API here is unchanged in 0.39 (playerAttributes get/addAttributes,
--- saveSystem.saveCurrent, toastrMsg), so this is a near-verbatim port.
+-- Game APIs used: playerAttributes get/addAttributes, saveSystem.saveCurrent and
+-- the toastrMsg guihook.
 --
 -- Called from the player list UI app: careerMPPlayerPayments.payPlayer(name, amount)
 

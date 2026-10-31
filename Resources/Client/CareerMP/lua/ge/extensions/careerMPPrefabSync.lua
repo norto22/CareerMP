@@ -1,6 +1,4 @@
---CareerMP 0.39 :: mission prefab sync (CLIENT)
---
--- Port of CareerMP 0.0.37's careerMPPrefabSync. Original by Dudekahedron, 2026.
+--CareerMP :: mission prefab sync (CLIENT)
 --
 -- Missions, challenges and scenarios spawn prefabs (track layouts, barriers, hay
 -- bales, gates, arrow signs...). Those are local to whoever started the mission,
@@ -13,8 +11,8 @@
 -- 0.32+ .prefab.json, the second for legacy .prefab (TorqueScript-ish, where
 -- vehicles appear as `new BeamNGVehicle(...)` blocks).
 --
--- All game APIs used here (spawnPrefab, removePrefab, be:reloadCollision,
--- onMissionStartWithFade, mission.missionFolder) are unchanged in 0.39.
+-- Game APIs used: spawnPrefab, removePrefab, be:reloadCollision,
+-- onMissionStartWithFade and mission.missionFolder.
 
 local M = {}
 

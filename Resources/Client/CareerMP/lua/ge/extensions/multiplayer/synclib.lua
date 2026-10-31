@@ -1,4 +1,4 @@
---CareerMP 0.39 :: multiplayer_synclib
+--CareerMP :: multiplayer_synclib
 --
 -- Cross-machine clock mapping. Without this, multiplayer drag finish times are
 -- meaningless -- not imprecise, meaningless.
@@ -181,13 +181,13 @@ local function onExtensionLoaded()
 	log("I", logTag, "CareerMP synclib LOADED (clock mapping for multiplayer drag)")
 end
 
-local function onServerLeave()
+local function onBeamMPServerLeave()
 	M.reset()
 end
 
 M.onUpdate = onUpdate
 M.onExtensionLoaded = onExtensionLoaded
-M.onServerLeave = onServerLeave
+M.onBeamMPServerLeave = onBeamMPServerLeave
 
 M.onInit = function() setExtensionUnloadMode(M, 'manual') end
 
