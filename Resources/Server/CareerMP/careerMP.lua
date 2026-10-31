@@ -12,13 +12,13 @@
 -- version file that does not carry this exact value, which is what stops upstream's
 -- higher-numbered releases from being pulled over this fork. Keep it in sync with the
 -- `lineage` field in versions/client.json and versions/server.json.
-local LINEAGE = "vladmaksimenko-0/CareerMP-0.39"
+local LINEAGE = "norto22/CareerMP"
 
-local HARD_CLIENT_VERSION = {major = 0, minor = 0, revision = 1, lineage = LINEAGE}
-local HARD_SERVER_VERSION = {major = 0, minor = 0, revision = 1, lineage = LINEAGE}
+local HARD_CLIENT_VERSION = {major = 0, minor = 1, revision = 0, lineage = LINEAGE}
+local HARD_SERVER_VERSION = {major = 0, minor = 1, revision = 0, lineage = LINEAGE}
 
 local RAW = "https://raw.githubusercontent.com/"
-local GITHUB_REPO = "vladmaksimenko-0/CareerMP-0.39/"
+local GITHUB_REPO = "norto22/CareerMP/"
 local BRANCH = "main/"
 local CLIENT_PATH = "Resources/Client/"
 local CLIENT_FILE = "CareerMP.zip"
@@ -109,33 +109,76 @@ local trapNames = {
 	[7] = "Island Port Southbound"
 }
 
-local function downloadVersionFile(url, path)
-	local response
-    if MP.GetOSName() == "Windows" then
-        response = os.execute('powershell -Command "Invoke-WebRequest -Uri ' .. url .. ' -OutFile ' .. path .. '"')
-    else
-        response = os.execute("wget -q -O " .. path .. " " .. url)
-    end
-	if response then
-		local file = io.open(path, "r")
-		if file then
-			local data = file:read("*all")
-			file:close()
-			return data
-		end
+-- Runs the platform's downloader. Returns true only when the command reports success.
+local function fetchTo(url, path)
+	local result
+	if MP.GetOSName() == "Windows" then
+		result = os.execute('powershell -Command "Invoke-WebRequest -Uri ' .. url .. ' -OutFile ' .. path .. '"')
 	else
-		return nil
+		result = os.execute("wget -q -O " .. path .. " " .. url)
 	end
+	return result == true or result == 0
 end
 
+local function fileSize(path)
+	local file = io.open(path, "rb")
+	if not file then return 0 end
+	local size = file:seek("end")
+	file:close()
+	return size or 0
+end
+
+local function downloadVersionFile(url, path)
+	if not fetchTo(url, path) then
+		return nil
+	end
+	local file = io.open(path, "r")
+	if not file then
+		return nil
+	end
+	local data = file:read("*all")
+	file:close()
+	return data
+end
+
+-- Downloads url over path without ever leaving path broken. The download lands in a
+-- temporary file; only once that is complete and non-empty is the installed file moved
+-- aside and the new one swapped in, and a failed swap puts the old file back.
+-- Returns true only when the new file is in place.
 local function downloadFile(url, path)
-	local response
-    if MP.GetOSName() == "Windows" then
-        response = os.execute('powershell -Command "Invoke-WebRequest -Uri ' .. url .. ' -OutFile ' .. path .. '"')
-    else
-        response = os.execute("wget -q -O " .. path .. " " .. url)
-    end
-	return response
+	local tempPath = path .. ".download"
+	local backupPath = path .. ".bak"
+	os.remove(tempPath)
+
+	if not fetchTo(url, tempPath) or fileSize(tempPath) == 0 then
+		os.remove(tempPath)
+		print("[CareerMP] ---------- CareerMP Update Download failed: " .. url)
+		return false
+	end
+
+	local hadInstalled = FS.Exists(path)
+	if hadInstalled then
+		os.remove(backupPath)
+		if not os.rename(path, backupPath) then
+			os.remove(tempPath)
+			print("[CareerMP] ---------- CareerMP Update Could not move " .. path .. " aside, nothing was changed")
+			return false
+		end
+	end
+
+	if not os.rename(tempPath, path) then
+		if hadInstalled then
+			os.rename(backupPath, path)
+		end
+		os.remove(tempPath)
+		print("[CareerMP] ---------- CareerMP Update Could not replace " .. path .. ", the installed file was kept")
+		return false
+	end
+
+	if hadInstalled then
+		os.remove(backupPath)
+	end
+	return true
 end
 
 local function needsUpdate(installedVersion, latest)
@@ -198,7 +241,10 @@ local function runUpdate(opts)
 
 	if not FS.Exists(opts.filePath) then
 		print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " not installed, downloading...")
-		downloadFile(opts.fileUrl, opts.filePath)
+		if not downloadFile(opts.fileUrl, opts.filePath) then
+			print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " could not be downloaded!")
+			return false
+		end
 	end
 
 	if not installedVersion then
@@ -227,7 +273,10 @@ local function runUpdate(opts)
 
 	if needsUpdate(installedVersion, latest) then
 		print("[CareerMP] ---------- CareerMP Update Updating " .. opts.label:lower() .. "...")
-		downloadFile(opts.fileUrl, opts.filePath)
+		if not downloadFile(opts.fileUrl, opts.filePath) then
+			print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " update failed, staying on " .. describeVersion(installedVersion))
+			return false
+		end
 		-- Record the new version only now that the file behind it is actually in place.
 		WriteJson(SERVER_PATH .. opts.versionFile, latest)
 		print("[CareerMP] ---------- CareerMP Update " .. opts.label .. " updated to " .. describeVersion(latest) .. "! Restart the server to apply the update!")
@@ -265,6 +314,18 @@ local function updateServer()
 		updateUrl = SERVER_UPDATE_URL,
 		hardVersion = HARD_SERVER_VERSION,
 	})
+end
+
+-- Checks both parts. Either one updating is enough to restart, when autoExit allows it.
+local function checkForUpdates()
+	if not FS.IsDirectory(SERVER_PATH .. "/versions") then
+		FS.CreateDirectory(SERVER_PATH .. "/versions")
+	end
+	local clientUpdated = updateClient()
+	local serverUpdated = updateServer()
+	if (clientUpdated or serverUpdated) and Config.server.autoExit then
+		willExit = true
+	end
 end
 
 local function parseQuotedString(input, startIndex)
@@ -417,15 +478,7 @@ function onInit()
 	prepareConfig()
 
 	if Config.server.autoUpdate then
-		if not FS.IsDirectory(SERVER_PATH .. "/versions") then
-			FS.CreateDirectory(SERVER_PATH .. "/versions")
-		end
-		local update
-		update = updateClient()
-		update = updateServer()
-		if update and Config.server.autoExit then
-			willExit = true
-		end
+		checkForUpdates()
 	end
 
 	print("[CareerMP] ---------- CareerMP Loaded!")
@@ -930,15 +983,7 @@ function SetConfig(arguments)
 end
 
 function Update(arguments)
-	if not FS.IsDirectory(SERVER_PATH .. "/versions") then
-		FS.CreateDirectory(SERVER_PATH .. "/versions")
-	end
-	local update
-	update = updateClient()
-	update = updateServer()
-	if update and Config.server.autoExit then
-		willExit = true
-	end
+	checkForUpdates()
 end
 
 function Help(arguments)
