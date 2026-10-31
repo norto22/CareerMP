@@ -562,11 +562,27 @@ local function attemptTransaction(sender_id, receiver_id, amount, now)
 	return true
 end
 
+-- The client is not trusted with the amount or the target: only a whole number of
+-- dollars above zero, no more than a sender may send in a session, going to another
+-- connected player, is ever relayed.
+local function isValidPayment(sender_id, paymentData)
+	local amount = paymentData.money
+	if type(amount) ~= "number" or amount ~= amount or amount <= 0 or amount % 1 ~= 0 then
+		return false
+	end
+	if amount > Config.server.sessionSendingMax then
+		return false
+	end
+	local target = paymentData.target_player_id
+	return type(target) == "number" and target ~= sender_id and MP.IsPlayerConnected(target) == true
+end
+
 function payPlayer(player_id, data)
 	local paymentData = Util.JsonDecode(data)
+	if type(paymentData) ~= "table" then return end
 	paymentData.sender = MP.GetPlayerName(player_id)
 	if Config.server.allowTransactions then
-		if MP.IsPlayerConnected(paymentData.target_player_id) then
+		if isValidPayment(player_id, paymentData) then
 			if attemptTransaction(player_id, paymentData.target_player_id, paymentData.money, signalTimer:GetCurrent()) then
 				MP.TriggerClientEventJson(paymentData.target_player_id, "rxPayment", paymentData)
 				MP.TriggerClientEventJson(player_id, "rxConfirmation", paymentData)
