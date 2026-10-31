@@ -42,7 +42,7 @@ local function setTrafficVars()
   gameplay_parking.setParkingVars({precision = 0.2}) -- allows for relaxed parking detection
 end
 
--- CareerMP 0.39: traffic is metered by the server, not by local settings.
+-- CareerMP: traffic is metered by the server, not by local settings.
 -- Each player spawns their own traffic, so an unbounded local setting multiplies
 -- across the session and wrecks physics/position sync for everyone. The server
 -- config supplies the ceiling and the on/off switches.
@@ -99,7 +99,7 @@ local function setupTraffic(forceSetup)
 
   local trafficOptions = {simpleVehs = true, autoLoadFromFile = true}
 
-  -- CareerMP 0.39: vehicle pooling (spawns extra vehicles that get recycled
+  -- CareerMP: vehicle pooling (spawns extra vehicles that get recycled
   -- rather than despawned). 0.39 has this commented out upstream; the server
   -- decides whether the extra headroom is affordable for the session.
   local mpConfig = getCareerMPTrafficConfig()

@@ -1,4 +1,4 @@
---CareerMP 0.39 :: drag multiplayer gamemode
+--CareerMP :: drag multiplayer gamemode
 --
 -- gameplay/drag/core.lua looks for an extension at multiplayer/gamemodes/drag/drag --
 -- this file -- and every multiplayer path inside gameplay/drag/ is gated behind it
@@ -27,8 +27,6 @@
 --   updateTimerValue         times.lua:131         -> dragRaceTimerUpdateRequest (host)
 --   broadcastRulesUpdate     dragBridge.lua:510    -> dragRaceRulesUpdate        (all)
 --   getSynchronizedRandValue display.lua:674       <- host's randValue
---
--- See docs/0.39-PORTING-RESEARCH.md for the full protocol.
 
 local M = {}
 

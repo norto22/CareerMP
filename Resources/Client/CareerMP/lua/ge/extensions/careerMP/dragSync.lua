@@ -1,4 +1,4 @@
---CareerMP 0.39 :: drag multiplayer activation
+--CareerMP :: drag multiplayer activation
 --
 -- Small by design. Its whole job is to decide *whether* native multiplayer drag racing
 -- is switched on, and to un-stub the one getter that gates it.

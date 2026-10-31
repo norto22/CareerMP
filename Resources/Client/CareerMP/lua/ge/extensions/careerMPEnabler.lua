@@ -1,24 +1,20 @@
---CareerMP 0.39 :: enabler (CLIENT)
+--CareerMP :: enabler (CLIENT)
 --
--- Port of CareerMP 0.0.37's careerMPEnabler for BeamNG.drive 0.39.
--- Original by Dudekahedron, 2026.
+-- Starts career when a CareerMP server's settings arrive and keeps it in step with
+-- the server.
 --
--- Differences from 0.0.37:
---   * Renamed game APIs go through careerMP_compat (0.39 renamed every
---     "saveSlot" symbol to "profile", among others).
+--   * Game APIs that BeamNG.drive 0.39 renamed go through careerMP_compat (every
+--     "saveSlot" symbol became "profile", among others).
 --   * Career start passes a startingOptions table with startMode = "freshStart"
---     ("Open World"). 0.39 changed the third parameter of
---     createOrLoadCareerAndStart from a tutorial boolean to a table; passing a
---     boolean silently leaves no starting mode applied.
---   * The BeamMP nickname is sanitised locally before use as a profile name.
---     0.39 lowercases and strips non-alphanumerics, then de-duplicates against
+--     ("Open World"). The third parameter of createOrLoadCareerAndStart is a table;
+--     passing a boolean silently leaves no starting mode applied.
+--   * The BeamMP nickname is sanitised locally before use as a profile name. The
+--     game lowercases and strips non-alphanumerics, then de-duplicates against
 --     profiles already on that client -- which would make the nickname -> save
 --     mapping machine-dependent.
---   * patchTopBar is gated: ui_topBar was deleted in 0.39's UI overhaul.
---   * Menu hooks come from careerMP_patches (runtime wrappers) rather than from
---     forked copies of the career modules.
---
--- See docs/0.39-PORTING-RESEARCH.md.
+--   * patchTopBar is gated: ui_topBar does not exist in 0.39.
+--   * Menu hooks come from careerMP_patches (runtime wrappers around the game's
+--     career modules).
 
 local M = {}
 
@@ -163,11 +159,8 @@ local function onVehicleReady(gameVehicleID)
 	if not veh then return end
 
 	if not MPVehicleGE.isOwn(gameVehicleID) then
-		-- 0.0.37 also queued careerMPEnabler.setUnicycleGhost(clientConfig.unicycleGhost)
-		-- and setAllGhost(clientConfig.allGhost) here. Neither function exists on
-		-- the vehicle side (only setGhost does) and neither config key exists on
-		-- the server, so both calls errored in the vehicle VM and did nothing.
-		-- Ghosting is handled in onUpdate against the real config keys instead.
+		-- Ghosting is not queued here: the vehicle side only has setGhost, and it is
+		-- applied in onUpdate against the server's ghost config keys.
 		local vehicles = MPVehicleGE.getVehicles()
 		if vehicles[serverVehicleID] then
 			vehicles[serverVehicleID].hideNametag = hiddens[veh.JBeam] and true or false
@@ -288,25 +281,10 @@ local function patchTopBar()
 	ui_topBar.updateVisibleItems()
 end
 
--- 0.0.37 patched multiplayer_multiplayer.onUpdate here, and from inside that
--- installed its own core_camera.getDriverData to correct the mirrored driver side on
--- remote vehicles (the fragile debug.getinfo(2).name == "getDoorsidePosRot" check).
---
--- All of it is gone, for three reasons:
---
---  1. The extension it patched no longer exists. BeamMP 0.39 ships
---     lua/ge/extensions/beammp/multiplayer.lua (beammp_multiplayer), not
---     multiplayer_multiplayer, so patchBeamMP silently did nothing and the
---     getDriverData override -- installed only from within that patch -- never ran.
---  2. BeamMP now does this itself, with the same getDoorsidePosRot check. Ours would
---     be a duplicate even if it did install.
---  3. It was actively dangerous on the way out. unPatchBeamMP assigned
---     core_camera.getDriverData = originalGetDriverData, which was nil, so leaving a
---     server would have nil'd out the function BeamMP had legitimately installed.
---
--- BeamMP re-asserts getDriverData from its own onUpdate every frame, so wrapping it
--- would produce the same mutual recursion documented in careerMP/patches.lua.
--- Leave it alone.
+-- The mirrored driver side on remote vehicles is corrected by BeamMP itself
+-- (beammp_multiplayer installs core_camera.getDriverData). BeamMP re-asserts
+-- getDriverData from its own onUpdate every frame, so wrapping it would produce the
+-- same mutual recursion documented in careerMP/patches.lua. Leave it alone.
 
 --Initial Syncs and Updates
 
@@ -497,7 +475,7 @@ M.onRedLightCamTriggered = onRedLightCamTriggered
 M.onComputerOpenedMP = onComputerOpenedMP
 
 -- Enriched hooks published by careerMP_patches. The stock hooks carry no
--- vehicle id, which is the only reason CareerMP 0.0.37 forked these modules.
+-- vehicle id, so the patches add it.
 M.onCareerTuningStartedMP = computerMenuHandler
 M.onPartShoppingStartedMP = computerMenuHandler
 M.onVehiclePaintingUiOpenedMP = computerMenuHandler

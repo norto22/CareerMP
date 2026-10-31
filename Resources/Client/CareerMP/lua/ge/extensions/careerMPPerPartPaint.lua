@@ -1,6 +1,4 @@
---CareerMP 0.39 :: per-part paint sync (CLIENT)
---
--- Port of CareerMP 0.0.37's careerMPPerPartPaint. Original by Dudekahedron, 2026.
+--CareerMP :: per-part paint sync (CLIENT)
 --
 -- BeamMP syncs a vehicle's overall paint but not per-part paint, which career
 -- tracks in partConditions[*].visualState.paint.originalPaints. Replacement
@@ -8,10 +6,8 @@
 -- screen. This sends each part's paint over the wire and applies it vehicle-side
 -- via partCondition.setPartPaints.
 --
--- Every game API this uses is unchanged between 0.38.6 and 0.39
--- (validateVehiclePaint, partCondition.ensureConditionsInit/setPartPaints,
--- getInventoryIdFromVehicleId, originalPaints), so the port is behaviour-for-
--- behaviour apart from the hook names and three bug fixes noted inline.
+-- Game APIs used: validateVehiclePaint, partCondition.ensureConditionsInit/
+-- setPartPaints, getInventoryIdFromVehicleId and originalPaints.
 
 local M = {}
 
@@ -187,10 +183,8 @@ local function sendPartPaints(inventoryId, serverVehicleID, originID)
 	end
 end
 
--- FIX (was a bug in 0.0.37): the original looped every MP vehicle and pushed the
--- inventoryId onto pendingPaints once per NON-matching vehicle, so a single
--- spawn queued N-1 redundant retries and grew pendingPaints without bound.
--- Resolve once, queue at most one retry.
+-- Resolves the vehicle once and queues at most one retry, so pendingPaints cannot
+-- grow with the number of vehicles in the session.
 local function onInventorySpawnVehicleMP(inventoryId, gameVehicleID)
 	if not inventoryId then return end
 	if gameVehicleID then
@@ -262,10 +256,8 @@ local function onPartShoppingTransactionCompleteMP(inventoryId)
 	broadcastForInventoryId(inventoryId)
 end
 
--- FIX (was a bug in 0.0.37): pendingRemotePaints is keyed by gameVehicleID, so
--- the entry IS the paintData -- the original indexed `.paintData` on it (always
--- nil) and then called table.remove with a key on a non-array table. Both are
--- corrected here.
+-- pendingRemotePaints is keyed by gameVehicleID and each entry IS the paintData,
+-- so it is read directly and cleared by assigning nil (it is not an array).
 local function onConditionCheckCallback(gameVehicleID)
 	local paintData = pendingRemotePaints[gameVehicleID]
 	if not paintData then return end

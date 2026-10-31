@@ -1,11 +1,11 @@
---CareerMP 0.39 :: compat layer
+--CareerMP :: compat layer
 --
 -- Single point of contact for game APIs that BeamNG renames between versions.
--- Every call site in CareerMP 0.39 goes through here instead of calling the
--- game directly, so a future rename is a one-file fix rather than a hunt.
+-- Every call site in CareerMP goes through here instead of calling the game
+-- directly, so a future rename is a one-file fix rather than a hunt.
 --
--- Target: BeamNG.drive 0.39 (build 20859). Baseline for the mapping: 0.38.6.
--- See docs/0.39-PORTING-RESEARCH.md for how each entry was derived.
+-- Target: BeamNG.drive 0.39 (build 20859). Each entry also names the 0.38.6 API
+-- it replaces.
 
 local M = {}
 

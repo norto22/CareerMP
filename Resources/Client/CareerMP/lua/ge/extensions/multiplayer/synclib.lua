@@ -1,4 +1,4 @@
---CareerMP 0.39 :: multiplayer_synclib
+--CareerMP :: multiplayer_synclib
 --
 -- Cross-machine clock mapping. Without this, multiplayer drag finish times are
 -- meaningless -- not imprecise, meaningless.

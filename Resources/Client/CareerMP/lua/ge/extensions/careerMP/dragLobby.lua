@@ -1,4 +1,4 @@
---CareerMP 0.39 :: drag lobby
+--CareerMP :: drag lobby
 --
 -- The one part of multiplayer drag racing BeamNG did not write.
 --
@@ -10,8 +10,7 @@
 -- Design notes:
 --
 --  * No lobby UI. Driving up to a lane is the join signal: players drive up, stage and
---    race, which is how drag racing worked in CareerMP 0.0.37 and what people expect on a
---    freeroam server.
+--    race, which is what people expect on a freeroam server.
 --
 --    We work out where we are ourselves (scanForStrip) rather than waiting for poi.lua to
 --    tell us. It looks like the obvious source -- it already calls the gamemode's

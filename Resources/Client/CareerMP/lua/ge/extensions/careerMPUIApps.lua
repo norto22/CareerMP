@@ -1,6 +1,4 @@
---CareerMP 0.39 :: UI app injection (CLIENT)
---
--- Port of CareerMP 0.0.37's careerMPUIApps. Original by Dudekahedron, 2026.
+--CareerMP :: UI app injection (CLIENT)
 --
 -- Missions, challenges and scenarios each switch to their own UI app layout,
 -- none of which include the multiplayer apps. Without this you lose chat and the
@@ -8,13 +6,12 @@
 -- session) the moment you start a mission. This walks the layout the game is
 -- about to use and injects the MP apps into it.
 --
--- 0.39 changes handled:
---   * ui_apps.requestUIAppsData was removed -> compat.notifyLayoutsChanged
---     (fires the UiAppLayoutsChanged guihook). 0.39 also watches the layout
---     files itself and refreshes on change, so this is belt-and-braces.
---   * mission layout rallyModeRecce was removed.
---   * default layout gravityRace was added.
--- The layout directories and JSON schema are otherwise unchanged.
+-- On BeamNG.drive 0.39:
+--   * layouts are refreshed through compat.notifyLayoutsChanged (fires the
+--     UiAppLayoutsChanged guihook). The game also watches the layout files itself
+--     and refreshes on change, so this is belt-and-braces.
+--   * there is no rallyModeRecce mission layout, and there is a gravityRace default
+--     layout.
 
 local M = {}
 

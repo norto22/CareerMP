@@ -1,11 +1,11 @@
---CareerMP 0.39 :: mod entry point
+--CareerMP :: mod entry point
 --
 -- Load order matters:
 --   1. compat        - everything else reads renamed 0.39 game APIs through it
 --   2. patches       - installs the runtime wrappers that publish the enriched
 --                      *MP hooks the feature extensions listen for
 --   3. careerPatches - neutralises career activation's vehicle cleanup before
---                      any career can start (replaces the career.lua fork)
+--                      any career can start
 --   4. features
 --
 -- 'manual' unload mode keeps these alive across level switches, which career
@@ -30,8 +30,7 @@ loadPersistent('careerMPPlayerPayments')
 loadPersistent('careerMPPrefabSync')
 loadPersistent('careerMPPerPartPaint')
 
--- Drag racing: drives BeamNG 0.39's own multiplayer drag implementation instead of
--- forking gameplay/drag/display.lua.
+-- Drag racing: drives BeamNG 0.39's own multiplayer drag implementation.
 --
 -- Order matters here. sessionManager and the gamemode both reach into the transport,
 -- and the transport is what loads gameplay_drag_mpDragHandlers -- which the base game

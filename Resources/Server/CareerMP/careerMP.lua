@@ -1,16 +1,14 @@
---CareerMP 0.39 (SERVER)
---Based on CareerMP by Dudekahedron, 2026
+--CareerMP (SERVER)
+--Created by Dudekahedron
 --Thanks to Bouboule, and Lion and Luuk from BeamPaint, for http request examples
 --
---Targets BeamNG.drive 0.39. This file touches no game Lua -- it is pure BeamMP
---API (MP.*, Util.*, FS.*) -- so it is version-agnostic and carried over from
---0.0.37 almost unchanged. The drag relay events are the exception: the client
---now drives BeamNG 0.39's own multiplayer drag implementation, so the nine
---tx*/rx* display events were replaced by six state-sync events.
+--This file touches no game Lua -- it is pure BeamMP API (MP.*, Util.*, FS.*) -- so it
+--does not depend on the BeamNG.drive version. The drag relay carries BeamNG's own
+--multiplayer drag protocol between clients without interpreting it.
 
 -- Identifies which CareerMP line these files belong to. The updater refuses any remote
--- version file that does not carry this exact value, which is what stops upstream's
--- higher-numbered releases from being pulled over this fork. Keep it in sync with the
+-- version file that does not carry this exact value, so another repository's
+-- higher-numbered releases are never pulled over this one. Keep it in sync with the
 -- `lineage` field in versions/client.json and versions/server.json.
 local LINEAGE = "norto22/CareerMP"
 
@@ -184,16 +182,8 @@ end
 local function needsUpdate(installedVersion, latest)
     local components = { "major", "minor", "revision" }
     -- ipairs, not pairs: this must compare major before minor before revision, and
-    -- pairs does not guarantee order. It went unnoticed for 37 releases because they
-    -- only ever differed in revision (0.0.36 -> 0.0.37), where order cannot change the
-    -- answer. Any release that bumps major or minor would expose it: compared
-    -- revision-first, 0.0.37 -> 0.1.0 sees 0 < 37, returns "no update", and servers
-    -- silently never pick the release up.
-    --
-    -- Note this fork restarts numbering at 0.0.1 rather than continuing Dudek's, so
-    -- 0.0.1 is *lower* than upstream's 0.0.37. A server still holding upstream's
-    -- versions/*.json will therefore not auto-update onto this fork -- the first
-    -- install has to be manual. That is a consequence of the version choice, not a bug.
+    -- pairs does not guarantee order. Compared revision-first, 0.9.9 -> 1.0.0 would
+    -- see 0 < 9, return "no update", and servers would silently never pick it up.
     for _, key in ipairs(components) do
         local i, l = installedVersion[key] or 0, latest[key] or 0
         if l > i then
@@ -206,12 +196,9 @@ local function needsUpdate(installedVersion, latest)
     return false
 end
 
--- Fetches a remote version file to a scratch path.
---
--- 0.0.37 downloaded it straight over the *installed* version record, so the local
--- record became whatever the remote claimed whether or not the update was applied.
--- That destroys the only evidence of what is actually installed, so the record is
--- now written only after an update really lands.
+-- Fetches a remote version file to a scratch path, never over the installed version
+-- record: that record is the only evidence of what is actually installed, so it is
+-- written only after an update really lands.
 local function fetchRemoteVersion(url)
 	local tempPath = SERVER_PATH .. "versions/.remote.json"
 	local data = downloadVersionFile(url, tempPath)
@@ -221,11 +208,10 @@ end
 
 -- Refuses content from a different lineage.
 --
--- Version numbers alone cannot tell "a newer release of this fork" from "an unrelated
--- codebase with a higher number". This fork restarts numbering at 0.0.1, so upstream's
--- 0.0.37 always compares as newer -- meaning a stock updater will happily pull upstream
--- over this fork and, with autoExit on, shut the server down afterwards. Upstream's
--- version files carry no lineage field, so a mismatch is decisive.
+-- Version numbers alone cannot tell "a newer release of this repository" from "an
+-- unrelated codebase with a higher number". Without this check, an update source with
+-- higher numbers would be pulled over this install and, with autoExit on, shut the
+-- server down afterwards.
 local function lineageMatches(remote)
 	return remote.lineage == LINEAGE
 end
@@ -937,8 +923,8 @@ function onConsoleInputHandler(message)
 		return ""
 	end
 	local commandPrefix = message:sub(1, space)
-	-- NOTE: 0.0.37 wrote `== "CareerMP " or "CMP "`, which is always truthy, so
-	-- every console line containing a space was parsed as a CareerMP command.
+	-- Compare against each prefix: `== "CareerMP " or "CMP "` would always be truthy and
+	-- treat every console line containing a space as a CareerMP command.
 	if commandPrefix == "CareerMP " or commandPrefix == "CMP " then
 		local prefixLen = commandPrefix:len()
 		message = message:sub(prefixLen + 1)

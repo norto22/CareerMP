@@ -1,17 +1,10 @@
---CareerMP 0.39 :: career.lua patches
+--CareerMP :: career.lua patches
 --
--- Replaces CareerMP 0.0.37's career/careerMP.lua -- a 617-line fork of
--- career.lua, loaded as career_careerMP, with careerMPEnabler then doing
--- `career_career = extensions.career_careerMP` to swap the global.
---
--- The entire fork existed for three changes:
+-- Three changes to the game's career.lua, made as runtime wrappers so the game's
+-- own career logic stays live:
 --   1. activateCareer: drop the `removeVehicles == nil -> true` default
 --   2. activateCareer: drop the `else removeNonTrafficVehicles()` branch
 --   3. createOrLoadCareerAndStart: call activateCareer(false)
---
--- All three spots still exist unchanged in 0.39, so they are expressed here as
--- wrappers instead. That keeps the game's core career logic live rather than
--- shipping a stale copy of it.
 --
 -- Why any of this matters: career activation assumes a single-player world and
 -- clears the level of vehicles it does not recognise. In multiplayer that means

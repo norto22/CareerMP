@@ -1,4 +1,4 @@
---CareerMP 0.39 :: multiplayer_sessionManager shim
+--CareerMP :: multiplayer_sessionManager shim
 --
 -- BeamNG 0.39's gameplay code calls a `multiplayer_sessionManager` extension that the
 -- game does not ship -- it belongs to their unreleased official multiplayer. Five

@@ -6,7 +6,7 @@ local M = {}
 
 M.dependencies = {"career_career"}
 
--- CareerMP 0.39: widened from 4/1 metres. Multiplayer position sync jitters
+-- CareerMP: widened from the game's 4/1 metres. Multiplayer position sync jitters
 -- the player around the garage computer, and the stock tether is tight enough
 -- that the jitter alone closes the menu mid-interaction.
 local computerTetherRangeSphere = 25 --meter
