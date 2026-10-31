@@ -12,6 +12,8 @@
 --     game lowercases and strips non-alphanumerics, then de-duplicates against
 --     profiles already on that client -- which would make the nickname -> save
 --     mapping machine-dependent.
+--   * A join keeps one loading screen up until the career has started, and tells the
+--     server whether it started (see "Join" below).
 --   * patchTopBar is gated: ui_topBar does not exist in 0.39.
 --   * Menu hooks come from careerMP_patches (runtime wrappers around the game's
 --     career modules).
@@ -325,17 +327,161 @@ local function resolveProfileName()
 	return compat.sanitizeProfileName(tostring(base) .. tostring(suffix))
 end
 
+--Join: one loading screen, then the career or a reported failure
+--
+-- On a join the map is already loaded, so the game's career start opens its own
+-- 'careerActivate' loading screen and closes it only after every career-active handler
+-- has run; one failing handler leaves it open for good. CareerMP therefore:
+--   * holds the map's loading screen under JOIN_HOLD_TAG from world-ready 1, so the
+--     career's screens join it instead of showing a second one;
+--   * runs the start under a traceback handler and closes the career's screens itself
+--     when the start fails;
+--   * tells the server the outcome (careerStartResult), so a player whose career cannot
+--     start is dropped instead of waiting forever.
+
+local JOIN_HOLD_TAG = "careerMPJoin"
+local JOIN_MAX_SECONDS = 60          -- matches the server's limit from settings request to start
+local TRAFFIC_SCREEN_MAX_SECONDS = 30
+local CAREER_SCREEN_TAGS = {"careerActivate", "careerVehicles"}
+local REASON_MAX_LENGTH = 200
+
+-- hold:  time the join hold was taken, while CareerMP holds the loading screen
+-- start: {since, level, ...} from the career start until it settles
+local function newJoin()
+	return {hold = nil, start = nil, reported = false, navigated = false}
+end
+
+local join = newJoin()
+
+local function currentLevel()
+	return type(getCurrentLevelIdentifier) == "function" and getCurrentLevelIdentifier() or nil
+end
+
+local function openCareerScreens()
+	local open = {}
+	for _, tag in ipairs(CAREER_SCREEN_TAGS) do
+		if compat.getLoadingStatus(tag) then table.insert(open, tag) end
+	end
+	return open
+end
+
+local function holdJoinLoadingScreen()
+	if join.hold or careerMPActive or not compat.isMPSession() then return end
+	if compat.requestEnterLoadingScreen(JOIN_HOLD_TAG) then
+		join.hold = os.clockhp()
+		log("I", logTag, "join: holding the loading screen until the career starts")
+	end
+end
+
+local function releaseJoinHold(why)
+	if not join.hold then return end
+	join.hold = nil
+	compat.requestExitLoadingScreen(JOIN_HOLD_TAG)
+	log("I", logTag, "join: loading screen released (" .. why .. ")")
+end
+
+-- BeamMP moves the interface to the in-game screen when its loading screen clears; the
+-- held screen clears later, so the same step is repeated once it has.
+local function moveToPlay()
+	if join.navigated or join.hold or #openCareerScreens() > 0 then return end
+	join.navigated = true
+	compat.navigateToPlay()
+end
+
+local function reportCareerStart(started, reason)
+	if join.reported then return end
+	join.reported = true
+	local payload = {started = started}
+	if not started then payload.reason = reason end
+	TriggerServerEvent("careerStartResult", jsonEncode(payload))
+	if started then
+		log("I", logTag, "join: career start confirmed to the server")
+	else
+		log("E", logTag, "join: career start failed, reported to the server: " .. reason)
+	end
+end
+
+local function firstLine(text)
+	local line = tostring(text):match("^[^\n]*") or ""
+	return line:sub(1, REASON_MAX_LENGTH)
+end
+
+local function failCareerStart(reason)
+	for _, tag in ipairs(openCareerScreens()) do
+		compat.requestExitLoadingScreen(tag)
+		log("W", logTag, "join: closed loading screen '" .. tag .. "' left open by the failed career start")
+	end
+	join.start = nil
+	releaseJoinHold("career start failed")
+	reportCareerStart(false, firstLine(reason))
+	moveToPlay()
+end
+
+-- Per frame while the career start settles: it is done once the career is active and
+-- its loading screens are released.
+local function updateCareerStart()
+	local start = join.start
+	if not start then return end
+	local elapsed = os.clockhp() - start.since
+
+	if not start.trafficReleased and elapsed >= TRAFFIC_SCREEN_MAX_SECONDS
+			and compat.getLoadingStatus("careerVehicles") then
+		start.trafficReleased = true
+		compat.requestExitLoadingScreen("careerVehicles")
+		log("W", logTag, string.format("join: traffic never reported ready - released loading screen " ..
+			"'careerVehicles' after %ds", TRAFFIC_SCREEN_MAX_SECONDS))
+	end
+
+	if not start.levelChangeLogged and currentLevel() ~= start.level then
+		start.levelChangeLogged = true
+		log("W", logTag, string.format("join: the career start changed the map from '%s' to '%s' " ..
+			"(the save names another map)", tostring(start.level), tostring(currentLevel())))
+	end
+
+	local open = openCareerScreens()
+	if #open == 0 and compat.isCareerActive() then
+		join.start = nil
+		log("I", logTag, "join: career active")
+		releaseJoinHold("career active")
+		reportCareerStart(true)
+		moveToPlay()
+		return
+	end
+
+	if #open > 0 and not start.waitLogged then
+		start.waitLogged = true
+		log("I", logTag, "join: waiting for loading screens still open: " .. table.concat(open, ", "))
+	end
+
+	if elapsed >= JOIN_MAX_SECONDS then
+		failCareerStart(string.format("career start did not finish within %ds (loading screens open: %s; career active: %s)",
+			JOIN_MAX_SECONDS, #open > 0 and table.concat(open, ", ") or "none", tostring(compat.isCareerActive())))
+	end
+end
+
+-- The hold never outlasts the server's limit, whatever the career start is doing.
+local function updateJoinHold()
+	if join.hold and os.clockhp() - join.hold >= JOIN_MAX_SECONDS then
+		log("W", logTag, string.format("join: loading screen '%s' held for %ds - releasing",
+			JOIN_HOLD_TAG, JOIN_MAX_SECONDS))
+		releaseJoinHold("time limit")
+		moveToPlay()
+	end
+end
+
 local function rxCareerSync(data)
 	clientConfig = jsonDecode(data)
 	if not clientConfig then
 		log("E", logTag, "rxCareerSync: could not decode client config")
+		failCareerStart("could not read the server's CareerMP settings")
 		return
 	end
+	log("I", logTag, "join: settings received")
 	nickname = MPConfig.getNickname()
 	settingsCheck()
 	actionsCheck()
 
-	if careerMPActive then return end
+	if careerMPActive or join.start then return end
 
 	-- Must be in place before the career activates, or activation deletes every
 	-- other player's vehicle.
@@ -343,12 +489,14 @@ local function rxCareerSync(data)
 	if not (careerPatches and careerPatches.ensure()) then
 		log("E", logTag, "career patches not applied - refusing to start career " ..
 			"(would delete other players' vehicles)")
+		failCareerStart("career vehicle protection not available")
 		return
 	end
 
 	local profileName = resolveProfileName()
-	log("I", logTag, string.format("starting career profile '%s' (nickname '%s', startMode '%s')",
+	log("I", logTag, string.format("join: career start begun for profile '%s' (nickname '%s', startMode '%s')",
 		profileName, tostring(nickname), compat.defaultStartMode))
+	join.start = {since = os.clockhp(), level = currentLevel()}
 
 	-- The shield has to wrap this call, not activateCareer.
 	--
@@ -359,15 +507,20 @@ local function rxCareerSync(data)
 	-- because a local call does not go through the module table. Observed live: a second
 	-- player joining deleted the first player's car on their own screen the instant
 	-- their career activated.
-	local started = careerPatches.withRemoteVehiclesProtected(function()
+	local ok, started = careerPatches.withRemoteVehiclesProtected(function()
 		return compat.createOrLoadCareerAndStart(profileName, false, compat.defaultStartMode)
 	end)
 
-	if started then
-		careerMPActive = true
-	else
-		log("E", logTag, "createOrLoadCareerAndStart failed for profile '" .. profileName .. "'")
+	if not ok then
+		failCareerStart(started)
+		return
 	end
+	if not started then
+		failCareerStart("could not set career profile '" .. profileName .. "'")
+		return
+	end
+	careerMPActive = true
+	updateCareerStart()
 end
 
 local function rxClientConfigUpdate(data)
@@ -392,11 +545,18 @@ local function onCareerActive(active)
 	end
 end
 
+-- World-ready 1 comes while the map's loading screen is still up, so the hold taken
+-- there keeps that same screen up. The settings request says this client confirms its
+-- career start, so the server waits for careerStartResult instead of counting the
+-- request as a started career.
 local function onWorldReadyState(state)
-	if state == 2 and not syncRequested then
+	if state == 1 then
+		holdJoinLoadingScreen()
+	elseif state == 2 and not syncRequested then
 		TriggerServerEvent("prefabSyncRequested", "")
-		TriggerServerEvent("careerSyncRequested", "")
+		TriggerServerEvent("careerSyncRequested", jsonEncode({confirmsStart = true}))
 		syncRequested = true
+		log("I", logTag, "join: world ready, settings requested")
 	end
 end
 
@@ -405,6 +565,8 @@ local function onClientPostStartMission(levelPath)
 end
 
 local function onUpdate(dtReal, dtSim, dtRaw)
+	updateCareerStart()
+	updateJoinHold()
 	if worldReadyState ~= 2 or not clientConfig then return end
 	local vehicles = MPVehicleGE.getVehicles()
 	for serverVehicleID in pairs(vehicles) do
@@ -445,15 +607,21 @@ local function onExtensionLoaded()
 end
 
 local function onExtensionUnloaded()
+	releaseJoinHold("CareerMP unloaded")
 	log("I", logTag, "CareerMP Enabler UNLOADED")
 end
 
-local function onServerLeave()
+-- BeamMP fires onBeamMPServerLeave when the player leaves a server (MPCoreNetwork
+-- leaveServer). Resetting the join state here is what lets a rejoin in the same game
+-- session start the career again.
+local function onBeamMPServerLeave()
 	blockedInputActions = {}
 	extensions.core_input_actionFilter.setGroup('careerMP', blockedInputActions)
 	extensions.core_input_actionFilter.addAction(0, 'careerMP', false)
 	setTrafficSettings(userTrafficSettings)
 	setGameplaySettings(userGameplaySettings)
+	releaseJoinHold("left the server")
+	join = newJoin()
 	careerMPActive = false
 	syncRequested = false
 end
@@ -489,7 +657,7 @@ M.onUpdate = onUpdate
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
 
-M.onServerLeave = onServerLeave
+M.onBeamMPServerLeave = onBeamMPServerLeave
 
 M.onInit = function() setExtensionUnloadMode(M, 'manual') end
 

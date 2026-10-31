@@ -85,8 +85,16 @@ local defaultConfig = {
 	}
 }
 
+-- Players whose career has not started yet, by player id. A player is dropped with
+-- "CareerMP failed to load!" when no settings request arrives within activationThreshold
+-- seconds of joining, or, for a client that confirms its career start, when the client
+-- reports a failure or no confirmation arrives within startConfirmThreshold seconds of
+-- the settings request. A client that does not confirm (an older client mod) counts as
+-- started at its settings request.
 local pendingActivation = {}
 local activationThreshold = 90
+local startConfirmThreshold = 60
+local START_REASON_MAX_LENGTH = 200
 local vehicleStates = {}
 local loadedPrefabs = {}
 
@@ -431,6 +439,7 @@ function onInit()
 
 	MP.RegisterEvent("careerPrefabSync","careerPrefabSync")
 	MP.RegisterEvent("careerSyncRequested","careerSyncRequested")
+	MP.RegisterEvent("careerStartResult","careerStartResult")
 	MP.RegisterEvent("prefabSyncRequested","prefabSyncRequested")
 	MP.RegisterEvent("careerVehSyncRequested","careerVehSyncRequested")
 	MP.RegisterEvent("careerVehicleActiveHandler","careerVehicleActiveHandler")
@@ -824,11 +833,57 @@ function careerPrefabSync(player_id, data)
 	end
 end
 
-function careerSyncRequested(player_id)
+local function decodeTable(data)
+	if type(data) ~= "string" or data == "" then return nil end
+	local ok, decoded = pcall(Util.JsonDecode, data)
+	if ok and type(decoded) == "table" then return decoded end
+	return nil
+end
+
+-- Console-safe text from a client: control characters removed, length capped.
+local function consoleText(text)
+	return (tostring(text):gsub("%c", " "):sub(1, START_REASON_MAX_LENGTH))
+end
+
+local function describePlayer(player_id)
+	return string.format("%s (%s)", consoleText(MP.GetPlayerName(player_id) or "?"), tostring(player_id))
+end
+
+local function dropUnstartedPlayer(player_id, why)
+	local entry = pendingActivation[player_id]
+	if not entry or entry.dropped then return end
+	entry.dropped = true
+	print("[CareerMP] Dropping " .. describePlayer(player_id) .. ": " .. why)
+	MP.DropPlayer(player_id, "CareerMP failed to load!")
+end
+
+function careerSyncRequested(player_id, data)
 	MP.TriggerClientEventJson(player_id, "rxCareerSync", Config.client)
 	-- Guard: the entry is gone if the player disconnected between join and sync.
-	if pendingActivation[player_id] then
-		pendingActivation[player_id].careerActive = true
+	local entry = pendingActivation[player_id]
+	if not entry or entry.careerActive then return end
+	local request = decodeTable(data)
+	if request and request.confirmsStart == true then
+		entry.confirmsStart = true
+		entry.settingsRequestedAt = signalTimer:GetCurrent()
+	else
+		entry.careerActive = true
+	end
+end
+
+-- The client's own report of its career start: {"started": true} or
+-- {"started": false, "reason": "..."}. Only accepted from a client that said it
+-- confirms its start, after its settings request; the reason is printed, never used.
+function careerStartResult(player_id, data)
+	local entry = pendingActivation[player_id]
+	if not entry or not entry.confirmsStart or entry.careerActive or entry.dropped then return end
+	local result = decodeTable(data)
+	if not result then return end
+	if result.started == true then
+		entry.careerActive = true
+		print("[CareerMP] " .. describePlayer(player_id) .. " started their career")
+	elseif result.started == false then
+		dropUnstartedPlayer(player_id, "career start failed: " .. consoleText(result.reason or "no reason given"))
 	end
 end
 
@@ -856,16 +911,17 @@ function careerVehicleActiveHandler(player_id, data)
 end
 
 function validateCareerMPActivation()
+	local now = signalTimer:GetCurrent()
 	for id in pairs(MP.GetPlayers()) do
-		if MP.IsPlayerConnected(id) then
-			if pendingActivation[id] then
-				if not pendingActivation[id].careerActive then
-					if pendingActivation[id].joinTimestamp then
-						if signalTimer:GetCurrent() - pendingActivation[id].joinTimestamp >= activationThreshold then
-							MP.DropPlayer(id, "CareerMP failed to load!")
-						end
-					end
+		local entry = pendingActivation[id]
+		if entry and not entry.careerActive and not entry.dropped and MP.IsPlayerConnected(id) then
+			if entry.settingsRequestedAt then
+				if now - entry.settingsRequestedAt >= startConfirmThreshold then
+					dropUnstartedPlayer(id, string.format("no career start confirmed within %d s of the settings request",
+						startConfirmThreshold))
 				end
+			elseif entry.joinTimestamp and now - entry.joinTimestamp >= activationThreshold then
+				dropUnstartedPlayer(id, string.format("no settings request within %d s of joining", activationThreshold))
 			end
 		end
 	end

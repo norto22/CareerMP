@@ -118,6 +118,64 @@ function M.usesStartingOptions()
 	return career_career ~= nil and type(career_career.startingOptions) == "table"
 end
 
+function M.isCareerActive()
+	local fn = pick(career_career, "isActive")
+	return fn ~= nil and fn() == true
+end
+
+--== loading screen ==========================================================
+-- core_gamestate counts loading-screen requests by tag: the screen shows on the first
+-- request and hides once every tag is released. Tags used on a join: 'serverConnection'
+-- and 'worldReadyState' (the map load), 'careerActivate' (career.lua activateCareer)
+-- and 'careerVehicles' (career playerDriving's traffic setup).
+
+local warnedLoadingScreen = false
+
+local function gamestateFunction(name)
+	local fn = pick(core_gamestate, name)
+	if not fn and not warnedLoadingScreen then
+		warnedLoadingScreen = true
+		log("E", "careerMP.compat", "core_gamestate." .. name .. " missing - loading screen not managed")
+	end
+	return fn
+end
+
+function M.getLoadingStatus(tag)
+	local fn = gamestateFunction("getLoadingStatus")
+	return fn ~= nil and fn(tag) == true
+end
+
+function M.requestEnterLoadingScreen(tag)
+	local fn = gamestateFunction("requestEnterLoadingScreen")
+	if not fn then return false end
+	fn(tag)
+	return true
+end
+
+function M.requestExitLoadingScreen(tag)
+	local fn = gamestateFunction("requestExitLoadingScreen")
+	if not fn then return false end
+	fn(tag)
+	return true
+end
+
+-- The step BeamMP takes when its loading screen clears (MPCoreNetwork onWorldReadyState):
+-- 0.39 resolves the screen behind the loading screen through the UI router.
+function M.navigateToPlay()
+	local router = extensions and extensions.ui_router
+	local fn = pick(router, "navigate")
+	if not fn then return false end
+	fn("play")
+	return true
+end
+
+--== BeamMP session ==========================================================
+
+function M.isMPSession()
+	local fn = pick(MPCoreNetwork, "isMPSession")
+	return fn ~= nil and fn() == true
+end
+
 --== tutorial ================================================================
 -- 0.39 deleted career_modules_linearTutorial (and isLinearTutorialActive) and
 -- replaced it with career_modules_tutorial + a 9-step tutorial/ directory.
@@ -182,6 +240,9 @@ function M.report()
 		{"career_saveSystem.getAllSaveFolders/getAllAutosaves",    career_saveSystem, {"getAllSaveFolders", "getAllAutosaves"}},
 		{"career_saveSystem.getNewestSave/getAutosave",            career_saveSystem, {"getNewestSave", "getAutosave"}},
 		{"ui_apps.notifyLayoutsChanged/requestUIAppsData",         ui_apps,           {"notifyLayoutsChanged", "requestUIAppsData"}},
+		{"core_gamestate.getLoadingStatus",                        core_gamestate,    {"getLoadingStatus"}},
+		{"core_gamestate.requestEnterLoadingScreen",               core_gamestate,    {"requestEnterLoadingScreen"}},
+		{"core_gamestate.requestExitLoadingScreen",                core_gamestate,    {"requestExitLoadingScreen"}},
 	}
 
 	local missing = {}

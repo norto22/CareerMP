@@ -1276,14 +1276,14 @@ local function onExtensionUnloaded()
 	log("I", logTag, "CareerMP drag lobby UNLOADED")
 end
 
-local function onServerLeave()
+local function onBeamMPServerLeave()
 	M.reset()
 end
 
 M.onUpdate = onUpdate
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
-M.onServerLeave = onServerLeave
+M.onBeamMPServerLeave = onBeamMPServerLeave
 
 M.onInit = function() setExtensionUnloadMode(M, 'manual') end
 

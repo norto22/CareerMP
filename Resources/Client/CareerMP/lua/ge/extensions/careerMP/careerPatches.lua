@@ -142,17 +142,22 @@ function M.onCareerActive(active)
 	removeProtection()
 end
 
---- Kept for callers that want to protect an explicit block of work.
+local function pack(...)
+	return {n = select("#", ...), ...}
+end
+
+--- Runs fn with remote vehicles protected. Returns true and fn's results, or false and
+--- the error with its stack traceback, so the caller can report where it failed.
 local function withRemoteVehiclesProtected(fn, ...)
 	installProtection()
-	local results = {pcall(fn, ...)}
+	local args = pack(...)
+	local results = pack(xpcall(function() return fn(unpack(args, 1, args.n)) end, debug.traceback))
 	removeProtection()
-	local ok = table.remove(results, 1)
-	if not ok then
-		log("E", logTag, "protected call failed: " .. tostring(results[1]))
-		return nil
+	if not results[1] then
+		log("E", logTag, "protected call failed: " .. tostring(results[2]))
+		return false, tostring(results[2])
 	end
-	return unpack(results)
+	return unpack(results, 1, results.n)
 end
 
 M.withRemoteVehiclesProtected = withRemoteVehiclesProtected
