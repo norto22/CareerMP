@@ -118,9 +118,24 @@ function M.usesStartingOptions()
 	return career_career ~= nil and type(career_career.startingOptions) == "table"
 end
 
+-- The join path calls these on every frame, so a missing one is logged once, by name.
+local warnedMissing = {}
+
+local function pickOrWarn(module, moduleName, name, consequence)
+	local fn = pick(module, name)
+	if not fn and not warnedMissing[moduleName .. "." .. name] then
+		warnedMissing[moduleName .. "." .. name] = true
+		log("E", "careerMP.compat", moduleName .. "." .. name .. " missing - " .. consequence)
+	end
+	return fn
+end
+
+-- true or false, or nil when the game has no way to tell.
 function M.isCareerActive()
-	local fn = pick(career_career, "isActive")
-	return fn ~= nil and fn() == true
+	local fn = pickOrWarn(career_career, "career_career", "isActive",
+		"a career start that returned is taken as active")
+	if not fn then return nil end
+	return fn() == true
 end
 
 --== loading screen ==========================================================
@@ -129,15 +144,8 @@ end
 -- and 'worldReadyState' (the map load), 'careerActivate' (career.lua activateCareer)
 -- and 'careerVehicles' (career playerDriving's traffic setup).
 
-local warnedLoadingScreen = false
-
 local function gamestateFunction(name)
-	local fn = pick(core_gamestate, name)
-	if not fn and not warnedLoadingScreen then
-		warnedLoadingScreen = true
-		log("E", "careerMP.compat", "core_gamestate." .. name .. " missing - loading screen not managed")
-	end
-	return fn
+	return pickOrWarn(core_gamestate, "core_gamestate", name, "loading screen not managed")
 end
 
 function M.getLoadingStatus(tag)
@@ -159,11 +167,25 @@ function M.requestExitLoadingScreen(tag)
 	return true
 end
 
+-- The traffic setup's own ready handler (career playerDriving onTrafficOrParkingReady)
+-- releases 'careerVehicles' and, only while that tag is held, switches the special
+-- triggers off. Releasing the tag through it keeps that clean-up when traffic never
+-- reports ready; the bare release is the fallback when the handler is missing.
+function M.releaseCareerTrafficScreen()
+	local fn = pickOrWarn(career_modules_playerDriving, "career_modules_playerDriving", "onTrafficOrParkingReady",
+		"releasing 'careerVehicles' without its clean-up")
+	if fn then
+		local ok, err = xpcall(fn, debug.traceback)
+		if not ok then log("E", "careerMP.compat", "onTrafficOrParkingReady failed: " .. tostring(err)) end
+	end
+	if M.getLoadingStatus("careerVehicles") then M.requestExitLoadingScreen("careerVehicles") end
+end
+
 -- The step BeamMP takes when its loading screen clears (MPCoreNetwork onWorldReadyState):
 -- 0.39 resolves the screen behind the loading screen through the UI router.
 function M.navigateToPlay()
 	local router = extensions and extensions.ui_router
-	local fn = pick(router, "navigate")
+	local fn = pickOrWarn(router, "ui_router", "navigate", "interface not moved to the in-game screen")
 	if not fn then return false end
 	fn("play")
 	return true
@@ -172,7 +194,7 @@ end
 --== BeamMP session ==========================================================
 
 function M.isMPSession()
-	local fn = pick(MPCoreNetwork, "isMPSession")
+	local fn = pickOrWarn(MPCoreNetwork, "MPCoreNetwork", "isMPSession", "loading screen not held on join")
 	return fn ~= nil and fn() == true
 end
 

@@ -48,6 +48,10 @@ local function getClientConfig()
 	return clientConfig
 end
 
+-- The player's own values, saved before the first override of each join and put back
+-- when they leave, so preferences changed between joins are kept.
+local userSettingsSaved = false
+
 local function getUserTrafficSettings()
 	userTrafficSettings.trafficSmartSelections = settings.getValue('trafficSmartSelections')
 	userTrafficSettings.trafficSimpleVehicles = settings.getValue('trafficSimpleVehicles')
@@ -304,7 +308,22 @@ local function actionsCheck()
 	extensions.core_input_actionFilter.addAction(0, 'careerMP', #blockedInputActions > 0)
 end
 
+local function saveUserSettings()
+	if userSettingsSaved then return end
+	getUserTrafficSettings()
+	getUserGameplaySettings()
+	userSettingsSaved = true
+end
+
+local function restoreUserSettings()
+	if not userSettingsSaved then return end
+	setTrafficSettings(userTrafficSettings)
+	setGameplaySettings(userGameplaySettings)
+	userSettingsSaved = false
+end
+
 local function settingsCheck()
+	saveUserSettings()
 	careerMPTrafficSettings.trafficAllowMods = clientConfig.trafficAllowMods
 	careerMPTrafficSettings.trafficSimpleVehicles = clientConfig.trafficSimpleVehicles
 	careerMPTrafficSettings.trafficSmartSelections = clientConfig.trafficSmartSelections
@@ -427,7 +446,7 @@ local function updateCareerStart()
 	if not start.trafficReleased and elapsed >= TRAFFIC_SCREEN_MAX_SECONDS
 			and compat.getLoadingStatus("careerVehicles") then
 		start.trafficReleased = true
-		compat.requestExitLoadingScreen("careerVehicles")
+		compat.releaseCareerTrafficScreen()
 		log("W", logTag, string.format("join: traffic never reported ready - released loading screen " ..
 			"'careerVehicles' after %ds", TRAFFIC_SCREEN_MAX_SECONDS))
 	end
@@ -439,7 +458,7 @@ local function updateCareerStart()
 	end
 
 	local open = openCareerScreens()
-	if #open == 0 and compat.isCareerActive() then
+	if #open == 0 and compat.isCareerActive() ~= false then
 		join.start = nil
 		log("I", logTag, "join: career active")
 		releaseJoinHold("career active")
@@ -595,8 +614,6 @@ local function onExtensionLoaded()
 	compat.report()
 
 	nickname = MPConfig.getNickname()
-	getUserTrafficSettings()
-	getUserGameplaySettings()
 
 	AddEventHandler("rxCareerSync", rxCareerSync)
 	AddEventHandler("rxClientConfigUpdate", rxClientConfigUpdate)
@@ -618,8 +635,7 @@ local function onBeamMPServerLeave()
 	blockedInputActions = {}
 	extensions.core_input_actionFilter.setGroup('careerMP', blockedInputActions)
 	extensions.core_input_actionFilter.addAction(0, 'careerMP', false)
-	setTrafficSettings(userTrafficSettings)
-	setGameplaySettings(userGameplaySettings)
+	restoreUserSettings()
 	releaseJoinHold("left the server")
 	join = newJoin()
 	careerMPActive = false
