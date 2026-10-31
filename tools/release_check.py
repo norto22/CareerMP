@@ -29,9 +29,18 @@ TITLE_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 
 
 def read_version(path):
+    """Returns ((major, minor, revision), lineage). Each part must be a non-negative JSON
+    integer: the server's updater compares them as numbers, and the package is named
+    from them."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return (int(data["major"]), int(data["minor"]), int(data["revision"])), data.get("lineage")
+    parts = []
+    for key in ("major", "minor", "revision"):
+        value = data[key]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{key} must be a non-negative whole number, got {value!r}")
+        parts.append(value)
+    return tuple(parts), data.get("lineage")
 
 
 def describe(version):
