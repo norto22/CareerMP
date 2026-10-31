@@ -1,0 +1,102 @@
+# Every pull request into main is a release. Its title is the version (vX.X.X).
+#
+# check   runs on every change to the pull request: title, version files, a version
+#         higher than main's, a free tag and an up-to-date client archive. It uploads
+#         the release package so it can be tested before merging.
+# release runs when the pull request is merged and publishes that version with the
+#         package, using the pull request's description as the release notes.
+#
+# The title and description are untrusted input, so they reach scripts only through
+# environment variables.
+name: Release
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Title and version files
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git show "origin/$BASE_REF:Resources/Server/CareerMP/versions/server.json" > "$RUNNER_TEMP/base-server.json"
+          python3 tools/release_check.py --base "$RUNNER_TEMP/base-server.json"
+
+      - name: Tag is free
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TITLE" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release check failed: release $TITLE already exists"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TITLE" > /dev/null; then
+            echo "release check failed: tag $TITLE already exists"
+            exit 1
+          fi
+
+      - name: Client archive matches its sources
+        run: python3 tools/build.py --check
+
+      - name: Build the release package
+        run: python3 tools/build.py --package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CareerMP-package
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Title and version files
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: python3 tools/release_check.py
+
+      - name: Build the release package
+        run: |
+          python3 tools/build.py --check
+          python3 tools/build.py --package
+
+      - name: Publish the release
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=(--generate-notes)
+          if [ -n "$BODY" ]; then
+            printf '%s\n' "$BODY" > "$RUNNER_TEMP/notes.md"
+            notes=(--notes-file "$RUNNER_TEMP/notes.md")
+          fi
+          gh release create "$TITLE" "dist/CareerMP-${TITLE#v}.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --target "$MERGE_SHA" \
+            "${notes[@]}"
