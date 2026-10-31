@@ -18,14 +18,14 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: release-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   check:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
+    # Only check runs share a queue, so a later edit can never cancel a pending release.
+    concurrency:
+      group: release-check-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,6 +77,21 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: python3 tools/release_check.py
+
+      # gh release create would attach a release to an existing tag, so refuse one here.
+      - name: Tag is free
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TITLE" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release failed: release $TITLE already exists"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TITLE" > /dev/null; then
+            echo "release failed: tag $TITLE already exists"
+            exit 1
+          fi
 
       - name: Build the release package
         run: |
