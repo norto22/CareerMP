@@ -861,11 +861,13 @@ local function decodeTable(data)
 end
 
 -- true when serverVehicleID ("<player_id>-<vehicle_id>") names one of player_id's own
--- vehicles. A player's game may only change its own cars.
+-- vehicles, written exactly as onVehicleSpawnHandler writes it. A player's game may only
+-- change its own cars.
 local function ownsVehicle(player_id, serverVehicleID)
 	if type(serverVehicleID) ~= "string" then return false end
-	local owner = serverVehicleID:match("^(%d+)%-%d+$")
-	return owner ~= nil and tonumber(owner) == tonumber(player_id)
+	local owner, vehicle = serverVehicleID:match("^(%d+)%-(%d+)$")
+	return owner ~= nil and owner == tostring(tonumber(player_id))
+		and vehicle == tostring(tonumber(vehicle))
 end
 
 -- Sends every player the state of one vehicle; the full map goes only to a player who

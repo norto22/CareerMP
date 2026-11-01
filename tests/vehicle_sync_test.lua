@@ -663,6 +663,9 @@ test("the server ignores hides with a malformed id, a non-boolean or a bad paylo
 		careerVehicleActiveHandler(1, payload)
 	end
 	careerVehicleActiveHandler(1, nil)
+	-- Ids the server never builds: a leading zero on the player or the vehicle.
+	careerVehicleActiveHandler(1, encode({serverVehicleID = "01-0", active = false}))
+	careerVehicleActiveHandler(1, encode({serverVehicleID = "1-00", active = false}))
 	pump()
 	same(#toEveryone(), 0, "updates sent")
 	same(me.objects[gameId(1, 0)].active, true, "my friend's car on my game")
