@@ -10,7 +10,10 @@
 --                      traffic setup
 --   5. insuranceRestore - loads the game's insurance records when a join's career
 --                      start leaves them empty
---   6. features
+--   6. purchaseInsurance - gives the purchase screen a safe insurance choice when the
+--                      insurance records are missing (patches wraps the game's purchase
+--                      menu and looks this extension up when it is used)
+--   7. features
 --
 -- 'manual' unload mode keeps these alive across level switches, which career
 -- does constantly.
@@ -26,6 +29,7 @@ loadPersistent('careerMP/patches')
 loadPersistent('careerMP/careerPatches')
 loadPersistent('careerMP/traffic')
 loadPersistent('careerMP/insuranceRestore')
+loadPersistent('careerMP/purchaseInsurance')
 
 -- Core
 loadPersistent('careerMPEnabler')

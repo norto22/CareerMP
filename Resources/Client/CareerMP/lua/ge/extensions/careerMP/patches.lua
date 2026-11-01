@@ -346,6 +346,24 @@ local function applySeatedRepairGuard()
 		makeSeatedRepairGuard("startRepair"))
 end
 
+-- Opening a purchase screen without an insurance choice (the private seller's "See Purchase
+-- Information") throws when no default policy is loaded, so nothing appears. The wrapper
+-- bodies live in careerMP/purchaseInsurance; they are looked up at call time and the game's
+-- own function is called untouched when that extension is not loaded.
+local function applyPurchaseInsuranceGuard()
+	local function guard(fnName)
+		replace("career_modules_vehicleShopping", fnName, function(original, ...)
+			local purchase = extensions and extensions.careerMP_purchaseInsurance
+			if type(purchase) ~= "table" or type(purchase[fnName]) ~= "function" then
+				return original(...)
+			end
+			return purchase[fnName](original, ...)
+		end)
+	end
+	guard("openPurchaseMenu")
+	guard("sendPurchaseDataToUi")
+end
+
 local function applyRecorders()
 	-- tuning.start(inventoryId, originComputerId)
 	replace("career_modules_tuning", "start", function(original, ...)
@@ -675,6 +693,7 @@ function M.apply()
 	applyUnicyclePatch()
 	applyWalkGuard()
 	applySeatedRepairGuard()
+	applyPurchaseInsuranceGuard()
 	applyComputerRecorder()
 
 	-- Only count as applied when everything landed. Marking it applied regardless
