@@ -246,3 +246,14 @@ test("Help lists the Stats command", function()
 	print = realPrint
 	same(countLines(server.printed, "CareerMP Stats"), 1, "Stats in the help")
 end)
+
+-- BeamMP drops a leaving player from its list before the plugin hears of the leave.
+test("Stats prints while a car's owner is no longer in the player list", function()
+	newServer({0, 1})
+	onVehicleSpawnHandler(0, 0, "")
+	onVehicleSpawnHandler(1, 0, "")
+	server.players[1] = nil
+	local lines = statsLines()
+	same(countLines(lines, "Players: 1"), 1, "players line")
+	same(countLines(lines, "player0 (0): 1 cars (1 shown), 0 traffic or parked (0 shown)"), 1, "player 0's line")
+end)

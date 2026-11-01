@@ -1581,3 +1581,72 @@ test("a flag that does not follow the car id at once is no answer, and goes to e
 	careerDamage(0, '{"v":"0-3","c":0,"f":1,"b":[],"n":[]}')
 	same(targetsOf(serverSends("rxCareerDamage")), "1,2", "a message with the flag further on")
 end)
+
+test("askers kept by an answer's chunks are dropped 5 seconds after its last chunk, and the next flagged chunk goes to everyone", function()
+	threeGames()
+	addGame(3)
+	world.now = 0
+	careerDamageRequest(1, '{"v":"0-3"}')
+	careerDamageRequest(2, '{"v":"0-3"}')
+	for t = 1, 8 do
+		world.now = t
+		world.serverSent = {}
+		careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+		same(targetsOf(serverSends("rxCareerDamage")), "1,2", "a flagged chunk at " .. t .. " s")
+	end
+	world.now = 12.5
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1,2", "a flagged chunk 4.5 s after the last one")
+	world.now = 18
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1,2,3", "a flagged chunk 5.5 s after that, nobody waiting")
+end)
+
+test("an answer with no new dents sends a chunk every half second and nothing for everyone", function()
+	local car = soloCar({beams = 1700, nodes = 50})
+	for cid = 0, 1599 do dent(car, cid, 0.8) end
+	inVehicle(car, car.ext.setRole, "owner")
+	tick(car, 3)
+	rawMessages(car)
+	inVehicle(car, car.ext.answerFull)
+	tick(car, 2)
+	local messages = rawMessages(car)
+	local flagged = 0
+	for _, m in ipairs(messages) do
+		if m:sub(1, 7) == '{"f":1,' then flagged = flagged + 1 end
+	end
+	same(flagged, 4, "answer chunks of 1600 beams in four half-second ticks")
+	same(#messages, 4, "messages in those ticks")
+	tick(car, 1)
+	same(#rawMessages(car), 0, "messages once the answer is done, with nothing changed")
+end)
+
+test("an answer still finishes while the car is dented every half second", function()
+	local car = soloCar({beams = 1700, nodes = 50})
+	for cid = 0, 1599 do dent(car, cid, 0.8) end
+	inVehicle(car, car.ext.setRole, "owner")
+	tick(car, 3)
+	rawMessages(car)
+	inVehicle(car, car.ext.answerFull)
+	local answered, dentsSent = {}, {}
+	for k = 0, 9 do
+		dent(car, 1600 + k, 0.7)
+		tick(car, 0.5)
+		for _, m in ipairs(rawMessages(car)) do
+			local message = jsonToLua(m)
+			for i = 1, #message.b, 4 do
+				if m:sub(1, 7) == '{"f":1,' then
+					answered[message.b[i]] = true
+				else
+					dentsSent[message.b[i]] = true
+				end
+			end
+		end
+	end
+	local missing = 0
+	for cid = 0, 1599 do if not answered[cid] then missing = missing + 1 end end
+	same(missing, 0, "beams of the answer not sent after 5 s of dents")
+	for k = 0, 9 do expect(dentsSent[1600 + k], "dent on beam " .. (1600 + k) .. " sent for everyone") end
+end)
