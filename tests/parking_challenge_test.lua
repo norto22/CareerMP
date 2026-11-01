@@ -465,3 +465,43 @@ test("unloading the parking challenge extension mid-challenge shows the cars aga
 	same(active(me, 1, 1), true, "my friend's police car")
 	same(listRequests(me), 0, "list requests from my game")
 end)
+
+--== the game's file system past the script =================================
+
+test("a game whose FS fails or has no fileExists counts no clutter layout, and the start still logs", function()
+	local broken = {
+		{what = "an FS whose fileExists raises", fs = {fileExists = function() error("engine file system busy") end}},
+		{what = "an FS with no fileExists", fs = {}},
+	}
+	for _, case in ipairs(broken) do
+		local me = twoPlayers()
+		me.FS = case.fs
+		local ok, err = pcall(startMission, me, {id = "challenge", missionType = "timeTrial", missionFolder = "/m/challenge"})
+		same(ok, true, case.what .. ": mission start went through (" .. tostring(err) .. ")")
+		same(me.parking.isActive(), false, case.what .. ": parking challenge mode")
+		same(active(me, 1, 2), true, case.what .. ": my friend's parked car")
+		same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=timeTrial parking=false"), 1, case.what .. ": log lines")
+	end
+end)
+
+test("a game whose FS is an engine object finds a clutter layout shipped as a plain .prefab", function()
+	local me = twoPlayers()
+	local proxy = newproxy(true)
+	getmetatable(proxy).__index = {fileExists = function(_, path) return path == "/m/challenge/parkingLotClutter.prefab" end}
+	me.FS = proxy
+	startMission(me, {id = "challenge", missionType = "timeTrial", missionFolder = "/m/challenge"})
+	same(active(me, 1, 2), false, "my friend's parked car")
+	same(countLines(logs, "mission start: type=timeTrial parking=true"), 1, "log lines")
+end)
+
+test("with no FS at all a parking type still counts and any other mission hides nothing", function()
+	local me = twoPlayers()
+	me.FS = nil
+	startMission(me, {id = "challenge", missionType = "timeTrial", missionFolder = "/m/challenge"})
+	same(me.parking.isActive(), false, "parking challenge mode for a time trial")
+	same(active(me, 1, 2), true, "my friend's parked car during a time trial")
+	stopMission(me, {id = "challenge"})
+	startMission(me, PARKING_MISSION)
+	same(me.parking.isActive(), true, "parking challenge mode for a parking type")
+	same(active(me, 1, 2), false, "my friend's parked car during the parking challenge")
+end)
