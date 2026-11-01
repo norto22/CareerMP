@@ -1,4 +1,4 @@
-// CareerMP-PlayerList/app.js: the lost-connection banner, and the player rows it keeps
+// Mileage-PlayerList/app.js: the lost-connection banner, and the player rows it keeps
 // empty while it shows. Runs the real app script against small stand-ins for the
 // game's UI (Angular scope, bngApi, the page), with Node's standard library only.
 //
@@ -8,7 +8,7 @@ const fs = require("fs");
 const vm = require("vm");
 const assert = require("assert");
 
-const SOURCE = "Resources/Client/CareerMP/ui/modules/apps/CareerMP-PlayerList/app.js";
+const SOURCE = "Resources/Client/Mileage/ui/modules/apps/Mileage-PlayerList/app.js";
 
 function element(id) {
 	const el = {
@@ -18,7 +18,8 @@ function element(id) {
 		getAttribute(k) { return el.attributes[k]; },
 		appendChild(c) { el.children.push(c); return c; },
 		removeChild() {},
-		addEventListener() {},
+		listeners: {},
+		addEventListener(type, fn) { el.listeners[type] = fn; },
 		insertRow(i) { const r = element(); el.rows.splice(i, 0, r); return r; },
 		deleteRow(i) { el.rows.splice(i, 1); },
 		insertCell(i) { const c = element(); el.cells.splice(i, 0, c); return c; },
@@ -71,7 +72,7 @@ test("a player list update fills the table", () => {
 test("losing the connection empties the list and keeps it empty through BeamMP's updates", () => {
 	const {scope, table} = load();
 	scope.emit("onBeamMPPlayerList", PLAYERS);
-	scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: "saved", saved: true});
+	scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: "saved", saved: true});
 	assert.strictEqual(table.rows.length, 1, "rows after the loss");
 	scope.emit("onBeamMPPlayerList", PLAYERS);
 	assert.strictEqual(table.rows.length, 1, "rows after a later update");
@@ -82,8 +83,8 @@ test("losing the connection empties the list and keeps it empty through BeamMP's
 
 test("being heard again shows the players again", () => {
 	const {scope, table, lua} = load();
-	scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: "saved"});
-	scope.emit("careerMPConnectionRestored");
+	scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: "saved"});
+	scope.emit("mileageConnectionRestored");
 	assert.strictEqual(scope.connection.lost, false, "banner hidden");
 	assert.ok(lua.some((cmd) => cmd.includes("UI.updatePlayersList()")), "list asked for again");
 	scope.emit("onBeamMPPlayerList", PLAYERS);
@@ -92,7 +93,7 @@ test("being heard again shows the players again", () => {
 
 test("the save line follows the save state and never claims an unconfirmed save", () => {
 	const {scope} = load();
-	const line = (data) => { scope.emit("careerMPConnectionLost", data); return scope.saveText(); };
+	const line = (data) => { scope.emit("mileageConnectionLost", data); return scope.saveText(); };
 	assert.strictEqual(line({saveState: "saving", saved: false}), "Saving your career...");
 	assert.strictEqual(line({saveState: "failed", saved: false}), "Your career could not be saved.");
 	assert.strictEqual(line({saveState: "saved", saved: true}), "Your career was saved.");
@@ -103,17 +104,17 @@ test("the buttons ask the game to try the save again and to return to the menu",
 	const {scope, lua} = load();
 	scope.retrySave();
 	scope.returnToMenu();
-	assert.ok(lua.includes("if careerMP_connectionWatch then careerMP_connectionWatch.retrySave() end"), "retry");
+	assert.ok(lua.includes("if mileage_connectionWatch then mileage_connectionWatch.retrySave() end"), "retry");
 	assert.ok(lua.includes("MPCoreNetwork.leaveServer(true)"), "return to menu");
 });
 
 test("the app asks for the current state when it loads", () => {
 	const {lua} = load();
-	assert.ok(lua.includes("if careerMP_connectionWatch then careerMP_connectionWatch.sendState() end"));
+	assert.ok(lua.includes("if mileage_connectionWatch then mileage_connectionWatch.sendState() end"));
 });
 
 // The banner's template, from the real app.html.
-const TEMPLATE = fs.readFileSync("Resources/Client/CareerMP/ui/modules/apps/CareerMP-PlayerList/app.html", "utf8");
+const TEMPLATE = fs.readFileSync("Resources/Client/Mileage/ui/modules/apps/Mileage-PlayerList/app.html", "utf8");
 
 // The markup of the element opened at `start`, up to its matching </div>.
 function divBlock(start) {
@@ -137,7 +138,7 @@ test("an update that arrives after the loss but before the screen redraws is ign
 	const pending = [];
 	scope.$evalAsync = (fn) => pending.push(fn);
 	scope.emit("onBeamMPPlayerList", PLAYERS);
-	scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: "saving"});
+	scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: "saving"});
 	scope.emit("onBeamMPPlayerList", PLAYERS);
 	assert.strictEqual(table.rows.length, 1, "rows before the redraw");
 	pending.forEach((fn) => fn());
@@ -166,7 +167,7 @@ test("Try saving again shows only after a failed save; Return to menu always", (
 	const retry = banner.match(/<button[^>]*ng-show="([^"]*)"[^>]*ng-click="retrySave\(\)"[^>]*>Try saving again</);
 	assert.ok(retry, "Try saving again button with ng-show");
 	const shown = (state) => {
-		scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: state, saved: state === "saved"});
+		scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: state, saved: state === "saved"});
 		return Boolean(evalExpr(retry[1], scope));
 	};
 	assert.strictEqual(shown("saving"), false, "while saving");
@@ -183,6 +184,125 @@ test("folding the list hides it and unfolding shows it again", () => {
 	context.showList();
 	assert.strictEqual(page("plist-container").style.display, "block", "unfolded");
 	assert.strictEqual(page("show-button").innerHTML, "&gt;", "unfold button");
+});
+
+//== the right-click menu ======================================================
+
+const b64 = (name) => "require('mime').unb64('" + Buffer.from(name, "utf8").toString("base64") + "')";
+
+// Right-clicks the name cell of the player at row index (1 is the first player).
+function rightClick(app, rowIndex) {
+	const nameCell = app.table.rows[rowIndex].cells[1];
+	nameCell.listeners.contextmenu({preventDefault() {}, clientX: 10, clientY: 20});
+	return app.page("playerlist-contextmenu");
+}
+
+function menuApp() {
+	const app = load();
+	app.scope.emit("onBeamMPPlayerList", PLAYERS);
+	return app;
+}
+
+function typeAndSend(app, kind, text) {
+	app.page("pl-context-" + kind).onclick();
+	app.page("pl-context-amount").value = text;
+	app.page("pl-context-send").onclick();
+}
+
+test("right-clicking a player opens the menu and asks the game what can be done with them", () => {
+	const app = menuApp();
+	const menu = rightClick(app, 2);
+	assert.strictEqual(menu.style.display, "block", "menu shown");
+	assert.strictEqual(app.page("pl-context-name").textContent, "Bob", "player named");
+	assert.ok(app.lua.includes("if mileage_offers then mileage_offers.actionsFor(" + b64("Bob") + ") end"), "asked");
+});
+
+test("Request money sends the typed whole amount with the name encoded", () => {
+	const app = menuApp();
+	rightClick(app, 2);
+	typeAndSend(app, "request", "3500");
+	assert.ok(app.lua.includes("mileage_offers.request(" + b64("Bob") + ", 3500)"), "request sent");
+	assert.strictEqual(app.page("playerlist-contextmenu").style.display, "none", "menu closed");
+});
+
+test("Pay sends the typed amount; $ and thousands commas are accepted", () => {
+	const app = menuApp();
+	rightClick(app, 2);
+	typeAndSend(app, "pay", "$1,250");
+	assert.ok(app.lua.includes("mileagePlayerPayments.payPlayer(" + b64("Bob") + ", 1250)"), "payment sent");
+});
+
+test("Race sends the stake, and $0 is a race with no stake", () => {
+	const app = menuApp();
+	rightClick(app, 2);
+	app.scope.emit("MileagePlayerActions", {name: "Bob", race: {ok: true, distance: 2400, stakeMax: 10000, prize: 500},
+		pay: {ok: true, money: 5000}, request: {ok: true}});
+	app.page("pl-context-race").onclick();
+	assert.strictEqual(app.page("pl-context-amount").value, "0", "stake starts at $0");
+	assert.ok(app.page("pl-context-form-info").textContent.includes("2.4 km away"), "distance shown");
+	assert.ok(app.page("pl-context-form-info").textContent.includes("server prize $500"), "prize shown");
+	app.page("pl-context-send").onclick();
+	assert.ok(app.lua.includes("mileage_offers.race(" + b64("Bob") + ", 0)"), "race sent");
+});
+
+test("an empty, zero, negative, fractional or non-numeric amount sends nothing and says why", () => {
+	const app = menuApp();
+	rightClick(app, 2);
+	const before = app.lua.length;
+	for (const text of ["", "0", "-5", "2.5", "abc"]) {
+		typeAndSend(app, "request", text);
+		assert.strictEqual(app.page("pl-context-error").textContent, "Enter a whole number of dollars above $0.", text);
+	}
+	assert.strictEqual(app.lua.length, before, "nothing sent");
+});
+
+test("paying more than the career has, or staking above the limit, says why and sends nothing", () => {
+	const app = menuApp();
+	rightClick(app, 2);
+	app.scope.emit("MileagePlayerActions", {name: "Bob", race: {ok: true, stakeMax: 1000},
+		pay: {ok: true, money: 48210}, request: {ok: true}});
+	const before = app.lua.length;
+	typeAndSend(app, "pay", "50000");
+	assert.strictEqual(app.page("pl-context-error").textContent, "More than you have ($48,210). Enter a smaller amount.");
+	typeAndSend(app, "race", "2000");
+	assert.strictEqual(app.page("pl-context-error").textContent, "Above this server's limit of $1,000.");
+	assert.strictEqual(app.lua.length, before, "nothing sent");
+});
+
+test("an action the server switched off shows its reason and does not open", () => {
+	const app = menuApp();
+	rightClick(app, 2);
+	app.scope.emit("MileagePlayerActions", {name: "Bob", race: {ok: false, why: "Set a route on the big map first."},
+		pay: {ok: true}, request: {ok: false, why: "Requests are switched off on this server."}});
+	assert.strictEqual(app.page("pl-context-request").disabled, true, "request disabled");
+	assert.strictEqual(app.page("pl-context-request-why").textContent, "Requests are switched off on this server.");
+	assert.strictEqual(app.page("pl-context-request-why").style.display, "block", "reason shown");
+	assert.strictEqual(app.page("pl-context-race-why").textContent, "Set a route on the big map first.");
+	assert.strictEqual(app.page("pl-context-pay").disabled, false, "pay open");
+	app.page("pl-context-request").onclick();
+	assert.notStrictEqual(app.page("pl-context-form").style.display, "block", "form not opened");
+});
+
+test("actions for another player than the menu's are ignored", () => {
+	const app = menuApp();
+	rightClick(app, 2);
+	app.scope.emit("MileagePlayerActions", {name: "Ann", request: {ok: false, why: "x"}});
+	assert.strictEqual(app.page("pl-context-request").disabled, false, "still open");
+});
+
+test("the Leaderboard button asks the game for the leaderboard", () => {
+	const {scope, lua} = load();
+	scope.openLeaderboard();
+	assert.ok(lua.includes("if mileage_leaderboard then mileage_leaderboard.request() end"));
+	assert.ok(/id="leaderboard-button"[^>]*ng-click="openLeaderboard\(\)"/.test(TEMPLATE), "button in the header");
+});
+
+test("the menu has no fixed pay buttons and sets every text as text", () => {
+	assert.ok(!/Pay \$1000/.test(TEMPLATE), "fixed buttons gone");
+	const source = fs.readFileSync(SOURCE, "utf8");
+	const menu = source.slice(source.indexOf("//== the right-click menu"), source.indexOf("function setOfflineInPlayerList"));
+	assert.ok(menu.includes("function sendActionForm"), "the menu's code");
+	assert.ok(!/innerHTML/.test(menu), "no markup from names or reasons");
 });
 
 test("every function in the app script is declared once", () => {

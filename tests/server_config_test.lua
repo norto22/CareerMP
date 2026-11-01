@@ -1,7 +1,7 @@
--- Resources/Server/CareerMP/careerMP.lua: the config a new server writes, what an
+-- Resources/Server/Mileage/mileage.lua: the config a new server writes, what an
 -- existing config keeps, and the retired extra-traffic settings.
 
-local SOURCE = "Resources/Server/CareerMP/careerMP.lua"
+local SOURCE = "Resources/Server/Mileage/mileage.lua"
 
 local printed, stored, written, sentToClients
 
@@ -24,7 +24,10 @@ local function loadPlugin()
 	MP = {
 		CreateTimer = function() return {GetCurrent = function() return 0 end, Start = function() end} end,
 		GetPlayers = function() return {} end,
-		TriggerClientEvent = function(player, event, data) sentToClients = {event = event, data = data} end,
+		TriggerClientEvent = function(player, event, data)
+			sentToClients = sentToClients or {}
+			sentToClients[event] = {event = event, data = data}
+		end,
 	}
 	dofile(SOURCE)
 	local prepareConfig = upvalue(onInit, "prepareConfig")
@@ -97,8 +100,8 @@ test("an existing config keeps the owner's traffic values and loses only extra t
 		same(written.client.parkedTrafficAmount, 20, "parkedTrafficAmount")
 		same(written.client.extraTrafficAmount, nil, "extraTrafficAmount")
 		same(written.client.extraTrafficEnabled, nil, "extraTrafficEnabled")
-		same(countLines(printed, "[CareerMP] ---------- CareerMP Config client extraTrafficAmount removed: extra traffic was never used by the game"), 1, "removal line for the amount")
-		same(countLines(printed, "[CareerMP] ---------- CareerMP Config client extraTrafficEnabled removed: extra traffic was never used by the game"), 1, "removal line for the switch")
+		same(countLines(printed, "[Mileage] ---------- Mileage Config client extraTrafficAmount removed: extra traffic was never used by the game"), 1, "removal line for the amount")
+		same(countLines(printed, "[Mileage] ---------- Mileage Config client extraTrafficEnabled removed: extra traffic was never used by the game"), 1, "removal line for the switch")
 		same(countLines(printed, "extraTraffic"), 2, "no other line names extra traffic")
 	end)
 end)
@@ -167,8 +170,8 @@ test("an unknown setting in the server section is still called invalid", functio
 		stored.server.extraTrafficAmount = 5
 		stored.client.somethingElse = 1
 		prepareConfig()
-		same(countLines(printed, "CareerMP Config server extraTrafficAmount is invalid, removing"), 1, "server section line")
-		same(countLines(printed, "CareerMP Config client somethingElse is invalid, removing"), 1, "client section line")
+		same(countLines(printed, "Mileage Config server extraTrafficAmount is invalid, removing"), 1, "server section line")
+		same(countLines(printed, "Mileage Config client somethingElse is invalid, removing"), 1, "client section line")
 		same(written.server.extraTrafficAmount, nil, "removed from server")
 	end)
 end)
@@ -185,6 +188,22 @@ test("a cleaned config is not rewritten on the next start", function()
 	end)
 end)
 
+test("a fresh install and an existing config get the racing, request and event settings at their defaults", function()
+	local defaults = {allowRacing = true, allowMoneyRequests = true, allowEvents = true, raceStakeMax = 10000,
+		racePrize = 0, racePrizeCooldownMinutes = 10, raceMinDistance = 500, raceTimeLimitMinutes = 15}
+	for _, existing in ipairs({false, true}) do
+		run(function()
+			local prepareConfig = loadPlugin()
+			stored = existing and ownersConfig() or nil
+			prepareConfig()
+			for key, value in pairs(defaults) do
+				same(written.server[key], value, key .. (existing and " added to an existing config" or ""))
+			end
+			if existing then same(written.server.longWindowMax, 10000, "the owner's other settings kept") end
+		end)
+	end
+end)
+
 test("SetConfig refuses the removed extra-traffic settings and still sets road traffic", function()
 	run(function()
 		local prepareConfig = loadPlugin()
@@ -192,12 +211,13 @@ test("SetConfig refuses the removed extra-traffic settings and still sets road t
 		prepareConfig()
 		stored, written, printed = written, nil, {}
 		SetConfig({"client", "extraTrafficAmount", "10"})
-		same(countLines(printed, "[CareerMP] ---------- Unknown key: client extraTrafficAmount"), 1, "unknown key line")
+		same(countLines(printed, "[Mileage] ---------- Unknown key: client extraTrafficAmount"), 1, "unknown key line")
 		same(written, nil, "file written for a refused key")
 		SetConfig({"client", "roadTrafficEnabled", "true"})
 		expect(written ~= nil, "file written")
 		same(written.client.roadTrafficEnabled, true, "roadTrafficEnabled")
-		same(sentToClients and sentToClients.event, "rxClientConfigUpdate", "players told")
+		expect(sentToClients and sentToClients.rxClientConfigUpdate, "players told")
+		expect(sentToClients.rxMileageFeatures, "players told the server's switches")
 	end)
 end)
 
@@ -214,7 +234,7 @@ test("every second tick sends each connected player one alive message", function
 		tick()
 		local to = {}
 		for _, s in ipairs(sent) do
-			same(s.event, "rxCareerMPAlive", "event")
+			same(s.event, "rxMileageAlive", "event")
 			same(s.data, "", "alive content")
 			to[s.id] = (to[s.id] or 0) + 1
 		end

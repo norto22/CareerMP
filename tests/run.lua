@@ -1,4 +1,4 @@
--- Runs every CareerMP test file against the real sources, with the game and the
+-- Runs every Mileage test file against the real sources, with the game and the
 -- BeamMP server replaced by small stand-ins. Plain Lua 5.1 or later, no libraries.
 --
 --   lua tests/run.lua          (from the repository root)
@@ -20,10 +20,22 @@ local files = {
 	"tests/purchase_insurance_guard_test.lua",
 	"tests/career_active_guard_test.lua",
 	"tests/garage_rebuild_test.lua",
+	"tests/drag_guard_test.lua",
 	"tests/server_stats_test.lua",
 	"tests/traffic_share_test.lua",
 	"tests/position_rate_test.lua",
 	"tests/load_session_test.lua",
+	"tests/move_from_careermp_test.lua",
+	"tests/ui_apps_rename_test.lua",
+	"tests/careermp_bridge_test.lua",
+	"tests/move_end_to_end_test.lua",
+	"tests/transfers_test.lua",
+	"tests/offers_test.lua",
+	"tests/street_race_test.lua",
+	"tests/leaderboard_test.lua",
+	"tests/race_events_test.lua",
+	"tests/money_oracle_test.lua",
+	"tests/money_edges_test.lua",
 }
 
 local passed, failed = 0, 0

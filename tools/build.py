@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Builds the CareerMP client archive and, optionally, the server release package.
+"""Builds the Mileage client archive and, optionally, the server release package.
 
-    python3 tools/build.py            rebuild Resources/Client/CareerMP.zip
+    python3 tools/build.py            rebuild Resources/Client/Mileage.zip
     python3 tools/build.py --check    exit non-zero if the committed archive is stale
-    python3 tools/build.py --package  also write dist/CareerMP-<version>.zip
+    python3 tools/build.py --package  also write dist/Mileage-<version>.zip
 
 The archive is reproducible: entries are sorted, named relative to the source folder
 with "/" separators, dated 1980-01-01, and text files are stored with LF line endings,
@@ -18,11 +18,11 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CLIENT_SOURCE = os.path.join("Resources", "Client", "CareerMP")
-CLIENT_ARCHIVE = "Resources/Client/CareerMP.zip"
-SERVER_PLUGIN = "Resources/Server/CareerMP/careerMP.lua"
-CLIENT_VERSION = "Resources/Server/CareerMP/versions/client.json"
-SERVER_VERSION = "Resources/Server/CareerMP/versions/server.json"
+CLIENT_SOURCE = os.path.join("Resources", "Client", "Mileage")
+CLIENT_ARCHIVE = "Resources/Client/Mileage.zip"
+SERVER_PLUGIN = "Resources/Server/Mileage/mileage.lua"
+CLIENT_VERSION = "Resources/Server/Mileage/versions/client.json"
+SERVER_VERSION = "Resources/Server/Mileage/versions/server.json"
 PACKAGE_FILES = [CLIENT_ARCHIVE, SERVER_PLUGIN, CLIENT_VERSION, SERVER_VERSION]
 
 TEXT_EXTENSIONS = (".lua", ".js", ".json", ".css", ".html")
@@ -116,17 +116,17 @@ def build_package():
     package = write_zip([(rel, read_bytes(rel)) for rel in PACKAGE_FILES])
     out_dir = repo_path("dist")
     os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, f"CareerMP-{version}.zip")
+    out = os.path.join(out_dir, f"Mileage-{version}.zip")
     with open(out, "wb") as f:
         f.write(package)
     return os.path.relpath(out, ROOT)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build the CareerMP client archive and release package.")
+    parser = argparse.ArgumentParser(description="Build the Mileage client archive and release package.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="fail if the committed client archive is stale")
-    mode.add_argument("--package", action="store_true", help="also write dist/CareerMP-<version>.zip")
+    mode.add_argument("--package", action="store_true", help="also write dist/Mileage-<version>.zip")
     args = parser.parse_args()
 
     try:

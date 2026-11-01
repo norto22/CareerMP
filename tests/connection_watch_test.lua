@@ -1,9 +1,9 @@
--- careerMP/connectionWatch.lua: a player in a server career is told, and the career
+-- mileage/connectionWatch.lua: a player in a server career is told, and the career
 -- saved, when the server goes quiet or BeamMP reports a disconnect or kick; nothing
 -- else raises it.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/connectionWatch.lua"
-local COMPAT = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/compat.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileage/connectionWatch.lua"
+local COMPAT = "Resources/Client/Mileage/lua/ge/extensions/mileage/compat.lua"
 
 local DISCONNECT_TITLE = "You have been disconnected from the server"
 local LEAVE_LUA = "MPCoreNetwork.leaveServer(true)"
@@ -24,7 +24,7 @@ local function setup(opts)
 	function setExtensionUnloadMode() end
 	function AddEventHandler(name, fn) handlers[name] = fn end
 	MPCoreNetwork = {isMPSession = function() return mp end}
-	extensions = {careerMP_compat = dofile(COMPAT)}
+	extensions = {mileage_compat = dofile(COMPAT)}
 	-- The game's saveCurrent: a failed write logs and toasts but never raises, and only
 	-- a finished save fires onSaveFinished, sometimes frames later.
 	career_saveSystem = {saveCurrent = function()
@@ -51,7 +51,7 @@ local function frames(watch, count, dt)
 end
 
 local function alive()
-	handlers.rxCareerMPAlive("")
+	handlers.rxMileageAlive("")
 end
 
 local function triggered(name)
@@ -64,7 +64,7 @@ local function triggered(name)
 end
 
 local function lastLost()
-	local lost = triggered("careerMPConnectionLost")
+	local lost = triggered("mileageConnectionLost")
 	return lost[#lost], #lost
 end
 
@@ -82,12 +82,12 @@ test("silence from the career start, with no alive message ever, raises the alar
 	same(lastLost(), nil, "alarm after 9 s")
 	frames(watch, 2)
 	local lost, count = lastLost()
-	same(count, 1, "careerMPConnectionLost events")
+	same(count, 1, "mileageConnectionLost events")
 	same(lost.kicked, false, "kicked")
 	same(lost.saved, true, "saved")
 	same(lost.message, "Lost connection to the server", "message")
 	same(saves, 1, "saves")
-	same(countLines(logs, "careerMP.connection: lost connection to the server"), 1, "log line")
+	same(countLines(logs, "mileage.connection: lost connection to the server"), 1, "log line")
 	local flash = triggered("TopCenterAppsFlashMessage")
 	same(#flash, 1, "flash messages")
 	same(flash[1].msg, "Lost connection to the server", "flash text")
@@ -183,7 +183,7 @@ test("a failed save is logged and never reported as saved", function()
 	frames(watch, 11)
 	local lost = lastLost()
 	same(lost.saved, false, "saved")
-	expect(countLines(logs, "E careerMP.connection: career save failed") == 1, "save error logged")
+	expect(countLines(logs, "E mileage.connection: career save failed") == 1, "save error logged")
 end)
 
 test("trying the save again reports saved once it works", function()
@@ -215,7 +215,7 @@ test("a save the game never confirms is reported as failed, never as saved", fun
 	same(count, 2, "events")
 	same(lost.saveState, "failed", "save state")
 	same(lost.saved, false, "saved")
-	same(countLines(logs, "E careerMP.connection: career save failed"), 1, "failure logged")
+	same(countLines(logs, "E mileage.connection: career save failed"), 1, "failure logged")
 	frames(watch, 30)
 	same(select(2, lastLost()), 2, "the failure is reported once")
 end)
@@ -332,7 +332,7 @@ test("without BeamMP's dialog function the silence check still works", function(
 	local watch = dofile(SOURCE)
 	current = watch
 	watch.onExtensionLoaded()
-	same(countLines(logs, "W careerMP.connection: UI.showMdDialog missing"), 1, "missing hook logged")
+	same(countLines(logs, "W mileage.connection: UI.showMdDialog missing"), 1, "missing hook logged")
 	watch.onCareerActive(true)
 	frames(watch, 11)
 	local _, count = lastLost()
@@ -346,7 +346,7 @@ test("being heard again after a quiet spell clears the message", function()
 	watch.onCareerActive(true)
 	frames(watch, 11)
 	alive()
-	same(#triggered("careerMPConnectionRestored"), 1, "restored events")
+	same(#triggered("mileageConnectionRestored"), 1, "restored events")
 	local names = triggered("onBeamMPSetServerName")
 	same(names[#names], "My Server", "session bar shows the server again")
 	frames(watch, 11)
@@ -359,7 +359,7 @@ test("BeamMP's disconnect is never cleared by a late alive message", function()
 	watch.onCareerActive(true)
 	disconnectDialog("")
 	alive()
-	same(#triggered("careerMPConnectionRestored"), 0, "restored events")
+	same(#triggered("mileageConnectionRestored"), 0, "restored events")
 end)
 
 test("after leaving and rejoining, the next career is watched again", function()
@@ -367,7 +367,7 @@ test("after leaving and rejoining, the next career is watched again", function()
 	watch.onCareerActive(true)
 	frames(watch, 11)
 	watch.onBeamMPServerLeave()
-	same(#triggered("careerMPConnectionRestored"), 1, "the message is cleared on leaving")
+	same(#triggered("mileageConnectionRestored"), 1, "the message is cleared on leaving")
 	watch.onCareerActive(true)
 	frames(watch, 9)
 	local _, count = lastLost()
@@ -381,7 +381,7 @@ test("the player list can ask for the current state", function()
 	local watch = setup()
 	watch.onCareerActive(true)
 	watch.sendState()
-	same(#triggered("careerMPConnectionRestored"), 1, "connected state sent")
+	same(#triggered("mileageConnectionRestored"), 1, "connected state sent")
 	frames(watch, 11)
 	watch.sendState()
 	local lost, count = lastLost()
@@ -410,7 +410,7 @@ test("a silence alarm that BeamMP then reports as a disconnect is never cleared"
 	frames(watch, 11)
 	disconnectDialog("")
 	alive()
-	same(#triggered("careerMPConnectionRestored"), 0, "restored events")
+	same(#triggered("mileageConnectionRestored"), 0, "restored events")
 	local lost, count = lastLost()
 	same(count, 1, "events")
 	same(lost.message, "Lost connection to the server", "message")
@@ -428,7 +428,7 @@ test("a kick after a silence alarm flashes the kick and its reason, without savi
 	same(lastLost().message, "Kicked from the server: Banned", "player list message")
 	same(saves, 1, "saves")
 	alive()
-	same(#triggered("careerMPConnectionRestored"), 0, "a kick is never cleared")
+	same(#triggered("mileageConnectionRestored"), 0, "a kick is never cleared")
 end)
 
 test("trying the save again after a save that worked saves nothing more", function()
@@ -446,7 +446,7 @@ test("after BeamMP's disconnect, leaving and rejoining watches the next career",
 	watch.onCareerActive(true)
 	disconnectDialog("")
 	watch.onBeamMPServerLeave()
-	same(#triggered("careerMPConnectionRestored"), 1, "the message is cleared on leaving")
+	same(#triggered("mileageConnectionRestored"), 1, "the message is cleared on leaving")
 	watch.onCareerActive(true)
 	frames(watch, 9)
 	local _, count = lastLost()
@@ -480,19 +480,19 @@ end)
 
 --== loading, the dialog hook's edges and repeated saves =======================
 
-test("the mod loads the connection watch after careerMPEnabler and keeps it across level switches", function()
+test("the mod loads the connection watch after mileageEnabler and keeps it across level switches", function()
 	local loaded, modes = {}, {}
 	local realLoad = load
 	load = function(path) table.insert(loaded, path) end
 	setExtensionUnloadMode = function(path, mode) modes[path] = mode end
-	local ok, err = pcall(dofile, "Resources/Client/CareerMP/scripts/CareerMP/modScript.lua")
+	local ok, err = pcall(dofile, "Resources/Client/Mileage/scripts/Mileage/modScript.lua")
 	load = realLoad
 	expect(ok, tostring(err))
 	local at = {}
 	for i, path in ipairs(loaded) do at[path] = i end
-	expect(at["careerMP/connectionWatch"] ~= nil, "careerMP/connectionWatch is loaded")
-	expect(at["careerMP/connectionWatch"] > at["careerMPEnabler"], "loaded after careerMPEnabler")
-	same(modes["careerMP/connectionWatch"], "manual", "unload mode")
+	expect(at["mileage/connectionWatch"] ~= nil, "mileage/connectionWatch is loaded")
+	expect(at["mileage/connectionWatch"] > at["mileageEnabler"], "loaded after mileageEnabler")
+	same(modes["mileage/connectionWatch"], "manual", "unload mode")
 end)
 
 test("BeamMP's disconnect dialog with no text at all is a lost connection", function()
@@ -512,7 +512,7 @@ test("when the watch's own handling fails, BeamMP's dialog still opens and the f
 	guihooks.trigger = function() error("ui gone") end
 	disconnectDialog("")
 	same(#dialogs, 1, "BeamMP's dialog still opens")
-	same(countLines(logs, "E careerMP.connection: disconnect check failed"), 1, "failure logged")
+	same(countLines(logs, "E mileage.connection: disconnect check failed"), 1, "failure logged")
 end)
 
 test("a retry that fails again is reported as failed again, never as saved", function()
@@ -526,7 +526,7 @@ test("a retry that fails again is reported as failed again, never as saved", fun
 	same(lost.saveState, "failed", "save state after the failed retry")
 	same(lost.saved, false, "saved")
 	same(saves, 2, "saves")
-	same(countLines(logs, "E careerMP.connection: career save failed"), 2, "both failures logged")
+	same(countLines(logs, "E mileage.connection: career save failed"), 2, "both failures logged")
 end)
 
 test("a retry the game never confirms turns back to failed after the wait", function()

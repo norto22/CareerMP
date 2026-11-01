@@ -1,9 +1,9 @@
--- careerMPEnabler.lua: what this game does to other players' cars. They carry the game's
+-- mileageEnabler.lua: what this game does to other players' cars. They carry the game's
 -- "not traffic" flag, spectating one keeps this player's traffic on their own car, and
 -- their active and ghost settings are sent only when they change.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
-local COMPAT = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/compat.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
+local COMPAT = "Resources/Client/Mileage/lua/ge/extensions/mileage/compat.lua"
 
 local logs, focusCalls
 
@@ -57,7 +57,7 @@ local function setup(opts)
 			gameplay_traffic.setFocus = function(mode, data) table.insert(focusCalls, {mode = mode, data = data}) end
 		end
 	end
-	extensions = {careerMP_compat = dofile(COMPAT)}
+	extensions = {mileage_compat = dofile(COMPAT)}
 	worldReadyState = 2
 	local enabler = dofile(SOURCE)
 	return enabler, objects, vehicles
@@ -128,7 +128,7 @@ end)
 local function ghostCommands(veh)
 	local n = 0
 	for _, cmd in ipairs(veh.queued) do
-		if string.find(cmd, "careerMPEnabler.setGhost", 1, true) then n = n + 1 end
+		if string.find(cmd, "mileageEnabler.setGhost", 1, true) then n = n + 1 end
 	end
 	return n
 end
@@ -203,7 +203,7 @@ test("two frames queue another player's ghost setting once", function()
 	enabler.onUpdate(0.016)
 	enabler.onUpdate(0.016)
 	same(ghostCommands(objects[9]), 1, "setGhost commands on car 9")
-	same(objects[9].queued[1], "careerMPEnabler.setGhost(false)", "the server's setting")
+	same(objects[9].queued[1], "mileageEnabler.setGhost(false)", "the server's setting")
 end)
 
 test("a car that is ready again or reset gets its ghost setting again", function()
@@ -230,7 +230,7 @@ test("a changed ghost setting from the server is sent once to each car", functio
 	enabler.onUpdate(0.016)
 	enabler.onUpdate(0.016)
 	same(ghostCommands(objects[9]), 2, "setGhost commands on car 9")
-	same(objects[9].queued[2], "careerMPEnabler.setGhost(true)", "the new setting")
+	same(objects[9].queued[2], "mileageEnabler.setGhost(true)", "the new setting")
 end)
 
 test("another player's unicycle follows remoteUnicycleGhost even when it is off and cars are ghosted", function()
@@ -244,8 +244,8 @@ test("another player's unicycle follows remoteUnicycleGhost even when it is off 
 		i = i + 1
 	end
 	enabler.onUpdate(0.016)
-	same(objects[9].queued[1], "careerMPEnabler.setGhost(true)", "the other player's car")
-	same(objects[10].queued[1], "careerMPEnabler.setGhost(false)", "the other player's unicycle")
+	same(objects[9].queued[1], "mileageEnabler.setGhost(true)", "the other player's car")
+	same(objects[10].queued[1], "mileageEnabler.setGhost(false)", "the other player's unicycle")
 end)
 
 test("leaving the server forgets the ghost settings, so a rejoin sends them again", function()

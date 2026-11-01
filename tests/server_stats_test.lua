@@ -1,8 +1,8 @@
--- Resources/Server/CareerMP/careerMP.lua: every message the server sends is counted by
--- feature, and `CareerMP Stats` prints what each part of CareerMP received and sent in
+-- Resources/Server/Mileage/mileage.lua: every message the server sends is counted by
+-- feature, and `Mileage Stats` prints what each part of Mileage received and sent in
 -- the last 60 seconds and since the server started.
 
-local SOURCE = "Resources/Server/CareerMP/careerMP.lua"
+local SOURCE = "Resources/Server/Mileage/mileage.lua"
 
 --== a stand-in BeamMP server ================================================
 
@@ -32,8 +32,30 @@ end
 
 local server
 
+-- The plugin's data files (Resources/Server/Mileage/data/) are kept in memory; every
+-- other path is the real file system.
+local realOpen, realRename = io.open, os.rename
+local function isData(path) return type(path) == "string" and path:find("/data/", 1, true) ~= nil end
+io.open = function(path, mode)
+	if not isData(path) then return realOpen(path, mode) end
+	if (mode or "r"):sub(1, 1) == "r" then
+		local text = server.files[path]
+		if not text then return nil end
+		return {read = function() return text end, close = function() end}
+	end
+	local parts = {}
+	return {write = function(self, data) table.insert(parts, data); return self end,
+		close = function() server.files[path] = table.concat(parts) end}
+end
+os.rename = function(from, to)
+	if not isData(from) then return realRename(from, to) end
+	server.files[to], server.files[from] = server.files[from], nil
+	return true
+end
+
 local function newServer(playerIds)
-	server = {now = 0, sent = {}, notes = {}, printed = {}, players = {}}
+	server = {now = 0, sent = {}, notes = {}, printed = {}, players = {}, files = {}}
+	FS = {Exists = function() return true end, CreateDirectory = function() end}
 	for _, id in ipairs(playerIds or {0, 1, 2}) do server.players[id] = "player" .. id end
 	Util = {JsonEncode = encode, JsonDecode = decode}
 	MP = {
@@ -133,6 +155,7 @@ end)
 
 test("a payment, a traffic light tick, an alive message and notifications land in their own rows", function()
 	newServer({0, 1})
+	careerSyncRequested(0, "")
 	payPlayer(0, encode({money = 10, target_player_id = 1}))
 	trafficLightTimer()
 	tick()
@@ -141,7 +164,8 @@ test("a payment, a traffic light tick, an alive message and notifications land i
 		licensePlate = "ABC"}))
 	local lines = statsLines()
 	same(row(lines, "payments").window.received, 1, "payments received")
-	same(row(lines, "payments").window.sent, 2, "payment and confirmation sent")
+	same(row(lines, "payments").window.sent, 0, "nothing sent for the payment itself")
+	same(row(lines, "transfers").window.sent, 1, "the payer asked to take it")
 	same(row(lines, "trafficLights").window.sent, 2, "traffic light messages, one per player")
 	same(row(lines, "alive").window.sent, 2, "alive messages, one per player")
 	same(row(lines, "notifications").window.received, 1, "speed traps received")
@@ -153,7 +177,7 @@ test("every feature of the readout has a row, even with nothing sent", function(
 	newServer({0})
 	local lines = statsLines()
 	for _, feature in ipairs({"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-			"payments", "alive", "trafficLights", "notifications", "config"}) do
+			"payments", "transfers", "offers", "alive", "trafficLights", "notifications", "config"}) do
 		local r = row(lines, feature)
 		expect(r, "no row for " .. feature)
 		same(r.total.sent, 0, feature .. " messages")
@@ -173,6 +197,19 @@ test("the server plugin sends nothing except through its counting helpers", func
 	end
 	-- One TriggerClientEvent in send and one SendNotification in notify.
 	same(direct, 2, "direct sends in the plugin")
+end)
+
+-- Lua allows 200 local names in a function at once, the plugin's main chunk included,
+-- and the plugin must stay one file for the updater. Its sections keep their names in
+-- blocks; this keeps room for more.
+test("the server plugin's main chunk leaves room for 40 more local names", function()
+	local file = assert(io.open(SOURCE, "r"))
+	local text = file:read("*a")
+	file:close()
+	local names = {}
+	for i = 1, 40 do names[i] = "spare" .. i end
+	local chunk, err = (loadstring or load)("local " .. table.concat(names, ", ") .. "\n" .. text)
+	expect(chunk ~= nil, "plugin with 40 more locals does not load: " .. tostring(err))
 end)
 
 --== the readout =============================================================
@@ -226,7 +263,7 @@ test("Stats reset starts the since-start counts again", function()
 	newServer({0, 1})
 	onVehicleSpawnHandler(0, 0, "")
 	local lines = statsLines({"reset"})
-	same(countLines(lines, "[CareerMP] Stats reset"), 1, "reset line")
+	same(countLines(lines, "[Mileage] Stats reset"), 1, "reset line")
 	local r = row(statsLines(), "carStates")
 	same(r.total.sent, 0, "messages since the reset")
 	same(r.window.sent, 0, "messages in the window after the reset")
@@ -234,7 +271,7 @@ end)
 
 test("Stats with an unknown argument prints its usage", function()
 	newServer({0})
-	same(countLines(statsLines({"bogus"}), "Usage: CareerMP Stats [reset]"), 1, "usage line")
+	same(countLines(statsLines({"bogus"}), "Usage: Mileage Stats [reset]"), 1, "usage line")
 end)
 
 test("Help lists the Stats command", function()
@@ -244,7 +281,38 @@ test("Help lists the Stats command", function()
 	print = function(line) table.insert(server.printed, tostring(line)) end
 	Help({})
 	print = realPrint
-	same(countLines(server.printed, "CareerMP Stats"), 1, "Stats in the help")
+	same(countLines(server.printed, "Mileage Stats"), 1, "Stats in the help")
+	for _, command in ipairs({"Mileage Transfers", "Mileage Leaderboard [reset]", "Mileage Event <minutes>"}) do
+		same(countLines(server.printed, command), 1, command .. " in the help")
+	end
+end)
+
+-- What one console line prints, with BeamMP's local event calling the named handler.
+local function consoleLines(line)
+	server.printed = {}
+	MP.TriggerLocalEvent = function(command, arguments) _G[command](arguments) end
+	local realPrint = print
+	print = function(text) table.insert(server.printed, tostring(text)) end
+	local ok, err = pcall(onConsoleInputHandler, line)
+	print = realPrint
+	if not ok then error(err, 0) end
+	return server.printed
+end
+
+for _, prefix in ipairs({"Mileage", "CareerMP", "CMP"}) do
+	test("the console command " .. prefix .. " Help prints Mileage's help", function()
+		newServer({0})
+		local lines = consoleLines(prefix .. " Help")
+		same(countLines(lines, "Mileage Help "), 1, "Help line")
+		same(countLines(lines, "Mileage SetConfig "), 1, "SetConfig line")
+		same(countLines(lines, "CareerMP"), 0, "old name in the help")
+	end)
+end
+
+test("a console line with another prefix runs no Mileage command", function()
+	newServer({0})
+	same(#consoleLines("Foo Help"), 0, "lines printed")
+	same(#consoleLines("Mileagex Help"), 0, "lines printed for a near miss")
 end)
 
 -- BeamMP drops a leaving player from its list before the plugin hears of the leave.

@@ -1,10 +1,10 @@
--- Resources/Server/CareerMP/careerMP.lua: the server-wide traffic total. Each player
+-- Resources/Server/Mileage/mileage.lua: the server-wide traffic total. Each player
 -- keeps the per-player amounts until the players together would pass the server's
 -- total, then the total is split between them (one spare car each to the lowest ids).
 -- A joiner's share travels in its own settings; players already in get theirs 3 seconds
 -- after the last join or leave.
 
-local SOURCE = "Resources/Server/CareerMP/careerMP.lua"
+local SOURCE = "Resources/Server/Mileage/mileage.lua"
 
 local function encode(v)
 	if type(v) == "table" then

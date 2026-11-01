@@ -1,10 +1,10 @@
--- careerMP/positionRate.lua: CareerMP's check around BeamMP's send of each own car's
+-- mileage/positionRate.lua: Mileage's check around BeamMP's send of each own car's
 -- position (positionGE.sendVehiclePosRot). A parked car standing still sends once a
 -- second, driving traffic more than 500 m from every other player's car twice a second,
 -- a hidden car never; every other send goes through untouched.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/positionRate.lua"
-local COMPAT = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/compat.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileage/positionRate.lua"
+local COMPAT = "Resources/Client/Mileage/lua/ge/extensions/mileage/compat.lua"
 
 local FRAME = 0.02 -- BeamMP's position tick rate
 
@@ -39,7 +39,7 @@ local function setup(opts)
 	function log(level, tag, msg) table.insert(logs, level .. " " .. tag .. ": " .. msg) end
 	function setExtensionUnloadMode() end
 	MPCoreNetwork = {isMPSession = function() return opts.mp ~= false end}
-	extensions = {careerMP_compat = dofile(COMPAT)}
+	extensions = {mileage_compat = dofile(COMPAT)}
 	MPVehicleGE = {
 		getVehicles = function() return game.vehicles end,
 		isOwn = function(gid) local v = game.objects[gid]; return v ~= nil and v.own end,
@@ -48,7 +48,7 @@ local function setup(opts)
 		getObjectByID = function(_, gid) return game.objects[gid] end,
 		getPlayerVehicleID = function() return game.playerVehicle end,
 	}
-	careerMPEnabler = {
+	mileageEnabler = {
 		isTrafficCar = function(gid, veh)
 			if gid == game.playerVehicle then return false end
 			return veh.isTraffic == "true" or veh.isParked == "true"

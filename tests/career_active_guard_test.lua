@@ -1,7 +1,7 @@
--- careerMP/careerPatches.lua: during a career start every onCareerActive handler runs,
+-- mileage/careerPatches.lua: during a career start every onCareerActive handler runs,
 -- even when one of them raises an error, and the game's hook is put back afterwards.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/careerPatches.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileage/careerPatches.lua"
 
 local logs, clock, calls, ext, patches, gameHook
 
@@ -69,8 +69,8 @@ local function setup(opts)
 	extensions = ext
 	gameHook = ext.hook
 	patches = dofile(SOURCE)
-	ext.add("careerMP_careerPatches", patches)
-	ext.add("careerMPUIApps", module("careerMPUIApps", opts.uiFails))
+	ext.add("mileage_careerPatches", patches)
+	ext.add("mileageUIApps", module("mileageUIApps", opts.uiFails))
 	return patches
 end
 
@@ -90,7 +90,7 @@ test("a failing handler no longer skips the handlers after it", function()
 	setup({uiFails = true})
 	local ok, err = startCareer()
 	expect(ok, "the career start raised: " .. tostring(err))
-	same(ran("careerMPUIApps"), 1, "failing handler ran")
+	same(ran("mileageUIApps"), 1, "failing handler ran")
 	same(ran("career_modules_insurance_insurance"), 1, "insurance ran")
 	same(ran("career_modules_inventory"), 1, "inventory ran")
 end)
@@ -98,20 +98,20 @@ end)
 test("the failing handler is named in the log with its traceback", function()
 	setup({uiFails = true})
 	startCareer()
-	same(countLines(logs, "E careerMP.careerPatches: career start: careerMPUIApps.onCareerActive failed"), 1, "failure line")
-	same(countLines(logs, "careerMPUIApps broke on 0.40"), 1, "error message")
+	same(countLines(logs, "E mileage.careerPatches: career start: mileageUIApps.onCareerActive failed"), 1, "failure line")
+	same(countLines(logs, "mileageUIApps broke on 0.40"), 1, "error message")
 	same(countLines(logs, "stack traceback"), 1, "traceback")
-	same(countLines(logs, "onCareerActive(true) failed in careerMPUIApps; every other handler ran"), 1, "summary line")
+	same(countLines(logs, "onCareerActive(true) failed in mileageUIApps; every other handler ran"), 1, "summary line")
 	local failures = patches.getCareerActiveFailures()
 	same(#failures, 1, "failures")
-	same(failures[1], "careerMPUIApps", "failure name")
+	same(failures[1], "mileageUIApps", "failure name")
 end)
 
 test("several failing handlers are all named and the rest still run", function()
 	setup({uiFails = true})
 	startCareer({insuranceFails = true})
 	same(ran("career_modules_inventory"), 1, "inventory ran")
-	same(countLines(logs, "failed in careerMPUIApps, career_modules_insurance_insurance"), 1, "summary line")
+	same(countLines(logs, "failed in mileageUIApps, career_modules_insurance_insurance"), 1, "summary line")
 end)
 
 test("handlers get the hook's arguments", function()
@@ -185,7 +185,7 @@ test("a career start that never fires onCareerActive releases the guard after 12
 	clock = 121
 	patches.onUpdate()
 	expect(ext.hook == gameHook, "the game's hook is back")
-	same(countLines(logs, "W careerMP.careerPatches: career start: onCareerActive did not fire within 120s"), 1, "warning")
+	same(countLines(logs, "W mileage.careerPatches: career start: onCareerActive did not fire within 120s"), 1, "warning")
 end)
 
 test("a hook replaced by someone else during the start is left in place", function()
@@ -199,7 +199,7 @@ test("a hook replaced by someone else during the start is left in place", functi
 	same(countLines(logs, "extensions.hook was replaced by someone else"), 1, "warning")
 end)
 
-test("unloading CareerMP puts the game's hook back", function()
+test("unloading Mileage puts the game's hook back", function()
 	setup()
 	ext.hook("onBeforeCareerActivate")
 	patches.onExtensionUnloaded()
@@ -213,5 +213,5 @@ test("a game missing hookUpdate keeps its own hook and the log says so", functio
 	ext.hookUpdate = nil
 	ext.hook("onBeforeCareerActivate")
 	expect(ext.hook == gameHook, "hook unchanged")
-	same(countLines(logs, "W careerMP.careerPatches: career start: missing extensions.hookUpdate"), 1, "warning")
+	same(countLines(logs, "W mileage.careerPatches: career start: missing extensions.hookUpdate"), 1, "warning")
 end)

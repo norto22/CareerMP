@@ -1,15 +1,15 @@
 -- Parking challenges on a server: another player's traffic and parked cars come from
 -- their own game, which knows nothing about my challenge, so while my parking challenge
--- runs they are hidden on my game only (careerMP/parkingChallenge.lua and the vehicle
--- sync in careerMPEnabler.lua), and come back as their owner has them when it ends.
+-- runs they are hidden on my game only (mileage/parkingChallenge.lua and the vehicle
+-- sync in mileageEnabler.lua), and come back as their owner has them when it ends.
 --
 -- Two stand-in games run the real enabler against the real server plugin; messages
 -- between them queue until pump() delivers them. The game's mission manager is played
 -- by firing its hooks on every extension each game has loaded.
 
-local ENABLER = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
-local PARKING = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/parkingChallenge.lua"
-local SERVER = "Resources/Server/CareerMP/careerMP.lua"
+local ENABLER = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
+local PARKING = "Resources/Client/Mileage/lua/ge/extensions/mileage/parkingChallenge.lua"
+local SERVER = "Resources/Server/Mileage/mileage.lua"
 
 --== two stand-in games and the server =======================================
 
@@ -44,7 +44,7 @@ local world, logs
 -- Runs fn with the globals of player p's game.
 local function as(p, fn, ...)
 	MPVehicleGE, be, gameplay_traffic = p.MPVehicleGE, p.be, p.traffic
-	extensions, careerMPEnabler, FS = p.extensions, p.enabler, p.FS
+	extensions, mileageEnabler, FS = p.extensions, p.enabler, p.FS
 	worldReadyState = 2
 	function TriggerServerEvent(name, data)
 		table.insert(world.toServer, {from = p.id, name = name, data = data})
@@ -98,15 +98,15 @@ local function addPlayer(id, name)
 	p.traffic = {getTrafficData = function() return p.trafficData end}
 	p.FS = {fileExists = function(_, path) return p.files[path] == true end}
 	p.extensions = {
-		careerMP_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
+		mileage_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
 		core_input_actionFilter = {setGroup = function() end, addAction = function() end},
 	}
 	world.players[id] = p
 	as(p, function()
 		p.enabler = dofile(ENABLER)
-		p.extensions.careerMPEnabler = p.enabler
+		p.extensions.mileageEnabler = p.enabler
 		p.parking = dofile(PARKING)
-		p.extensions.careerMP_parkingChallenge = p.parking
+		p.extensions.mileage_parkingChallenge = p.parking
 	end)
 	as(p, function()
 		p.enabler.onExtensionLoaded()
@@ -250,14 +250,14 @@ test("a delivery or race hides nothing and logs that it is not a parking challen
 	startMission(me, {id = "delivery/004", missionType = "delivery", missionFolder = "/gameplay/missions/delivery/004"})
 	same(active(me, 1, 1), true, "my friend's police car")
 	same(active(me, 1, 2), true, "my friend's parked car")
-	same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=delivery parking=false"), 1, "log lines")
+	same(countLines(logs, "I mileage.parkingChallenge: mission start: type=delivery parking=false"), 1, "log lines")
 end)
 
 test("a mission type naming parking in any case counts, and the start is logged", function()
 	local me = twoPlayers()
 	startMission(me, {id = "x", missionType = "ParkingChallenge", missionFolder = "/m/x"})
 	same(active(me, 1, 2), false, "my friend's parked car")
-	same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=ParkingChallenge parking=true"), 1, "log lines")
+	same(countLines(logs, "I mileage.parkingChallenge: mission start: type=ParkingChallenge parking=true"), 1, "log lines")
 end)
 
 test("a mission whose folder ships the parking-lot clutter layout counts", function()
@@ -301,7 +301,7 @@ end)
 
 test("without the parking challenge extension a parking mission hides nothing", function()
 	local me, friend = twoPlayers()
-	me.extensions.careerMP_parkingChallenge = nil
+	me.extensions.mileage_parkingChallenge = nil
 	startMission(me, PARKING_MISSION)
 	as(friend, function() friend.objects[gameId(1, 1)]:setActive(0) end)
 	pump()
@@ -400,7 +400,7 @@ test("a mission start with no type and no folder hides nothing and logs it as no
 	startMission(me, {id = "x"})
 	same(me.parking.isActive(), false, "parking challenge mode")
 	same(active(me, 1, 2), true, "my friend's parked car")
-	same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=nil parking=false"), 1, "log lines")
+	same(countLines(logs, "I mileage.parkingChallenge: mission start: type=nil parking=false"), 1, "log lines")
 end)
 
 test("my own parked car stays showing on my game and is not reported hidden during my challenge", function()
@@ -460,7 +460,7 @@ test("unloading the parking challenge extension mid-challenge shows the cars aga
 	local me = twoPlayers()
 	startMission(me, PARKING_MISSION)
 	hook(me, "onExtensionUnloaded")
-	me.extensions.careerMP_parkingChallenge = nil
+	me.extensions.mileage_parkingChallenge = nil
 	same(active(me, 1, 2), true, "my friend's parked car")
 	same(active(me, 1, 1), true, "my friend's police car")
 	same(listRequests(me), 0, "list requests from my game")
@@ -480,7 +480,7 @@ test("a game whose FS fails or has no fileExists counts no clutter layout, and t
 		same(ok, true, case.what .. ": mission start went through (" .. tostring(err) .. ")")
 		same(me.parking.isActive(), false, case.what .. ": parking challenge mode")
 		same(active(me, 1, 2), true, case.what .. ": my friend's parked car")
-		same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=timeTrial parking=false"), 1, case.what .. ": log lines")
+		same(countLines(logs, "I mileage.parkingChallenge: mission start: type=timeTrial parking=false"), 1, case.what .. ": log lines")
 	end
 end)
 

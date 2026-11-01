@@ -1,0 +1,231 @@
+		#main-container {
+			display: flex;
+			flex-direction: row;
+			justify-content: flex-end;
+			align-content: flex-end;
+			height: 100%;
+			font-family: 'Segoe UI', Roboto, sans-serif;
+			font-weight: bold;
+		}
+		#plist-container {
+			display: none;
+			transition: 0.20s;
+			width: 100%;
+			margin: 0;
+			padding: 0;
+			overflow-y: scroll;
+		}
+		#show-button {
+			font-weight: bold;
+			width: 25px;
+			height: 75px;
+			padding: 0;
+			margin: 0;
+			border-radius: 8px;
+			margin-left: 4px;
+			background-color: rgba(30, 30, 30, 0.25);
+			backdrop-filter: blur(10px);
+			border: 1px solid rgba(255, 255, 255, 0.1);
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+		}
+		.view-button {
+			width: 25px;
+			min-height: 27px;
+		}
+		.tp-button {
+			width: 64px !important;
+			min-height: 27px;
+			margin: 0;
+		}
+		#players-table {
+			color: white;
+			border-collapse: separate; 
+			border-spacing: 0;
+			width: 100%;
+			table-layout:fixed;
+			border: 1px solid rgba(255, 255, 255, 0.2); 
+			border-radius: 8px; 
+			overflow: hidden; 
+		}
+
+		#players-table tr:first-child {
+			background-color: rgba(30, 30, 30, 0.25);
+			backdrop-filter: blur(10px);
+		}
+		#players-table th {
+			border-bottom: 1px solid rgba(255, 255, 255, 0.2); 
+			padding: 0 5px;
+			text-align: left;
+		}
+		#players-table tr:not(:first-child) {
+			transition: transform .12s ease;
+			background-color: transparent; 
+		}
+		#players-table tr:not(:first-child):hover {
+			transform: translateY(-2px);
+		}
+		#players-table td {
+			padding: 0px 5px;
+			max-width: 100%;
+			max-width: 0;
+			overflow: hidden;
+			text-shadow: 0px 0px 4px #000, 0px 0px 6px #000, 0px 0px 8px #000;
+		}
+		#players-table td:not(:last-child), #players-table th:not(:last-child) {
+			border-right: 1px solid rgba(255, 255, 255, 0.2);
+		}
+		#players-table tr > td:nth-child(3) {
+			color: rgba(255, 255, 255, 0.8);
+		}
+
+
+		.mileagePlayerList .buttons {
+			color: #DDDDDD;
+			transition: 0.20s;
+			background-color: transparent;
+			height:100%;
+			border: none;
+			margin: 0px 0 0 0;
+			cursor: pointer;
+		}
+		.mileagePlayerList .buttons:hover {
+			background-color: rgba(0, 0, 0, 0.2);
+			color: #FFFFFF;
+		}
+		.direction-buttons {
+			height: 25px;
+			width: 31px;
+			float: right;
+		}
+		.player-button {
+			color: white;
+			transition: 0.20s;
+			background-color: rgba(0, 0, 0, 0);
+			cursor:pointer;
+		}
+		.player-button:hover {
+			background-color: rgba(0, 0, 0, 0.65);
+			color: #FFFFFF;
+		}
+		.player-view {
+			color: white;
+			transition: 0.20s;
+			background-color: rgba(0, 0, 0, 0);
+			cursor:pointer;
+		}
+		#playerlist-contextmenu {
+			background: #333;
+			padding: 10px;
+			border-radius: 5px;
+			max-width: 200px;
+		}
+		#playerlist-contextmenu > button {
+			background: #444;
+			color: white;
+			border: none;
+			padding: 8px 12px;
+			width: 100%;
+			text-align: left;
+			cursor: pointer;
+			border-radius: 3px;
+			margin-bottom: 5px;
+		}
+		#playerlist-contextmenu button:hover {
+			background: #555;
+		}
+		#playerlist-contextmenu button:disabled {
+			color: #999;
+			cursor: default;
+		}
+		.pl-context-name, .pl-context-form-title {
+			color: white;
+			font-weight: bold;
+			margin-bottom: 6px;
+		}
+		.pl-context-why, .pl-context-info {
+			color: #ccc;
+			font-size: 0.85em;
+			margin: -2px 0 6px 0;
+		}
+		.pl-context-error {
+			color: #ff8a80;
+			font-size: 0.85em;
+			margin: 4px 0;
+		}
+		#pl-context-form {
+			border-top: 1px solid #555;
+			padding-top: 8px;
+			color: white;
+		}
+		#pl-context-form label {
+			display: block;
+			font-size: 0.85em;
+			margin-bottom: 4px;
+		}
+		#pl-context-form input {
+			width: 100%;
+			box-sizing: border-box;
+			background: #222;
+			color: white;
+			border: 1px solid #555;
+			border-radius: 3px;
+			padding: 6px;
+		}
+		#pl-context-form button {
+			background: #444;
+			color: white;
+			border: none;
+			padding: 6px 10px;
+			border-radius: 3px;
+			margin: 6px 4px 0 0;
+			cursor: pointer;
+		}
+		.playerslist-col-1 {
+			width: 32px;			
+		}
+		.playerslist-col-2 {
+			min-width: 100px;
+			width: auto;			
+		}
+		.playerslist-col-3 {
+			width: 64px;
+			text-align: center;
+		}
+		#plist-container::-webkit-scrollbar {
+			width: 0px;  /* Remove scrollbar space */
+			background: transparent;  /* Optional: just make scrollbar invisible */
+		}
+		.mileagePlayerList {
+			position: relative;
+		}
+		#connection-banner {
+			position: absolute;
+			top: 0;
+			left: 0;
+			right: 0;
+			z-index: 10;
+			padding: 6px 8px;
+			color: white;
+			font-family: 'Segoe UI', Roboto, sans-serif;
+			border-radius: 8px;
+			background-color: rgba(120, 20, 20, 0.75);
+			backdrop-filter: blur(10px);
+			border: 1px solid rgba(255, 120, 120, 0.4);
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+		}
+		#connection-banner .connection-message {
+			font-weight: bold;
+		}
+		#connection-banner .connection-actions {
+			display: flex;
+			margin-top: 4px;
+		}
+		#connection-banner .connection-actions button {
+			flex: 1;
+			min-height: 27px;
+			margin-left: 4px;
+			border-radius: 6px;
+		}
+		#connection-banner .connection-actions button:first-child {
+			margin-left: 0;
+		}

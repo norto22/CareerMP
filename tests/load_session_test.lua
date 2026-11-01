@@ -3,7 +3,7 @@
 
 local runSession = dofile("tests/load_session.lua")
 
--- `luajit tests/load_session.lua <checkout of 483daa5>`: CareerMP before the pass. The
+-- `luajit tests/load_session.lua <checkout of 483daa5>`: Mileage before the pass. The
 -- damage bytes follow the order LuaJIT walks the game's tables in, which changes from run
 -- to run; `bytes` is the lowest of the first 11 runs (3,484,015 to 3,639,890), and later
 -- runs have sent a little less. The new code sends about a sixth of either, far inside
@@ -18,7 +18,7 @@ test("the session passes at most half as many positions to BeamMP as before the 
 		string.format("positions: %d now, %d at %s", now.positions, BEFORE.positions, BEFORE.commit))
 end)
 
-test("the server sends at most half as many of CareerMP's own bytes as before the pass", function()
+test("the server sends at most half as many of Mileage's own bytes as before the pass", function()
 	expect(now.bytes * 2 <= BEFORE.bytes,
 		string.format("bytes: %d now, %d at %s", now.bytes, BEFORE.bytes, BEFORE.commit))
 end)
