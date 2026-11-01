@@ -19,6 +19,7 @@ local files = {
 	"tests/purchase_insurance_test.lua",
 	"tests/purchase_insurance_guard_test.lua",
 	"tests/career_active_guard_test.lua",
+	"tests/garage_rebuild_test.lua",
 	"tests/server_stats_test.lua",
 	"tests/traffic_share_test.lua",
 	"tests/position_rate_test.lua",
