@@ -17,6 +17,7 @@
 						{{:: 'ui.apps.beammp.playerlist.players' | translate }}
 					</th>
 					<th  class="playerslist-col-3">
+						<button class="buttons direction-buttons" id="leaderboard-button" title="Leaderboard" ng-click="openLeaderboard()">🏆</button>
 						<button class="buttons direction-buttons" ng-click="plSwapHorizontal()">🡘</button>
 						<button class="buttons direction-buttons" ng-click="plSwapVertical()">🡙</button>
 					</th>
@@ -29,11 +30,21 @@
 		<button class="buttons" id="show-button" onclick="toggleList()">&lt;</button>
 	</div>
 	<div id="playerlist-contextmenu" style="display: none;">
-		<button id="pl-context-Pay1Button">Pay $1</button>
-		<button id="pl-context-Pay10Button">Pay $10</button>
-		<button id="pl-context-Pay100Button">Pay $100</button>
-		<button id="pl-context-Pay1000Button">Pay $1000</button>
-		<button id="pl-context-Pay10000Button">Pay $10000</button>
-		<button id="pl-context-Pay100000Button">Pay $100000</button>
+		<div id="pl-context-name" class="pl-context-name"></div>
+		<button id="pl-context-race">Race…</button>
+		<div id="pl-context-race-why" class="pl-context-why" style="display: none;"></div>
+		<button id="pl-context-pay">Pay…</button>
+		<div id="pl-context-pay-why" class="pl-context-why" style="display: none;"></div>
+		<button id="pl-context-request">Request money…</button>
+		<div id="pl-context-request-why" class="pl-context-why" style="display: none;"></div>
+		<div id="pl-context-form" style="display: none;">
+			<div id="pl-context-form-title" class="pl-context-form-title"></div>
+			<div id="pl-context-form-info" class="pl-context-info"></div>
+			<label id="pl-context-amount-label" for="pl-context-amount"></label>
+			<input id="pl-context-amount" type="text" inputmode="numeric" autocomplete="off">
+			<div id="pl-context-error" class="pl-context-error"></div>
+			<button id="pl-context-send"></button>
+			<button id="pl-context-cancel">Cancel</button>
+		</div>
 	</div>
 </div>

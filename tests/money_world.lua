@@ -276,7 +276,9 @@ end
 
 -- A console line, as the owner types it. Returns the lines printed.
 function World:console(line)
-	return self:serverOutput(function() onConsoleInputHandler(line) end)
+	local lines = self:serverOutput(function() onConsoleInputHandler(line) end)
+	self:pump()
+	return lines
 end
 
 function World:setConfig(section, key, value)

@@ -1,0 +1,17 @@
+<div ng-controller="MileageOffers" class="mileageOffers">
+	<link rel="stylesheet" type="text/css" href="/ui/modules/apps/Mileage-Offers/app.css">
+
+	<div class="mo-card" ng-repeat="offer in offers track by offer.id">
+		<div class="mo-title" ng-bind="offer.view.title"></div>
+		<div class="mo-row" ng-repeat="row in offer.view.rows">
+			<span class="mo-label" ng-bind="row.label"></span>
+			<span class="mo-value" ng-bind="row.value"></span>
+		</div>
+		<div class="mo-bar"><div class="mo-bar-fill" ng-style="{width: barWidth(offer)}"></div></div>
+		<div class="mo-note" ng-bind="offer.view.note"></div>
+		<div class="mo-actions">
+			<button class="mo-accept" ng-click="answer(offer, true)" ng-bind="offer.view.accept"></button>
+			<button class="mo-decline" ng-click="answer(offer, false)">Decline</button>
+		</div>
+	</div>
+</div>

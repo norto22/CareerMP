@@ -45,6 +45,7 @@ loadPersistent('mileage/positionRate')
 loadPersistent('mileageUIApps')
 loadPersistent('mileage/transfers')
 loadPersistent('mileagePlayerPayments')
+loadPersistent('mileage/offers')
 loadPersistent('mileagePrefabSync')
 loadPersistent('mileagePerPartPaint')
 

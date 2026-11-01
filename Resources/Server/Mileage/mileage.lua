@@ -66,6 +66,21 @@ local defaultConfig = {
 		-- together would pass these totals, then the totals are split between them.
 		roadTrafficTotal = 18,
 		parkedTrafficTotal = 24,
+		-- Players may challenge each other to street races, ask each other for money, and
+		-- the owner may schedule race events (Mileage Event).
+		allowRacing = true,
+		allowMoneyRequests = true,
+		allowEvents = true,
+		-- The largest stake a race challenge may carry, 0 to 1000000; 0 means no stakes.
+		raceStakeMax = 10000,
+		-- Money the server adds for the winner of a race between players, 0 to 1000000;
+		-- 0 is off. The same two players earn it at most once per cooldown (0 to 1440 min).
+		racePrize = 0,
+		racePrizeCooldownMinutes = 10,
+		-- The shortest race allowed, in metres from start to finish (0 to 20000), and the
+		-- time after which a race nobody finished ends with both stakes back (1 to 120 min).
+		raceMinDistance = 500,
+		raceTimeLimitMinutes = 15,
 	},
 	client = {
 		localUnicycleGhost = false,
@@ -149,7 +164,7 @@ local ledger = {
 
 local STATS_SECONDS = 60
 local STATS_FEATURES = {"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-	"payments", "transfers", "alive", "trafficLights", "notifications", "config"}
+	"payments", "transfers", "offers", "alive", "trafficLights", "notifications", "config"}
 
 -- totals[feature] and slots[second % STATS_SECONDS].counts[feature]:
 -- {received, sent, recipients, bytes}.
@@ -721,6 +736,18 @@ local function prepareConfig()
 	print("[Mileage] ---------- Mileage Config Loaded!")
 end
 
+-- A whole-number server setting within low..high; anything else is read as the nearest
+-- value in range (a non-number as low).
+local function serverNumber(key, low, high)
+	local n = tonumber(Config and Config.server and Config.server[key])
+	if not n or n ~= n then return low end
+	return math.floor(math.max(low, math.min(high, n)))
+end
+
+local function serverSwitch(key)
+	return Config ~= nil and Config.server ~= nil and Config.server[key] == true
+end
+
 --== Data files ==============================================================
 -- What Mileage keeps about players between server starts: unfinished money transfers,
 -- races holding stakes, the leaderboard and a scheduled event. Each file is written to
@@ -830,6 +857,8 @@ function onInit()
 
 	MP.RegisterEvent("payPlayer","payPlayer")
 	MP.RegisterEvent("mileageReceipt","mileageReceipt")
+	MP.RegisterEvent("mileageOffer","mileageOffer")
+	MP.RegisterEvent("mileageOfferAnswer","mileageOfferAnswer")
 
 	MP.RegisterEvent("careerPrefabSync","careerPrefabSync")
 	MP.RegisterEvent("careerSyncRequested","careerSyncRequested")
@@ -1267,8 +1296,226 @@ function transferOwners.payment(transfer, event)
 	end
 end
 
+--== Offers ==================================================================
+-- Every "accept or decline" between two players is one offer the server holds: a race
+-- challenge or a money request. It is shown on the target's game (rxMileageOffer) and
+-- closed (rxMileageOfferClosed, to both) on an answer, after OFFER_SECONDS, when either
+-- player leaves, or when the owner switches its feature off. A player has at most one
+-- open offer to each other player; offers are not kept across a server start.
+--
+-- offers[id] = {id, kind, from, to (player ids), fromName, toName, amount, finish, start,
+-- expires}
+
+local OFFER_SECONDS = 60
+local offers = {}
+local offerSeq = 0
+
+-- What the client is told when its offer is turned down or closed.
+local OFFER_TEXT = {
+	accepted = "accepted",
+	declined = "declined",
+	expired = "No answer came in time.",
+	left = "The other player left.",
+	racingOff = "Racing is switched off on this server.",
+	requestsOff = "Requests are switched off on this server.",
+	paymentsOff = "Payments are switched off on this server.",
+	self = "You cannot do that with yourself.",
+	absent = "That player is not in this session.",
+	open = "You already have an offer open with that player.",
+	amount = "Enter a whole number of dollars above $0.",
+	stake = "Enter a stake of $0 or more, in whole dollars.",
+	stakeMax = "That stake is above this server's limit.",
+	sendingMax = "That is more than this server lets a player send.",
+	finish = "Set a route on the big map first: its end is the finish line.",
+	distance = "The finish is closer than this server's shortest race.",
+	busy = "One of you is already in a race.",
+	limit = "That would pass this server's sending limits; try again later.",
+}
+
+-- The server's switches and limits, for the player list to say why an action is off.
+local function features()
+	return {
+		allowTransactions = serverSwitch("allowTransactions"),
+		allowRacing = serverSwitch("allowRacing"),
+		allowMoneyRequests = serverSwitch("allowMoneyRequests"),
+		allowEvents = serverSwitch("allowEvents"),
+		raceStakeMax = serverNumber("raceStakeMax", 0, 1000000),
+		racePrize = serverNumber("racePrize", 0, 1000000),
+		racePrizeCooldownMinutes = serverNumber("racePrizeCooldownMinutes", 0, 1440),
+		raceMinDistance = serverNumber("raceMinDistance", 0, 20000),
+		raceTimeLimitMinutes = serverNumber("raceTimeLimitMinutes", 1, 120),
+		sessionSendingMax = tonumber(Config.server.sessionSendingMax) or 0,
+	}
+end
+
+local function sendFeatures(target)
+	sendJson("offers", target, "rxMileageFeatures", features())
+end
+
+local function isWhole(n)
+	return type(n) == "number" and n == n and n % 1 == 0 and n >= 0 and n < 1e12
+end
+
+local function isPoint(p)
+	return type(p) == "table" and type(p.x) == "number" and type(p.y) == "number" and type(p.z) == "number"
+		and p.x == p.x and p.y == p.y and p.z == p.z
+end
+
+local function distance(a, b)
+	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2)
+end
+
+local function closeOffer(offer, why)
+	offers[offer.id] = nil
+	local message = {id = offer.id, kind = offer.kind, why = why, text = OFFER_TEXT[why] or why,
+		from = offer.fromName, to = offer.toName}
+	for _, id in ipairs({offer.from, offer.to}) do
+		if MP.IsPlayerConnected(id) then sendJson("offers", id, "rxMileageOfferClosed", message) end
+	end
+end
+
+local function refuseOffer(player_id, offer, why)
+	sendJson("offers", player_id, "rxMileageOfferClosed", {kind = type(offer) == "table" and offer.kind or nil,
+		why = why, text = OFFER_TEXT[why] or why})
+end
+
+-- Set by the race section: whether a player is in a race (or holding stakes for one),
+-- and how a race starts from an accepted challenge.
+local inRace
+local startRace
+
+-- Why player_id may not make this offer, or nil.
+local function offerProblem(player_id, offer)
+	if offer.kind == "race" then
+		if not serverSwitch("allowRacing") then return "racingOff" end
+	elseif offer.kind == "request" then
+		if not serverSwitch("allowTransactions") then return "paymentsOff" end
+		if not serverSwitch("allowMoneyRequests") then return "requestsOff" end
+	else
+		return "unknown"
+	end
+	local target = offer.to
+	if type(target) ~= "number" then return "absent" end
+	if target == player_id then return "self" end
+	if not MP.IsPlayerConnected(target) or not careerStarted(target) then return "absent" end
+	for _, open in pairs(offers) do
+		if open.from == player_id and open.to == target then return "open" end
+	end
+	if offer.kind == "request" then
+		if not isWhole(offer.amount) or offer.amount <= 0 then return "amount" end
+		if offer.amount > (tonumber(Config.server.sessionSendingMax) or 0) then return "sendingMax" end
+		return nil
+	end
+	if not isWhole(offer.amount) then return "stake" end
+	if offer.amount > serverNumber("raceStakeMax", 0, 1000000) then return "stakeMax" end
+	if not isPoint(offer.finish) or not isPoint(offer.start) then return "finish" end
+	if distance(offer.start, offer.finish) < serverNumber("raceMinDistance", 0, 20000) then return "distance" end
+	if inRace and (inRace(MP.GetPlayerName(player_id)) or inRace(MP.GetPlayerName(target))) then return "busy" end
+	return nil
+end
+
+-- A player makes an offer: {kind = "race" | "request", to = playerId, amount, finish,
+-- start}. Only the target sees it.
+function mileageOffer(player_id, data)
+	received("offers")
+	local offer = decodeTable(data)
+	if not offer then return end
+	local why = offerProblem(player_id, offer)
+	if why then
+		refuseOffer(player_id, offer, why)
+		return
+	end
+	offerSeq = offerSeq + 1
+	local open = {
+		id = "o" .. offerSeq,
+		kind = offer.kind,
+		from = player_id,
+		to = offer.to,
+		fromName = MP.GetPlayerName(player_id),
+		toName = MP.GetPlayerName(offer.to),
+		amount = offer.amount,
+		expires = signalTimer:GetCurrent() + OFFER_SECONDS,
+	}
+	local shown = {id = open.id, kind = open.kind, from = open.fromName, amount = open.amount, expires = OFFER_SECONDS}
+	if offer.kind == "race" then
+		open.finish = {x = offer.finish.x, y = offer.finish.y, z = offer.finish.z}
+		open.start = {x = offer.start.x, y = offer.start.y, z = offer.start.z}
+		shown.distance = math.floor(distance(open.start, open.finish))
+		shown.prize = serverNumber("racePrize", 0, 1000000)
+	end
+	offers[open.id] = open
+	sendJson("offers", open.to, "rxMileageOffer", shown)
+	sendJson("offers", player_id, "rxMileageOfferSent", {id = open.id, kind = open.kind, to = open.toName,
+		amount = open.amount, expires = OFFER_SECONDS})
+end
+
+-- Set by the events section: answers to an event invitation, which carry the event id.
+local answerEvent
+
+-- The target answers {id, accept}. A request accepted is paid by the answering player
+-- through a transfer, within their sending limits; a challenge accepted starts the race.
+function mileageOfferAnswer(player_id, data)
+	received("offers")
+	local answer = decodeTable(data)
+	if not answer or type(answer.id) ~= "string" then return end
+	if answerEvent and answerEvent(player_id, answer) then return end
+	local offer = offers[answer.id]
+	if not offer or offer.to ~= player_id then return end
+	if answer.accept ~= true then
+		closeOffer(offer, "declined")
+		return
+	end
+	if offer.kind == "request" then
+		if not attemptTransaction(player_id, offer.from, offer.amount, signalTimer:GetCurrent()) then
+			closeOffer(offer, "limit")
+			return
+		end
+		closeOffer(offer, "accepted")
+		startTransfer({
+			kind = "payment",
+			from = offer.toName,
+			to = offer.fromName,
+			amount = offer.amount,
+			takeLabel = "Paid player: " .. offer.fromName,
+			giveLabel = "Payment from player: " .. offer.toName,
+		})
+		return
+	end
+	local why = offerProblem(offer.from, {kind = "race", to = offer.to, amount = offer.amount, finish = offer.finish,
+		start = offer.start})
+	if why and why ~= "open" then
+		closeOffer(offer, why)
+		return
+	end
+	closeOffer(offer, "accepted")
+	if startRace then startRace(offer) end
+end
+
+-- Offers past their time, and offers of a feature the owner switched off.
+local function offersTick()
+	local now = signalTimer:GetCurrent()
+	for _, offer in pairs(offers) do
+		if now >= offer.expires then
+			closeOffer(offer, "expired")
+		elseif offer.kind == "race" and not serverSwitch("allowRacing") then
+			closeOffer(offer, "racingOff")
+		elseif offer.kind == "request" and not serverSwitch("allowMoneyRequests") then
+			closeOffer(offer, "requestsOff")
+		elseif offer.kind == "request" and not serverSwitch("allowTransactions") then
+			closeOffer(offer, "paymentsOff")
+		end
+	end
+end
+
+local function offersPlayerLeft(player_id)
+	for _, offer in pairs(offers) do
+		if offer.from == player_id or offer.to == player_id then closeOffer(offer, "left") end
+	end
+end
+
 startMoneyFeatures = function()
 	loadTransfers()
+	offers = {}
 end
 
 --== Drag racing relay =======================================================
@@ -1675,6 +1922,7 @@ function careerSyncRequested(player_id, data)
 	local joined = counted and not counted.counted
 	if joined then counted.counted = true end
 	sendJson("config", player_id, "rxCareerSync", settingsFor(player_id))
+	sendFeatures(player_id)
 	if joined then
 		sendShares(true)
 		sharesChanged()
@@ -1883,6 +2131,7 @@ function tick()
 	sendWantedVehicleLists()
 	sendChangedShares()
 	transfersTick()
+	offersTick()
 	ticksSinceAlive = ticksSinceAlive + 1
 	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
 		ticksSinceAlive = 0
@@ -1924,6 +2173,7 @@ function onPlayerDisconnectHandler(player_id)
 	-- Release their strip presence first: if they held a strip, someone still standing
 	-- there has to inherit it or an in-progress race loses its authority.
 	releaseDragPresence(player_id)
+	offersPlayerLeft(player_id)
 	loadedPrefabs[player_id] = nil
 	ledger.send[player_id] = nil
 	ledger.receive[player_id] = nil
@@ -2013,6 +2263,8 @@ function SetConfig(arguments)
 	print("[Mileage] ---------- Config:    " .. section .. " " .. tostring(key) .. " set to " .. tostring(Config[section][key]))
 	WriteJson(configPath .. "config.json", Config)
 	sendJson("config", -1, "rxClientConfigUpdate", Config.client)
+	sendFeatures(-1)
+	-- Offers of a feature switched off close on the next tick.
 	-- An amount, a switch or a total may have changed everyone's share.
 	sharesChanged()
 end

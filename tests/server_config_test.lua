@@ -24,7 +24,10 @@ local function loadPlugin()
 	MP = {
 		CreateTimer = function() return {GetCurrent = function() return 0 end, Start = function() end} end,
 		GetPlayers = function() return {} end,
-		TriggerClientEvent = function(player, event, data) sentToClients = {event = event, data = data} end,
+		TriggerClientEvent = function(player, event, data)
+			sentToClients = sentToClients or {}
+			sentToClients[event] = {event = event, data = data}
+		end,
 	}
 	dofile(SOURCE)
 	local prepareConfig = upvalue(onInit, "prepareConfig")
@@ -185,6 +188,22 @@ test("a cleaned config is not rewritten on the next start", function()
 	end)
 end)
 
+test("a fresh install and an existing config get the racing, request and event settings at their defaults", function()
+	local defaults = {allowRacing = true, allowMoneyRequests = true, allowEvents = true, raceStakeMax = 10000,
+		racePrize = 0, racePrizeCooldownMinutes = 10, raceMinDistance = 500, raceTimeLimitMinutes = 15}
+	for _, existing in ipairs({false, true}) do
+		run(function()
+			local prepareConfig = loadPlugin()
+			stored = existing and ownersConfig() or nil
+			prepareConfig()
+			for key, value in pairs(defaults) do
+				same(written.server[key], value, key .. (existing and " added to an existing config" or ""))
+			end
+			if existing then same(written.server.longWindowMax, 10000, "the owner's other settings kept") end
+		end)
+	end
+end)
+
 test("SetConfig refuses the removed extra-traffic settings and still sets road traffic", function()
 	run(function()
 		local prepareConfig = loadPlugin()
@@ -197,7 +216,8 @@ test("SetConfig refuses the removed extra-traffic settings and still sets road t
 		SetConfig({"client", "roadTrafficEnabled", "true"})
 		expect(written ~= nil, "file written")
 		same(written.client.roadTrafficEnabled, true, "roadTrafficEnabled")
-		same(sentToClients and sentToClients.event, "rxClientConfigUpdate", "players told")
+		expect(sentToClients and sentToClients.rxClientConfigUpdate, "players told")
+		expect(sentToClients.rxMileageFeatures, "players told the server's switches")
 	end)
 end)
 

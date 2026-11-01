@@ -133,6 +133,53 @@
 		#playerlist-contextmenu button:hover {
 			background: #555;
 		}
+		#playerlist-contextmenu button:disabled {
+			color: #999;
+			cursor: default;
+		}
+		.pl-context-name, .pl-context-form-title {
+			color: white;
+			font-weight: bold;
+			margin-bottom: 6px;
+		}
+		.pl-context-why, .pl-context-info {
+			color: #ccc;
+			font-size: 0.85em;
+			margin: -2px 0 6px 0;
+		}
+		.pl-context-error {
+			color: #ff8a80;
+			font-size: 0.85em;
+			margin: 4px 0;
+		}
+		#pl-context-form {
+			border-top: 1px solid #555;
+			padding-top: 8px;
+			color: white;
+		}
+		#pl-context-form label {
+			display: block;
+			font-size: 0.85em;
+			margin-bottom: 4px;
+		}
+		#pl-context-form input {
+			width: 100%;
+			box-sizing: border-box;
+			background: #222;
+			color: white;
+			border: 1px solid #555;
+			border-radius: 3px;
+			padding: 6px;
+		}
+		#pl-context-form button {
+			background: #444;
+			color: white;
+			border: none;
+			padding: 6px 10px;
+			border-radius: 3px;
+			margin: 6px 4px 0 0;
+			cursor: pointer;
+		}
 		.playerslist-col-1 {
 			width: 32px;			
 		}

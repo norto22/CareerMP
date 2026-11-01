@@ -177,7 +177,7 @@ test("every feature of the readout has a row, even with nothing sent", function(
 	newServer({0})
 	local lines = statsLines()
 	for _, feature in ipairs({"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-			"payments", "transfers", "alive", "trafficLights", "notifications", "config"}) do
+			"payments", "transfers", "offers", "alive", "trafficLights", "notifications", "config"}) do
 		local r = row(lines, feature)
 		expect(r, "no row for " .. feature)
 		same(r.total.sent, 0, feature .. " messages")

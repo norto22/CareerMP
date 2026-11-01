@@ -213,33 +213,12 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 					playerlistContextmenu.style.left = e.clientX + "px";
 					playerlistContextmenu.style.position = "fixed";
 
+					// Leaving the menu closes it, unless an amount is being typed.
 					playerlistContextmenu.onmouseleave = function () {
-						playerlistContextmenu.style.display = "none";
+						if (!playerMenu.mode) closePlayerMenu();
 					};
 
-					document.getElementById("pl-context-Pay1Button").onclick = function() {
-						payPlayer(parsedList[i].name, 1);
-					}
-
-					document.getElementById("pl-context-Pay10Button").onclick = function() {
-						payPlayer(parsedList[i].name, 10);
-					}
-
-					document.getElementById("pl-context-Pay100Button").onclick = function() {
-						payPlayer(parsedList[i].name, 100);
-					}
-
-					document.getElementById("pl-context-Pay1000Button").onclick = function() {
-						payPlayer(parsedList[i].name, 1000);
-					}
-
-					document.getElementById("pl-context-Pay10000Button").onclick = function() {
-						payPlayer(parsedList[i].name, 10000);
-					}
-
-					document.getElementById("pl-context-Pay100000Button").onclick = function() {
-						payPlayer(parsedList[i].name, 100000);
-					}
+					openPlayerMenu(playerName);
 
 					for (let child of playerlistContextmenu.children) {
 						if (child.id === "pl-context-custom") {
@@ -369,6 +348,15 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 		bngApi.engineLua('MPCoreNetwork.leaveServer(true)');
 	};
 
+	// What the game says can be done with the player whose menu is open (mileage/offers).
+	$scope.$on('MileagePlayerActions', function(event, data) {
+		onPlayerActions(data);
+	})
+
+	$scope.openLeaderboard = function() {
+		bngApi.engineLua('if mileage_leaderboard then mileage_leaderboard.request() end');
+	};
+
 	bngApi.engineLua('UI.updatePlayersList(); UI.sendQueue()'); // instantly populate the playerlist and their queues
 	// A UI reload while the connection is lost must bring the banner back.
 	bngApi.engineLua('if mileage_connectionWatch then mileage_connectionWatch.sendState() end');
@@ -389,8 +377,127 @@ function luaString(text) {
 	return "require('mime').unb64('" + btoa(binary) + "')";
 }
 
-function payPlayer(targetPlayerName, amount) {
-	bngApi.engineLua('mileagePlayerPayments.payPlayer(' + luaString(targetPlayerName) + ', ' + (parseInt(amount, 10) || 0) + ')')
+//== the right-click menu: Race, Pay and Request money ==========================
+// The menu asks the game what can be done with the player (mileage_offers.actionsFor),
+// shows why an action is unavailable, and opens a small form for a typed amount. Every
+// text from the game or another player is set as text, never as markup.
+
+var playerMenu = {name: null, actions: null, mode: null};
+
+var ACTION_FORMS = {
+	race: {title: "Race ", label: "Stake (both put in, winner takes all)", send: "Send challenge",
+		call: "mileage_offers.race", allowZero: true},
+	pay: {title: "Pay ", label: "Amount", send: "Pay", call: "mileagePlayerPayments.payPlayer", allowZero: false},
+	request: {title: "Ask for money from ", label: "Amount", send: "Send request", call: "mileage_offers.request",
+		allowZero: false},
+};
+
+function plDollars(n) {
+	return "$" + Number(n || 0).toLocaleString("en-US");
+}
+
+function plSetText(id, text) {
+	var el = document.getElementById(id);
+	if (el) el.textContent = text == null ? "" : String(text);
+}
+
+function plShow(id, shown) {
+	var el = document.getElementById(id);
+	if (el) el.style.display = shown ? "block" : "none";
+}
+
+function openPlayerMenu(name) {
+	playerMenu = {name: name, actions: null, mode: null};
+	plSetText("pl-context-name", name);
+	plShow("pl-context-form", false);
+	renderPlayerActions();
+	bngApi.engineLua('if mileage_offers then mileage_offers.actionsFor(' + luaString(name) + ') end');
+}
+
+function closePlayerMenu() {
+	playerMenu.mode = null;
+	plShow("pl-context-form", false);
+	plShow("playerlist-contextmenu", false);
+}
+
+function renderPlayerActions() {
+	var actions = playerMenu.actions;
+	Object.keys(ACTION_FORMS).forEach(function(kind) {
+		var button = document.getElementById("pl-context-" + kind);
+		var action = actions && actions[kind];
+		var off = Boolean(action && action.ok === false);
+		button.disabled = off;
+		plSetText("pl-context-" + kind + "-why", off ? action.why : "");
+		plShow("pl-context-" + kind + "-why", off);
+		button.onclick = function() { if (!button.disabled) openActionForm(kind); };
+	});
+}
+
+function onPlayerActions(data) {
+	if (!data || data.name !== playerMenu.name) return;
+	playerMenu.actions = data;
+	renderPlayerActions();
+}
+
+function actionInfo(kind) {
+	var action = playerMenu.actions && playerMenu.actions[kind];
+	if (!action) return "";
+	if (kind === "race") {
+		var km = typeof action.distance === "number" ? " · " + (action.distance / 1000).toFixed(1) + " km away" : "";
+		var prize = action.prize > 0 ? " · server prize " + plDollars(action.prize) : "";
+		return "Finish: your map route" + km + ". Up to " + plDollars(action.stakeMax) + " on this server" + prize;
+	}
+	if (kind === "pay" && typeof action.money === "number") return "You have " + plDollars(action.money) + ".";
+	return "";
+}
+
+function openActionForm(kind) {
+	var form = ACTION_FORMS[kind];
+	playerMenu.mode = kind;
+	plSetText("pl-context-form-title", form.title + playerMenu.name);
+	plSetText("pl-context-form-info", actionInfo(kind));
+	plSetText("pl-context-amount-label", form.label);
+	plSetText("pl-context-send", form.send);
+	plSetText("pl-context-error", "");
+	var input = document.getElementById("pl-context-amount");
+	input.value = kind === "race" ? "0" : "";
+	// Typing needs the game's keyboard focus on the UI.
+	input.onfocus = function() { bngApi.engineLua('setCEFFocus(true)'); };
+	document.getElementById("pl-context-send").onclick = sendActionForm;
+	document.getElementById("pl-context-cancel").onclick = closePlayerMenu;
+	plShow("pl-context-form", true);
+}
+
+// A whole number of dollars typed by the player, or null.
+function parseAmount(text, allowZero) {
+	var typed = String(text == null ? "" : text).trim().replace(/[$,]/g, "");
+	if (!/^\d{1,12}$/.test(typed)) return null;
+	var amount = parseInt(typed, 10);
+	if (amount === 0 && !allowZero) return null;
+	return amount;
+}
+
+function sendActionForm() {
+	var kind = playerMenu.mode;
+	var form = ACTION_FORMS[kind];
+	if (!form) return;
+	var amount = parseAmount(document.getElementById("pl-context-amount").value, form.allowZero);
+	if (amount === null) {
+		plSetText("pl-context-error", form.allowZero ? "Enter a stake of $0 or more, in whole dollars."
+			: "Enter a whole number of dollars above $0.");
+		return;
+	}
+	var action = playerMenu.actions && playerMenu.actions[kind];
+	if (kind === "pay" && action && typeof action.money === "number" && amount > action.money) {
+		plSetText("pl-context-error", "More than you have (" + plDollars(action.money) + "). Enter a smaller amount.");
+		return;
+	}
+	if (kind === "race" && action && typeof action.stakeMax === "number" && amount > action.stakeMax) {
+		plSetText("pl-context-error", "Above this server's limit of " + plDollars(action.stakeMax) + ".");
+		return;
+	}
+	bngApi.engineLua(form.call + '(' + luaString(playerMenu.name) + ', ' + amount + ')');
+	closePlayerMenu();
 }
 
 function setOfflineInPlayerList() {

@@ -1,0 +1,17 @@
+{
+  "domElement": "<mileageoffers></mileageoffers>",
+  "name": "Mileage Prompts",
+  "types": [
+    "ui.apps.categories.beammp"
+  ],
+  "css": {
+    "right": "305px",
+    "top": "240px",
+    "width": "340px",
+    "height": "520px"
+  },
+  "description": "Race challenges, money requests, race results, race events and the leaderboard on a Mileage server.",
+  "author": "Mileage",
+  "version": "1.0",
+  "directive": "mileageoffers"
+}

@@ -158,6 +158,20 @@ local multiplayerApps = {
 			top = "240px",
 			width = "300px"
 		}
+	},
+	-- Mileage's prompts: race challenges, money requests, the race countdown and result,
+	-- race events and the leaderboard. Beside the player list, which opens most of them.
+	mileageoffers = {
+		appName = "mileageoffers",
+		placement = {
+			bottom = "",
+			height = "520px",
+			left = "",
+			position = "absolute",
+			right = "305px",
+			top = "240px",
+			width = "340px"
+		}
 	}
 }
 
@@ -424,6 +438,7 @@ local function processLayout(layoutInfo, isDefault)
 		updated = replaceApp(layout, name, multiplayerApps.mileageplayerlist) or updated
 	end
 	updated = checkApp(layout, multiplayerApps.mileageplayerlist) or updated
+	updated = checkApp(layout, multiplayerApps.mileageoffers) or updated
 	updated = resizeApp(layout, multiplayerApps.dragRace) or updated
 
 	if updated then

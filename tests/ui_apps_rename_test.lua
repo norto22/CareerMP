@@ -258,3 +258,20 @@ test("an old careermp.uilayout.json whose apps is not a list leaves the shipped 
 	expect(i, "player list added")
 	same(layout.apps[i].placement.left, "100px", "shipped override placement")
 end)
+
+test("the Mileage prompts app is added beside the player list, once", function()
+	local M = loadModule({
+		[USER_DEFAULT .. "career.uilayout.json"] = oldCareerLayout(BUILD),
+		[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+	})
+	M.migrateLayouts()
+	files[USER_DEFAULT .. "career.uilayout.json"] = written[USER_DEFAULT .. "career.uilayout.json"]
+	M.migrateLayouts()
+	local layout = written[USER_DEFAULT .. "career.uilayout.json"]
+	local count, placement = 0, nil
+	for _, app in ipairs(layout.apps) do
+		if app.appName == "mileageoffers" then count, placement = count + 1, app.placement end
+	end
+	same(count, 1, "prompts app in the layout")
+	same(placement.right, "305px", "beside the player list")
+end)
