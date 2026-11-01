@@ -14,21 +14,26 @@ Played on a live server:
 - Joining a server and starting a career (BeamNG.drive 0.40.4.0)
 - Buying a car, customising parts and parcel deliveries
 - Drag racing another player on one tree
+- Tuning, painting, insurance and repairs
+- Seeing damage on other players' cars
+- Paint sync
+- Shared road traffic
+- Synced traffic lights
+- Other players' cars shown correctly
+- Chat
+- Local saves: continue on any Mileage server, or offline
 
 Built, waiting for a live test:
-- Tuning, painting, insurance and repairs ([#28](https://github.com/norto22/Mileage/issues/28), [#29](https://github.com/norto22/Mileage/issues/29))
-- Seeing damage on other players' cars ([#98](https://github.com/norto22/Mileage/issues/98))
-- Paint sync ([#31](https://github.com/norto22/Mileage/issues/31))
 - Mission and challenge props everyone sees ([#30](https://github.com/norto22/Mileage/issues/30))
-- Shared traffic, police and parked cars ([#99](https://github.com/norto22/Mileage/issues/99))
-- Synced traffic lights, red-light cameras and speed traps ([#34](https://github.com/norto22/Mileage/issues/34))
+- Police and parked cars in shared traffic ([#99](https://github.com/norto22/Mileage/issues/99))
+- Red-light cameras and speed traps ([#34](https://github.com/norto22/Mileage/issues/34))
 - Paying and asking other players for money ([#33](https://github.com/norto22/Mileage/issues/33))
 - Street races for money ([#105](https://github.com/norto22/Mileage/issues/105))
 - Race events run by the server owner ([#106](https://github.com/norto22/Mileage/issues/106))
 - A server leaderboard ([#107](https://github.com/norto22/Mileage/issues/107))
-- Other players' cars and nametags shown correctly ([#35](https://github.com/norto22/Mileage/issues/35), [#69](https://github.com/norto22/Mileage/issues/69))
+- Nametags hidden for traffic and spawnables ([#69](https://github.com/norto22/Mileage/issues/69))
 - Three or more players at once ([#32](https://github.com/norto22/Mileage/issues/32))
-- Chat in missions, local saves, mod vehicles and longer render distance ([#100](https://github.com/norto22/Mileage/issues/100))
+- Mod vehicles and longer render distance ([#100](https://github.com/norto22/Mileage/issues/100))
 
 ## Planned
 - Co-op jobs with split pay ([#89](https://github.com/norto22/Mileage/issues/89))
