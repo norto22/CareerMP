@@ -477,3 +477,70 @@ test("starting the career twice wraps BeamMP's function once", function()
 	watch.onExtensionUnloaded()
 	same(UI.showMdDialog, originalDialog, "BeamMP's function after unloading")
 end)
+
+--== loading, the dialog hook's edges and repeated saves =======================
+
+test("the mod loads the connection watch after careerMPEnabler and keeps it across level switches", function()
+	local loaded, modes = {}, {}
+	local realLoad = load
+	load = function(path) table.insert(loaded, path) end
+	setExtensionUnloadMode = function(path, mode) modes[path] = mode end
+	local ok, err = pcall(dofile, "Resources/Client/CareerMP/scripts/CareerMP/modScript.lua")
+	load = realLoad
+	expect(ok, tostring(err))
+	local at = {}
+	for i, path in ipairs(loaded) do at[path] = i end
+	expect(at["careerMP/connectionWatch"] ~= nil, "careerMP/connectionWatch is loaded")
+	expect(at["careerMP/connectionWatch"] > at["careerMPEnabler"], "loaded after careerMPEnabler")
+	same(modes["careerMP/connectionWatch"], "manual", "unload mode")
+end)
+
+test("BeamMP's disconnect dialog with no text at all is a lost connection", function()
+	local watch = setup()
+	watch.onCareerActive(true)
+	UI.showMdDialog({title = DISCONNECT_TITLE, okLua = LEAVE_LUA})
+	local lost, count = lastLost()
+	same(count, 1, "events")
+	same(lost.kicked, false, "kicked")
+	same(lost.message, "Lost connection to the server", "message")
+	same(#dialogs, 1, "BeamMP's dialog still opens")
+end)
+
+test("when the watch's own handling fails, BeamMP's dialog still opens and the failure is logged", function()
+	local watch = setup()
+	watch.onCareerActive(true)
+	guihooks.trigger = function() error("ui gone") end
+	disconnectDialog("")
+	same(#dialogs, 1, "BeamMP's dialog still opens")
+	same(countLines(logs, "E careerMP.connection: disconnect check failed"), 1, "failure logged")
+end)
+
+test("a retry that fails again is reported as failed again, never as saved", function()
+	local watch = setup()
+	saveFails = true
+	watch.onCareerActive(true)
+	frames(watch, 11)
+	watch.retrySave()
+	local lost, count = lastLost()
+	same(count, 2, "events")
+	same(lost.saveState, "failed", "save state after the failed retry")
+	same(lost.saved, false, "saved")
+	same(saves, 2, "saves")
+	same(countLines(logs, "E careerMP.connection: career save failed"), 2, "both failures logged")
+end)
+
+test("a retry the game never confirms turns back to failed after the wait", function()
+	local watch = setup()
+	saveFinish = "never"
+	watch.onCareerActive(true)
+	frames(watch, 20)
+	same(lastLost().saveState, "failed", "first save")
+	watch.retrySave()
+	same(lastLost().saveState, "saving", "while the retry waits")
+	frames(watch, 9)
+	same(lastLost().saveState, "saving", "still waiting after 9 s")
+	frames(watch, 1)
+	local lost = lastLost()
+	same(lost.saveState, "failed", "after the retry's wait")
+	same(lost.saved, false, "saved")
+end)

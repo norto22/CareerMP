@@ -122,7 +122,7 @@ The vehicle marketplace is local to each save; trading vehicles between players 
 python3 tools/build.py
 ```
 
-The script needs only Python 3 and gives the same archive every time. `lua tests/run.lua` runs the tests, which load the real sources against stand-ins for the game and the BeamMP server. `python3 tools/build.py --package` also writes the server release package to `dist/`.
+The script needs only Python 3 and gives the same archive every time. `lua tests/run.lua` runs the tests, which load the real sources against stand-ins for the game and the BeamMP server; `node tests/player_list_test.js` runs the player list app's tests the same way. `python3 tools/build.py --package` also writes the server release package to `dist/`.
 
 ## Releasing
 Every pull request into `main` is a release. Title it with the new version (`v0.2.0`) and set the same version in `Resources/Server/CareerMP/versions/client.json` and `server.json`. A check confirms the title, the versions and the rebuilt archive, and attaches the package to the run so you can test it. Merging publishes the release, with the pull request's description as its notes.

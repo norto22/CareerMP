@@ -112,6 +112,69 @@ test("the app asks for the current state when it loads", () => {
 	assert.ok(lua.includes("if careerMP_connectionWatch then careerMP_connectionWatch.sendState() end"));
 });
 
+// The banner's template, from the real app.html.
+const TEMPLATE = fs.readFileSync("Resources/Client/CareerMP/ui/modules/apps/CareerMP-PlayerList/app.html", "utf8");
+
+// The markup of the element opened at `start`, up to its matching </div>.
+function divBlock(start) {
+	const tag = /<\/?div\b/g;
+	tag.lastIndex = start;
+	let depth = 0, m;
+	while ((m = tag.exec(TEMPLATE))) {
+		depth += m[0] === "<div" ? 1 : -1;
+		if (depth === 0) return TEMPLATE.slice(start, TEMPLATE.indexOf(">", m.index) + 1);
+	}
+	throw new Error("unclosed div");
+}
+
+// Evaluates an Angular expression from the template against the controller's scope.
+function evalExpr(expr, scope) {
+	return new Function("s", "with (s) { return (" + expr + "); }")(scope);
+}
+
+test("an update that arrives after the loss but before the screen redraws is ignored", () => {
+	const {scope, table} = load();
+	const pending = [];
+	scope.$evalAsync = (fn) => pending.push(fn);
+	scope.emit("onBeamMPPlayerList", PLAYERS);
+	scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: "saving"});
+	scope.emit("onBeamMPPlayerList", PLAYERS);
+	assert.strictEqual(table.rows.length, 1, "rows before the redraw");
+	pending.forEach((fn) => fn());
+	assert.strictEqual(scope.connection.lost, true, "banner shown after the redraw");
+});
+
+test("the banner sits outside the folding list, so it shows with the list folded away", () => {
+	const start = TEMPLATE.indexOf('<div id="connection-banner"');
+	assert.ok(start >= 0, "banner in the template");
+	const banner = divBlock(start);
+	assert.ok(!banner.includes('id="plist-container"') && !banner.includes('id="main-container"'), "banner holds no list");
+	const list = TEMPLATE.indexOf('<div id="plist-container"');
+	assert.ok(!divBlock(list).includes("connection-banner"), "list holds no banner");
+});
+
+test("the banner shows the message and save line as text, never as markup", () => {
+	const banner = divBlock(TEMPLATE.indexOf('<div id="connection-banner"'));
+	assert.ok(/class="connection-message" ng-bind="connection\.message"/.test(banner), "message bound as text");
+	assert.ok(/class="connection-save" ng-bind="saveText\(\)"/.test(banner), "save line bound as text");
+	assert.ok(!/ng-bind-html|innerHTML/.test(banner), "no markup binding");
+});
+
+test("Try saving again shows only after a failed save; Return to menu always", () => {
+	const {scope} = load();
+	const banner = divBlock(TEMPLATE.indexOf('<div id="connection-banner"'));
+	const retry = banner.match(/<button[^>]*ng-show="([^"]*)"[^>]*ng-click="retrySave\(\)"[^>]*>Try saving again</);
+	assert.ok(retry, "Try saving again button with ng-show");
+	const shown = (state) => {
+		scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: state, saved: state === "saved"});
+		return Boolean(evalExpr(retry[1], scope));
+	};
+	assert.strictEqual(shown("saving"), false, "while saving");
+	assert.strictEqual(shown("saved"), false, "after a save");
+	assert.strictEqual(shown("failed"), true, "after a failed save");
+	assert.ok(/<button(?![^>]*ng-show)[^>]*ng-click="returnToMenu\(\)"[^>]*>Return to menu</.test(banner), "Return to menu always shown");
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
 	try {
