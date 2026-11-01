@@ -215,3 +215,46 @@ test("an override saved as careermp.uilayout.json still places the player list",
 	expect(i, "player list added")
 	same(layout.apps[i].placement.left, "777px", "override placement")
 end)
+
+test("an old player list saved without a placement becomes Mileage's at Mileage's default place", function()
+	local layout = oldCareerLayout(BUILD)
+	layout.apps[2] = {appName = "careermpplayerlist"}
+	local M = loadModule({
+		[USER_DEFAULT .. "career.uilayout.json"] = layout,
+		[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+	})
+	M.migrateLayouts()
+	local saved = written[USER_DEFAULT .. "career.uilayout.json"]
+	same(indexOf(names(saved), "mileageplayerlist"), 2, "swapped where it was")
+	expect(type(saved.apps[2].placement) == "table", "Mileage's placement kept")
+	same(saved.apps[2].placement.top, "240px", "Mileage's default top")
+end)
+
+test("broken entries in an old careermp.uilayout.json are skipped and its player list still applies", function()
+	local M = loadModule({
+		[USER_DEFAULT .. "careermp.uilayout.json"] = {
+			apps = {"junk", {placement = {left = "1px"}}, {appName = "careermpplayerlist", placement = {left = "777px"}}},
+		},
+		[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+	})
+	M.migrateLayouts()
+	local layout = written[USER_DEFAULT .. "career.uilayout.json"]
+	local i = indexOf(names(layout), "mileageplayerlist")
+	expect(i, "player list added")
+	same(layout.apps[i].placement.left, "777px", "the player's old override")
+end)
+
+test("an old careermp.uilayout.json whose apps is not a list leaves the shipped override in charge", function()
+	local M = loadModule({
+		[USER_DEFAULT .. "mileage.uilayout.json"] = {
+			apps = {{appName = "mileageplayerlist", placement = {left = "100px"}}},
+		},
+		[USER_DEFAULT .. "careermp.uilayout.json"] = {apps = "not a list"},
+		[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+	})
+	M.migrateLayouts()
+	local layout = written[USER_DEFAULT .. "career.uilayout.json"]
+	local i = indexOf(names(layout), "mileageplayerlist")
+	expect(i, "player list added")
+	same(layout.apps[i].placement.left, "100px", "shipped override placement")
+end)

@@ -567,11 +567,13 @@ end
 -- starts, in an order where every failure leaves CareerMP serving players:
 --   1. CareerMP's settings are copied, through a checked temporary file, when Mileage
 --      has none of its own yet.
---   2. While CareerMP.zip is in place, Mileage's client mod must be ready: in place, held
---      by the last CareerMP plugin, or downloaded now to the held path.
---   3. CareerMP.zip is set aside and the CareerMP plugin removed; if the plugin cannot be
---      removed CareerMP.zip goes back. Only then does the held client mod go into place.
--- Leftovers from an earlier move (version files, a held or set-aside zip) are cleaned up.
+--   2. While CareerMP.zip is in place, Mileage's client mod must be ready: a non-empty one
+--      in place, held by the last CareerMP plugin, or downloaded now to the held path.
+--   3. CareerMP.zip is set aside, the held client mod is moved into place, and only then
+--      is the CareerMP plugin removed. Until the plugin is gone each move is undone when a
+--      later one fails, so CareerMP.zip and the plugin go back as they were.
+-- An empty Mileage.zip counts as none. Leftovers from an earlier move (version files, a
+-- held or set-aside zip) are cleaned up.
 -- The old settings stay where they were, for the owner to check and delete.
 --
 -- Returns "done" when CareerMP was removed this start and the server must restart to be
@@ -590,7 +592,7 @@ local function moveFromCareerMP()
 	local newClient = CLIENT_PATH .. CLIENT_FILE
 	local removedCareerMP = false
 	if FS.Exists(OLD_CLIENT) then
-		if not FS.Exists(newClient) and fileSize(HELD_CLIENT) == 0 then
+		if fileSize(newClient) == 0 and fileSize(HELD_CLIENT) == 0 then
 			if not downloadFile(CLIENT_URL, HELD_CLIENT) or fileSize(HELD_CLIENT) == 0 then
 				moveLog("could not download Mileage's client mod. CareerMP stays as it was and the next start tries again")
 				return "failed"
@@ -601,12 +603,27 @@ local function moveFromCareerMP()
 			moveLog("could not remove " .. OLD_CLIENT .. ". CareerMP stays as it was and the next start tries again")
 			return "failed"
 		end
-		if FS.Exists(OLD_PLUGIN) and not os.remove(OLD_PLUGIN) then
+		local placed = false
+		local function undo(why)
+			if placed and not os.rename(newClient, HELD_CLIENT) then
+				moveLog("could not move " .. newClient .. " back to " .. HELD_CLIENT .. "; move it back by hand")
+			end
 			if not os.rename(SET_ASIDE_CLIENT, OLD_CLIENT) then
 				moveLog("could not put " .. OLD_CLIENT .. " back from " .. SET_ASIDE_CLIENT .. "; move it back by hand")
 			end
-			moveLog("could not remove " .. OLD_PLUGIN .. ". CareerMP stays as it was; delete the file by hand, or the next start tries again")
+			moveLog(why)
 			return "failed"
+		end
+		if fileSize(newClient) == 0 then
+			os.remove(newClient)
+			if not os.rename(HELD_CLIENT, newClient) then
+				return undo("could not move " .. HELD_CLIENT .. " to " .. newClient .. ". CareerMP stays as it was and the next start tries again")
+			end
+			placed = true
+			moveLog("put Mileage's client mod in place at " .. newClient)
+		end
+		if FS.Exists(OLD_PLUGIN) and not os.remove(OLD_PLUGIN) then
+			return undo("could not remove " .. OLD_PLUGIN .. ". CareerMP stays as it was; delete the file by hand, or the next start tries again")
 		end
 		moveLog("removed the old client mod " .. OLD_CLIENT .. " and the CareerMP plugin")
 		removedCareerMP = true
@@ -617,12 +634,17 @@ local function moveFromCareerMP()
 	end
 
 	if FS.Exists(HELD_CLIENT) then
-		if FS.Exists(newClient) then
+		if fileSize(newClient) > 0 then
 			os.remove(HELD_CLIENT)
-		elseif os.rename(HELD_CLIENT, newClient) then
-			moveLog("put Mileage's client mod in place at " .. newClient)
 		else
-			moveLog("could not move " .. HELD_CLIENT .. " to " .. newClient .. "; Mileage's update check downloads it instead")
+			-- An empty Mileage.zip is no client mod; with it gone, the update check
+			-- downloads one should the held copy fail to move.
+			os.remove(newClient)
+			if os.rename(HELD_CLIENT, newClient) then
+				moveLog("put Mileage's client mod in place at " .. newClient)
+			else
+				moveLog("could not move " .. HELD_CLIENT .. " to " .. newClient .. "; Mileage's update check downloads it instead")
+			end
 		end
 	end
 	local leftovers = {SET_ASIDE_CLIENT}

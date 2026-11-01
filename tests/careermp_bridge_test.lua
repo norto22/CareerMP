@@ -280,3 +280,15 @@ test("while Mileage's handoff has not removed CareerMP.zip this plugin still run
 		same(countLines(printed, "which is installed and takes over on its next start"), 1, "logged")
 	end)
 end)
+
+test("a held client mod left by an earlier failed move is replaced by a fresh download", function()
+	run(function()
+		local existing = {[OLD_CLIENT] = "careermp zip", [HELD_CLIENT] = "stale zip from a failed start"}
+		same(start(existing, config(true, true), mileageServed()), true, "willExit")
+		same(files[HELD_CLIENT], "mileage zip", "held client mod is the fresh download")
+		same(files[HELD_CLIENT .. ".bak"], nil, "no backup left behind")
+		same(files[HELD_CLIENT .. ".download"], nil, "no download left behind")
+		same(files[PLUGIN], "-- Mileage", "Mileage plugin")
+		same(#newClientFiles(), 0, "new files in Resources/Client/")
+	end)
+end)

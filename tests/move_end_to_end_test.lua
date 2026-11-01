@@ -159,14 +159,22 @@ local function fakeOpen(path, mode)
 	return handle
 end
 
+local removeRefusedOnce, windowsRenames
+
 local function fakeRemove(path)
 	if files[path] == nil then return nil, path .. ": No such file or directory" end
+	if removeRefusedOnce[path] then
+		removeRefusedOnce[path] = nil
+		return nil, path .. ": Permission denied"
+	end
 	files[path] = nil
 	return true
 end
 
 local function fakeRename(from, to)
 	if files[from] == nil then return nil, from .. ": No such file or directory" end
+	-- os.rename on Windows fails when the target exists, where Linux replaces it.
+	if windowsRenames and files[to] ~= nil then return nil, to .. ": File exists" end
 	local dir = to:match("(.+)/[^/]+$")
 	if dir and not dirs[dir] then return nil, to .. ": No such file or directory" end
 	files[to], files[from] = files[from], nil
@@ -351,6 +359,7 @@ local function runMove(existing, order, opts)
 	local ok, err = pcall(function()
 		files, dirs, fetched = {}, {}, {}
 		failOnce, refuseOnce = opts.failOnce or {}, opts.refuseOnce or {}
+		removeRefusedOnce, windowsRenames = opts.removeRefusedOnce or {}, opts.windowsRenames == true
 		for path, data in pairs(existing) do
 			files[path] = data
 			addDirs(path)
@@ -462,5 +471,27 @@ for _, order in ipairs({"folder", "reverse"}) do
 		for _, path in ipairs({PLUGIN, CLIENT_VERSION, SERVER_VERSION, CLIENT}) do existing[path] = BRANCH[path] end
 		runMove(existing, order)
 		settledOnMileage("hand install")
+	end)
+end
+
+test("a failed Mileage version fetch keeps CareerMP serving, and the next start completes the move", function()
+	local url = REPO .. SERVER_VERSION
+	local log = runMove(careerMPServer("0.2.0"), "folder", {failOnce = {[url] = true}})
+	settledOnMileage("version fetch failed once")
+	same(countLines(log, "could not fetch " .. url), 1, "failed fetch logged")
+end)
+
+for _, order in ipairs({"folder", "reverse"}) do
+	test("a CareerMP plugin that refuses removal once keeps CareerMP serving with CareerMP.zip back (" .. order .. " order)", function()
+		local log = runMove(careerMPServer("0.2.0"), order, {removeRefusedOnce = {[OLD_PLUGIN] = true}})
+		settledOnMileage("plugin removal refused once")
+		same(countLines(log, "could not remove " .. OLD_PLUGIN), 1, "failed removal logged")
+	end)
+end
+
+for _, order in ipairs({"folder", "reverse"}) do
+	test("with renames that refuse an existing target, as on Windows, the move completes (" .. order .. " order)", function()
+		runMove(careerMPServer("0.2.0"), order, {windowsRenames = true})
+		settledOnMileage("Windows renames")
 	end)
 end

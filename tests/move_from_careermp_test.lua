@@ -319,7 +319,62 @@ test("a CareerMP plugin that cannot be removed puts CareerMP.zip back and stops 
 	end)
 end)
 
+test("a held client mod that cannot be moved into place stops the handoff with CareerMP as it was", function()
+	run(function()
+		local move = loadPlugin(bridgedInstall())
+		refused[NEW_CLIENT] = true
+		same(move(), "failed", "result")
+		careerMPKept("refused move into place")
+		same(files[HELD_CLIENT], "held zip", "held client mod kept for the next start")
+		same(files[SET_ASIDE], nil, "no set-aside zip left")
+		same(countLines(printed, "could not move " .. HELD_CLIENT .. " to " .. NEW_CLIENT), 1, "step logged")
+	end)
+end)
+
+test("an empty Mileage.zip in place is replaced by the held copy", function()
+	run(function()
+		local existing = bridgedInstall()
+		existing[NEW_CLIENT] = ""
+		local move = loadPlugin(existing)
+		same(move(), "done", "result")
+		same(files[NEW_CLIENT], "held zip", "held client mod in place")
+		same(files[HELD_CLIENT], nil, "no held copy left")
+	end)
+end)
+
+test("an empty Mileage.zip in place with nothing held is downloaded before CareerMP goes", function()
+	run(function()
+		local existing = oldInstall()
+		existing[NEW_CLIENT] = ""
+		local move = loadPlugin(existing)
+		same(move(), "done", "result")
+		same(fetched[1], CLIENT_URL, "client mod downloaded")
+		same(files[NEW_CLIENT], "mileage zip", "downloaded client mod in place")
+	end)
+end)
+
+test("an empty Mileage.zip whose download fails keeps CareerMP as it was", function()
+	run(function()
+		local existing = oldInstall()
+		existing[NEW_CLIENT] = ""
+		local move = loadPlugin(existing)
+		served[CLIENT_URL] = nil
+		same(move(), "failed", "result")
+		same(files[OLD_CLIENT], "careermp zip", "CareerMP client mod")
+		same(files[OLD_PLUGIN], "-- CareerMP", "CareerMP plugin")
+	end)
+end)
+
 --== leftovers once CareerMP.zip is gone =====================================
+
+test("a held client mod left over replaces an empty Mileage.zip", function()
+	run(function()
+		local move = loadPlugin({[HELD_CLIENT] = "held zip", [NEW_CLIENT] = "", [NEW_CONFIG] = "{}"})
+		same(move(), "none", "result")
+		same(files[NEW_CLIENT], "held zip", "client mod in place")
+		same(files[HELD_CLIENT], nil, "no held copy left")
+	end)
+end)
 
 test("leftover CareerMP files with CareerMP.zip gone are cleaned up", function()
 	run(function()
@@ -435,5 +490,31 @@ test("a server with nothing from CareerMP starts normally without restarting", f
 		same(willExit, false, "willExit")
 		expect(registeredEvent("onPlayerJoin"), "Mileage handles players")
 		same(countLines(printed, "Moving from CareerMP"), 0, "nothing logged")
+	end)
+end)
+
+--== renames that refuse an existing target, as on Windows ==================
+
+-- os.rename on Windows fails when the target exists, where Linux replaces it.
+local function windowsRenames()
+	local rename = os.rename
+	os.rename = function(from, to)
+		if files[to] ~= nil then return nil, to .. ": file exists" end
+		return rename(from, to)
+	end
+end
+
+test("a CareerMP.zip set aside by an interrupted handoff does not block the next one on Windows", function()
+	run(function()
+		local existing = bridgedInstall()
+		existing[SET_ASIDE] = "careermp zip from an interrupted start"
+		local move = loadPlugin(existing)
+		windowsRenames()
+		same(move(), "done", "result")
+		same(files[NEW_CLIENT], "held zip", "held client mod in place")
+		same(files[OLD_CLIENT], nil, "old client mod")
+		same(files[OLD_PLUGIN], nil, "old plugin")
+		same(files[SET_ASIDE], nil, "no set-aside CareerMP zip left")
+		same(files[NEW_CONFIG], SETTINGS, "settings copied")
 	end)
 end)
