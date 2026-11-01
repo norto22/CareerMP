@@ -13,6 +13,11 @@
 --     a saved damaged car (beamstate.load): points moved into place, rest lengths set,
 --     broken beams broken, deformation recorded.
 --
+-- The owner wins: a copy that disagrees with what its owner reported on more than 20
+-- beams for two checks in a row (damage only this game simulated) is reset in place and
+-- given the owner's full damage. An owner's reset or repair sends a cleared notice, and
+-- an owner answers a request for its full damage (a copy built late, or one resynced).
+--
 -- Every value from a message is checked against this car before it is used.
 
 local M = {}
@@ -24,6 +29,15 @@ local LENGTH_CHANGED = 0.001     -- metres of rest length that count as a change
 local MAX_LENGTH = 100           -- metres; a rest length beyond this is refused
 local MAX_OFFSET = 20            -- metres from the reference node; further is refused
 local MAX_DEFORM = 10            -- deformation ratio; larger is refused
+
+-- Owner wins: once a second a copy counts beams that disagree with what the owner
+-- reported; above RESYNC_BEAMS on two checks in a row it is reset in place and given
+-- the owner's full damage, at most once every RESYNC_COOLDOWN seconds.
+local CHECK_EVERY_SECONDS = 1
+local RESYNC_BEAMS = 20
+local RESYNC_LENGTH = 0.02       -- metres off the reported rest length
+local RESYNC_CHECKS = 2
+local RESYNC_COOLDOWN = 10
 
 local abs, sqrt, floor = math.abs, math.sqrt, math.floor
 local huge = math.huge
@@ -37,12 +51,18 @@ local sent = {}
 local lastDamage = nil
 local sinceSend = 0
 local moreToSend = false
+local fullWanted = false
+local fullQueue, fullNext = nil, 1
+local clearedPending = false
 
 -- Copy: the owner's last reported state of each beam ({len, broken}), and whether the
 -- owner has been heard from at all.
 local reported = {}
 local heard = false
 local refusedLogged = false
+local sinceCheck = 0
+local checksOver = 0
+local sinceResync = huge
 
 --== the car's own frame ======================================================
 
@@ -94,6 +114,10 @@ end
 local function sentState(cid)
 	local s = sent[cid]
 	if s then return s.len, s.broken end
+	return baseline[cid], false
+end
+
+local function builtState(cid)
 	return baseline[cid], false
 end
 
@@ -151,11 +175,45 @@ end
 local function forgetSent()
 	sent = {}
 	moreToSend = false
+	fullQueue = nil
 end
 
--- One message per half-second tick: the beams changed since the last message.
+-- One message per half-second tick: a cleared notice first, then a full-damage answer,
+-- then the beams changed since the last message.
 local function ownerTick()
 	local damage = beamstate.damage or 0
+	if lastDamage and lastDamage > 0 and damage <= 0 then
+		-- The game's damage total drops to nothing only on a reset or repair.
+		forgetSent()
+		clearedPending = true
+	end
+
+	if clearedPending then
+		clearedPending = false
+		lastDamage = damage
+		send('{"c":1,"b":[],"n":[]}')
+		return
+	end
+
+	if fullWanted then
+		fullWanted = false
+		fullQueue, fullNext = changedBeams(builtState), 1
+		if #fullQueue == 0 then
+			-- An undamaged car still answers, so the copy knows its owner is listening.
+			fullQueue = nil
+			send('{"c":0,"b":[],"n":[]}')
+			return
+		end
+	end
+	if fullQueue then
+		local message, nextIndex = packMessage(fullQueue, fullNext)
+		if message then send(message) end
+		fullNext = nextIndex
+		if fullNext > #fullQueue then fullQueue = nil end
+		lastDamage = damage
+		return
+	end
+
 	if damage == lastDamage and not moreToSend then return end
 	lastDamage = damage
 	local list = changedBeams(sentState)
@@ -191,7 +249,12 @@ local function applyDamage(cleared, beams, nodes)
 	if role ~= "copy" then return end
 	heard = true
 	if cleared == 1 then
+		-- The owner reset or repaired the car. A broken beam cannot be mended in place,
+		-- so a copy with any damage is reset too.
 		reported = {}
+		if next(beamstate.deformedBeams or {}) ~= nil then
+			obj:queueGameEngineLua(string.format("careerMP_damageSync.resetCopy(%d,0)", obj:getID()))
+		end
 		return
 	end
 	if type(beams) ~= "table" or type(nodes) ~= "table" then return end
@@ -230,6 +293,40 @@ local function applyDamage(cleared, beams, nodes)
 	end
 end
 
+-- Beams on this copy that disagree with the owner's reports: damaged here without a
+-- report, broken here while reported whole, or off the reported rest length.
+local function disagreeingBeams()
+	local count = 0
+	for cid in pairs(beamstate.deformedBeams or {}) do
+		if not reported[cid] then count = count + 1 end
+	end
+	for cid, r in pairs(reported) do
+		if obj:beamIsBroken(cid) then
+			if not r.broken then count = count + 1 end
+		else
+			local len = obj:getBeamRestLength(cid)
+			if len and abs(len - r.len) > RESYNC_LENGTH then count = count + 1 end
+		end
+	end
+	return count
+end
+
+-- Only after the owner has been heard from: an owner on an older CareerMP, or a traffic
+-- car, never reports, and its copy is left to the game.
+local function copyCheck()
+	if not heard then return end
+	if disagreeingBeams() > RESYNC_BEAMS then
+		checksOver = checksOver + 1
+	else
+		checksOver = 0
+	end
+	if checksOver >= RESYNC_CHECKS and sinceResync >= RESYNC_COOLDOWN then
+		checksOver = 0
+		sinceResync = 0
+		obj:queueGameEngineLua(string.format("careerMP_damageSync.resetCopy(%d,1)", obj:getID()))
+	end
+end
+
 --== roles and hooks =========================================================
 
 local function setRole(newRole)
@@ -237,9 +334,19 @@ local function setRole(newRole)
 	if newRole == role then return end
 	role = newRole
 	forgetSent()
-	lastDamage, sinceSend = nil, 0
-	reported, heard = {}, false
-	if role == "owner" and next(baseline) == nil then captureBaseline() end
+	lastDamage, sinceSend, fullWanted, clearedPending = nil, 0, false, false
+	reported, heard, sinceCheck, checksOver, sinceResync = {}, false, 0, 0, huge
+	if role == "owner" then
+		if next(baseline) == nil then captureBaseline() end
+		-- Copies built before this car became an owner asked too early: everyone gets its
+		-- full damage once, an undamaged car an empty message, so they know it reports.
+		fullWanted = true
+	end
+end
+
+-- Another game asked for this car's damage (it built a copy, or its copy drifted).
+local function sendFull()
+	if role == "owner" then fullWanted = true end
 end
 
 local function updateGFX(dt)
@@ -249,6 +356,24 @@ local function updateGFX(dt)
 			sinceSend = 0
 			ownerTick()
 		end
+	elseif role == "copy" then
+		sinceResync = sinceResync + (dt or 0)
+		sinceCheck = sinceCheck + (dt or 0)
+		if sinceCheck >= CHECK_EVERY_SECONDS then
+			sinceCheck = 0
+			copyCheck()
+		end
+	end
+end
+
+local function onReset()
+	if role == "owner" then
+		forgetSent()
+		lastDamage = 0
+		clearedPending = true
+	elseif role == "copy" then
+		reported = {}
+		checksOver = 0
 	end
 end
 
@@ -257,8 +382,10 @@ local function onExtensionLoaded()
 end
 
 M.setRole = setRole
+M.sendFull = sendFull
 M.applyDamage = applyDamage
 M.updateGFX = updateGFX
+M.onReset = onReset
 M.onExtensionLoaded = onExtensionLoaded
 
 return M

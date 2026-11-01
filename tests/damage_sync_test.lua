@@ -40,10 +40,19 @@ local function luaToJson(value)
 	return tostring(value)
 end
 
+local vecMeta = {}
 function vec3(x, y, z)
-	if type(x) == "table" then return {x = x.x, y = x.y, z = x.z} end
-	return {x = x or 0, y = y or 0, z = z or 0}
+	if type(x) == "table" then x, y, z = x.x, x.y, x.z end
+	return setmetatable({x = x or 0, y = y or 0, z = z or 0}, vecMeta)
 end
+vecMeta.__unm = function(a) return vec3(-a.x, -a.y, -a.z) end
+
+-- Rotations only travel from the car to its reset here, so a stand-in quaternion is
+-- enough: products and quatFromDir keep their parts.
+local quatMeta = {}
+function quat(x, y, z, w) return setmetatable({x = x, y = y, z = z, w = w}, quatMeta) end
+quatMeta.__mul = function(a, b) return quat(a.x + b.x, a.y + b.y, a.z + b.z, a.w * b.w) end
+function quatFromDir(dir, up) return quat(dir.x, dir.y, up.z, 1) end
 
 local function cross(a, b)
 	return {x = a.y * b.z - a.z * b.y, y = a.z * b.x - a.x * b.z, z = a.x * b.y - a.y * b.x}
@@ -77,10 +86,14 @@ local function inVehicle(car, fn, ...)
 	return fn(...)
 end
 
+-- The enabler's traffic test, from the real enabler (loaded once per world).
+local ENABLER = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
+local enabler
+
 -- Runs fn with the globals of a game's game-engine Lua.
 local function as(game, fn, ...)
 	MPVehicleGE, be, gameplay_traffic = game.MPVehicleGE, game.be, game.traffic
-	careerMP_damageSync = game.ge
+	careerMP_damageSync, careerMPEnabler = game.ge, enabler
 	function TriggerServerEvent(name, data)
 		table.insert(world.toServer, {from = game.id, name = name, data = data})
 	end
@@ -120,6 +133,7 @@ local function newWorld()
 	print = function() end
 	dofile(SERVER)
 	print = realPrint
+	enabler = dofile(ENABLER)
 	return world
 end
 
@@ -203,8 +217,15 @@ local function addCar(game, owner, vid, opts)
 	function veh:queueLuaCommand(cmd) table.insert(car.vehicleQueue, cmd) end
 	function veh:getID() return gid end
 	function veh:getPosition() return vec3(self.pos) end
-	function veh:getRotation() return {x = 0, y = 0, z = 0, w = 1} end
-	function veh:setPositionRotation(...) self.resets = self.resets + 1; car.reset() end
+	function veh:getDirectionVector() return vec3(car.fwd) end
+	function veh:getDirectionVectorUp() return vec3(car.up) end
+	function veh:setPositionRotation(x, y, z, rx, ry, rz, rw)
+		for _, n in ipairs({x, y, z, rx, ry, rz, rw}) do assert(type(n) == "number", "setPositionRotation takes numbers") end
+		same(x, self.pos.x, "reset in place: x")
+		same(y, self.pos.y, "reset in place: y")
+		self.resets = self.resets + 1
+		car.reset()
+	end
 	function veh:resetBrokenFlexMesh() end
 	car.veh = veh
 
@@ -366,10 +387,15 @@ local function copyCar(opts)
 	return car
 end
 
-test("an owner whose damage total does not move sends nothing", function()
+test("a new owner announces itself once, then sends nothing while its damage does not move", function()
 	local car = ownerCar()
+	tick(car)
+	local first = takeMessages(car)
+	same(#first, 1, "announcements")
+	same(#first[1].b, 0, "beams in an undamaged car's announcement")
+	same(first[1].c, 0, "not cleared")
 	tick(car, 2)
-	same(#takeMessages(car), 0, "messages")
+	same(#takeMessages(car), 0, "messages afterwards")
 end)
 
 test("each message carries only the beams changed since the one before", function()
@@ -559,6 +585,18 @@ test("traffic, parked cars and the walking unicycle never send damage", function
 	same(#sentToServer("careerDamageRequest"), 0, "full-damage requests for a unicycle")
 end)
 
+test("without the enabler's traffic test no car sends damage, and that is logged once", function()
+	newWorld()
+	local game = addGame(0)
+	local car = addCar(game, 0, 0)
+	game.playerVehicle = car.gid
+	watchRoles(car)
+	enabler = nil
+	step(3)
+	same(#roleCommands(car), 0, "roles")
+	same(countLines(logs, "careerMPEnabler.isTrafficCar missing"), 1, "warnings")
+end)
+
 test("the car the player drives sends its damage even when it came from traffic", function()
 	newWorld()
 	local game = addGame(0)
@@ -597,11 +635,12 @@ end)
 
 test("a message from a car that is not this game's owner car is not sent", function()
 	local owner, copy, owners, copies = twoGames()
-	step(2)
+	step(3)
+	local before = #sentToServer("careerDamage")
 	as(copies, copies.ge.onLocalDamage, copy.gid, '{"c":0,"b":[],"n":[]}')
 	as(owners, owners.ge.onLocalDamage, 999, '{"c":0,"b":[],"n":[]}')
 	step(1)
-	same(#sentToServer("careerDamage"), 0, "messages sent")
+	same(#sentToServer("careerDamage") - before, 0, "messages sent")
 end)
 
 local function deliver(game, text)
@@ -755,7 +794,7 @@ test("a copy with 25 beams of damage its owner never reported is reset and given
 	local owner, copy, owners, copies = syncedGames()
 	local requestsBefore = #sentToServer("careerDamageRequest", 1)
 	phantomBreaks(copy, 20, 25)
-	step(2.5)
+	step(4)
 	expect(copy.veh.resets >= 1, "the copy was reset in place")
 	same(#sentToServer("careerDamageRequest", 1) - requestsBefore, 1, "full-damage requests")
 	same(copy.broken[30], nil, "a phantom break undone")
@@ -780,4 +819,146 @@ test("a player who joins after a crash sees the car's dents", function()
 	local lateCopy = addCar(late, 0, 0, {fwd = {x = 0, y = -1, z = 0}})
 	step(3)
 	same(lateCopy.restLen[7], 0.8, "the late joiner's beam 7")
+end)
+
+--== owner wins, on the copy's vehicle side =================================
+
+-- The resets a copy's vehicle Lua asked for: {resync = n, cleared = n}.
+local function resetRequests(car)
+	local counts = {resync = 0, cleared = 0}
+	for _, cmd in ipairs(car.game.geQueue) do
+		local id, wantFull = cmd:match("^careerMP_damageSync%.resetCopy%((%d+),(%d)%)$")
+		if id then
+			same(tonumber(id), car.gid, "car in the reset request")
+			if wantFull == "1" then counts.resync = counts.resync + 1 else counts.cleared = counts.cleared + 1 end
+		end
+	end
+	return counts
+end
+
+-- A copy that has heard from its owner: beams 0 to n-1 reported dented to 0.9.
+local function heardCopy(n)
+	local copy = copyCar({beams = 100})
+	local rows = {}
+	for cid = 0, (n or 30) - 1 do
+		for _, x in ipairs({cid, 0.9, 0, 0.2}) do table.insert(rows, x) end
+	end
+	inVehicle(copy, copy.ext.applyDamage, 0, rows, {})
+	return copy
+end
+
+test("applying the owner's own dents never starts a resync", function()
+	local copy = heardCopy(30)
+	tick(copy, 5)
+	same(resetRequests(copy).resync, 0, "resyncs")
+end)
+
+test("21 beams broken on the copy while reported whole start a resync after two checks", function()
+	local copy = heardCopy(30)
+	for cid = 0, 20 do copy.broken[cid] = true end
+	tick(copy, 1)
+	same(resetRequests(copy).resync, 0, "resyncs after one check")
+	tick(copy, 1)
+	same(resetRequests(copy).resync, 1, "resyncs after two checks")
+end)
+
+test("21 beams more than 2 cm off the owner's rest length start a resync", function()
+	local copy = heardCopy(30)
+	for cid = 0, 20 do copy.restLen[cid] = 0.9 - 0.025 end
+	tick(copy, 2)
+	same(resetRequests(copy).resync, 1, "resyncs")
+end)
+
+test("lengths within 2 cm, or only 20 disagreeing beams, start no resync", function()
+	local copy = heardCopy(30)
+	for cid = 0, 29 do copy.restLen[cid] = 0.9 - 0.015 end
+	for cid = 50, 69 do copy.beamstate.deformedBeams[cid] = 0.5 end
+	tick(copy, 5)
+	same(resetRequests(copy).resync, 0, "resyncs")
+end)
+
+test("damage that settles within one check starts no resync", function()
+	local copy = heardCopy(30)
+	for cid = 50, 74 do copy.beamstate.deformedBeams[cid] = 0.5 end
+	tick(copy, 1)
+	inVehicle(copy, copy.ext.applyDamage, 0, (function()
+		local rows = {}
+		for cid = 50, 74 do for _, x in ipairs({cid, 1, 0, 0.5}) do table.insert(rows, x) end end
+		return rows
+	end)(), {})
+	tick(copy, 3)
+	same(resetRequests(copy).resync, 0, "resyncs once the owner reported the same damage")
+end)
+
+test("a second resync for the same car waits 10 seconds", function()
+	local copy = heardCopy(30)
+	for cid = 50, 74 do copy.beamstate.deformedBeams[cid] = 0.5 end
+	tick(copy, 2)
+	same(resetRequests(copy).resync, 1, "first resync")
+	tick(copy, 9.5)
+	same(resetRequests(copy).resync, 1, "resyncs within 10 seconds of the first")
+	tick(copy, 0.5)
+	same(resetRequests(copy).resync, 2, "resyncs 10 seconds after the first")
+end)
+
+test("a copy that never heard from its owner never resyncs", function()
+	local copy = copyCar({beams = 100})
+	for cid = 50, 99 do copy.beamstate.deformedBeams[cid] = 1 end
+	tick(copy, 5)
+	same(resetRequests(copy).resync, 0, "resyncs")
+end)
+
+test("a cleared message resets a damaged copy and forgets its reports, and leaves an undamaged one alone", function()
+	local copy = heardCopy(30)
+	inVehicle(copy, copy.ext.applyDamage, 1, {}, {})
+	same(resetRequests(copy).cleared, 1, "resets for a damaged copy")
+	copy.game.geQueue = {}
+	copy.reset()
+	tick(copy, 3)
+	same(resetRequests(copy).resync, 0, "resyncs once the reports are forgotten")
+	inVehicle(copy, copy.ext.applyDamage, 1, {}, {})
+	same(resetRequests(copy).cleared, 0, "resets for an undamaged copy")
+end)
+
+--== the owner's full damage ================================================
+
+test("a full-damage answer covers every beam changed since the car was built, 400 a message", function()
+	local car = ownerCar({beams = 1000})
+	tick(car)
+	takeMessages(car)
+	for cid = 0, 999 do car.restLen[cid] = 0.9 end
+	car.beamstate.damage = 1000
+	for _ = 1, 3 do tick(car) end
+	takeMessages(car)
+	inVehicle(car, car.ext.sendFull)
+	local counts = {}
+	for _ = 1, 4 do
+		tick(car)
+		for _, m in ipairs(takeMessages(car)) do table.insert(counts, math.floor(#m.b / 4)) end
+	end
+	same(table.concat(counts, ","), "400,400,200", "beams per message")
+end)
+
+test("a repair that empties the damage total sends a cleared message", function()
+	local car = ownerCar()
+	tick(car)
+	takeMessages(car)
+	dent(car, 7, 0.8)
+	tick(car)
+	takeMessages(car)
+	car.restLen[7] = 1
+	car.beamstate.damage = 0
+	tick(car)
+	local m = takeMessages(car)
+	same(#m, 1, "messages")
+	same(m[1].c, 1, "cleared")
+end)
+
+test("a copy only answers requests for this game's own owner cars", function()
+	local owner, copy, owners, copies = twoGames()
+	step(3)
+	local before = #sentToServer("careerDamage", 1)
+	as(copies, copies.handlers.rxCareerDamageRequest, '{"v":"0-0"}')
+	step(1)
+	same(#sentToServer("careerDamage", 1) - before, 0, "messages from the copy's game")
 end)

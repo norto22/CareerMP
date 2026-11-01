@@ -46,17 +46,14 @@ local function isServerVehicleID(sid)
 	return type(sid) == "string" and sid:match("^%d+%-%d+$") ~= nil
 end
 
-local function isAiTraffic(gameVehicleID)
-	if not gameplay_traffic or type(gameplay_traffic.getTrafficData) ~= "function" then return false end
-	local entry = (gameplay_traffic.getTrafficData() or {})[gameVehicleID]
-	return type(entry) == "table" and entry.isAi == true
-end
-
--- The car the player is in is theirs, even one taken from traffic.
+-- The enabler's own test, which also marks traffic for other players' nametags. Without
+-- it every own car counts as traffic, so nothing is sent rather than traffic damage.
 local function isTrafficCar(gameVehicleID, veh)
-	if gameVehicleID == be:getPlayerVehicleID(0) then return false end
-	if veh.isTraffic == "true" or veh.isParked == "true" then return true end
-	return isAiTraffic(gameVehicleID)
+	if not (careerMPEnabler and type(careerMPEnabler.isTrafficCar) == "function") then
+		warnOnce("enabler", "careerMPEnabler.isTrafficCar missing - this game's damage is not shared")
+		return true
+	end
+	return careerMPEnabler.isTrafficCar(gameVehicleID, veh)
 end
 
 local function requestFull(serverVehicleID)
@@ -113,8 +110,14 @@ local function onLocalDamage(gameVehicleID, message)
 		return
 	end
 	if #outbox >= MAX_QUEUE then
-		warnOnce("queue", "damage messages queued faster than they can be sent - some were dropped")
+		-- Dropped changes would leave copies behind for good, so every owner car sends its
+		-- full damage again instead.
+		warnOnce("queue", "damage messages queued faster than they can be sent - full damage sent again")
 		outbox = {}
+		for ownedID, role in pairs(roles) do
+			local veh = role == "owner" and be:getObjectByID(ownedID)
+			if veh then veh:queueLuaCommand("careerMPDamage.sendFull()") end
+		end
 	end
 	table.insert(outbox, full)
 end
@@ -169,6 +172,37 @@ local function rxCareerDamage(data)
 	veh:queueLuaCommand(string.format("careerMPDamage.applyDamage(%d,{%s},{%s})", cleared, beams, nodes))
 end
 
+-- Another game built a copy of one of this game's cars, or its copy drifted: the owner
+-- car sends its full damage.
+local function rxCareerDamageRequest(data)
+	if type(data) ~= "string" or #data > 256 then return end
+	local ok, request = pcall(jsonDecode, data)
+	if not ok or type(request) ~= "table" or not isServerVehicleID(request.v) then return end
+	local gameVehicleID = MPVehicleGE.getGameVehicleID(request.v)
+	if not gameVehicleID or roles[gameVehicleID] ~= "owner" or not MPVehicleGE.isOwn(gameVehicleID) then return end
+	local veh = be:getObjectByID(gameVehicleID)
+	if veh then veh:queueLuaCommand("careerMPDamage.sendFull()") end
+end
+
+-- From a copy's vehicle Lua: it disagrees with its owner (wantFull = 1), or the owner
+-- reset it and it still carries damage (wantFull = 0). The copy is reset where it is, as
+-- BeamMP applies another player's reset, and asks the owner for full damage if needed.
+local function resetCopy(gameVehicleID, wantFull)
+	if roles[gameVehicleID] ~= "copy" then return end
+	local veh = be:getObjectByID(gameVehicleID)
+	local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
+	if not veh or not isServerVehicleID(serverVehicleID) then return end
+	local pos = veh:getPosition()
+	-- As BeamMP: the car's rotation from its direction vectors, turned 180 degrees.
+	local rot = quat(0, 0, 1, 0) * quatFromDir(-vec3(veh:getDirectionVector()), vec3(veh:getDirectionVectorUp()))
+	veh:setPositionRotation(pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w)
+	veh:resetBrokenFlexMesh()
+	if wantFull == 1 then
+		log("I", logTag, "copy of " .. serverVehicleID .. " disagreed with its owner - reset and resynced")
+		requestFull(serverVehicleID)
+	end
+end
+
 --== hooks ===================================================================
 
 local function onUpdate(dtReal)
@@ -199,10 +233,12 @@ local function onExtensionLoaded()
 		return
 	end
 	AddEventHandler("rxCareerDamage", rxCareerDamage)
+	AddEventHandler("rxCareerDamageRequest", rxCareerDamageRequest)
 	log("I", logTag, "CareerMP damage sync LOADED")
 end
 
 M.onLocalDamage = onLocalDamage
+M.resetCopy = resetCopy
 M.onUpdate = onUpdate
 M.onVehicleSpawned = onVehicleSpawned
 M.onVehicleDestroyed = forget

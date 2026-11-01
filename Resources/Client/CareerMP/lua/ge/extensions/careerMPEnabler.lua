@@ -806,6 +806,7 @@ end
 --Access
 
 M.getClientConfig = getClientConfig
+M.isTrafficCar = isTrafficCar
 
 M.onCareerActive = onCareerActive
 
