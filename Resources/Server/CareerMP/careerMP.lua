@@ -119,6 +119,89 @@ local ledger = {
 	receive = {}
 }
 
+--== Readout =================================================================
+-- Every message the server sends goes through send, sendJson or notify, which count it
+-- under one feature; every handler counts what it receives. `CareerMP Stats` prints the
+-- counts for the last STATS_SECONDS and since the server started (or the last reset).
+-- Positions are BeamMP's own and are not counted here; the car count stands in for them.
+
+local STATS_SECONDS = 60
+local STATS_FEATURES = {"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
+	"payments", "alive", "trafficLights", "notifications", "config"}
+
+-- totals[feature] and slots[second % STATS_SECONDS].counts[feature]:
+-- {received, sent, recipients, bytes}.
+local stats = nil
+
+local function resetStats()
+	stats = {since = signalTimer:GetCurrent(), totals = {}, slots = {}}
+end
+resetStats()
+
+local function countsIn(group, feature)
+	local counts = group[feature]
+	if not counts then
+		counts = {received = 0, sent = 0, recipients = 0, bytes = 0}
+		group[feature] = counts
+	end
+	return counts
+end
+
+local function currentSlot()
+	local second = math.floor(signalTimer:GetCurrent())
+	local index = second % STATS_SECONDS
+	local slot = stats.slots[index]
+	if not slot or slot.second ~= second then
+		slot = {second = second, counts = {}}
+		stats.slots[index] = slot
+	end
+	return slot.counts
+end
+
+local function count(feature, received, sent, recipients, bytes)
+	for _, group in ipairs({stats.totals, currentSlot()}) do
+		local counts = countsIn(group, feature)
+		counts.received = counts.received + received
+		counts.sent = counts.sent + sent
+		counts.recipients = counts.recipients + recipients
+		counts.bytes = counts.bytes + bytes
+	end
+end
+
+local function playerCount()
+	local n = 0
+	for _ in pairs(MP.GetPlayers() or {}) do n = n + 1 end
+	return n
+end
+
+local function recipientsOf(target)
+	if target == -1 then return playerCount() end
+	return 1
+end
+
+-- A message a handler of `feature` received.
+local function received(feature)
+	count(feature, 1, 0, 0, 0)
+end
+
+local function send(feature, target, event, data)
+	data = data or ""
+	MP.TriggerClientEvent(target, event, data)
+	local recipients = recipientsOf(target)
+	count(feature, 0, 1, recipients, #data * recipients)
+end
+
+-- Encodes once; the counted bytes are the bytes BeamMP sends.
+local function sendJson(feature, target, event, value)
+	send(feature, target, event, Util.JsonEncode(value))
+end
+
+local function notify(feature, target, text, ...)
+	MP.SendNotification(target, text, ...)
+	local recipients = recipientsOf(target)
+	count(feature, 0, 1, recipients, #tostring(text) * recipients)
+end
+
 local trapNames = {
 	[1] = "Riverway Plaza",
 	[2] = "Plaza Northbound",
@@ -488,6 +571,7 @@ function onInit()
 	MP.RegisterEvent("SetConfig","SetConfig")
 	MP.RegisterEvent("Update","Update")
 	MP.RegisterEvent("Help","Help")
+	MP.RegisterEvent("Stats","Stats")
 
 	MP.RegisterEvent("tick","tick")
 	MP.CreateEventTimer("tick", 1000)
@@ -502,23 +586,25 @@ function onInit()
 end
 
 function perPartPaintingHandler(player_id, data)
+	received("paint")
 	local paintData = Util.JsonDecode(data)
 	if not paintData.originID then
 		for id in pairs(MP.GetPlayers()) do
 			if player_id ~= id then
-				MP.TriggerClientEvent(id, "rxRemotePartPaint", data)
+				send("paint", id, "rxRemotePartPaint", data)
 			end
 		end
 	else
-		MP.TriggerClientEvent(paintData.originID, "rxRemotePartPaint", data)
+		send("paint", paintData.originID, "rxRemotePartPaint", data)
 	end
 end
 
 function requestPartPaintsHandler(player_id, data)
+	received("paint")
 	local requestData = Util.JsonDecode(data)
 	local targetID = tonumber(requestData.serverVehicleID:sub(1,1))
 	requestData.originID = player_id
-	MP.TriggerClientEventJson(targetID, "rxRequestPartPaints", requestData)
+	sendJson("paint", targetID, "rxRequestPartPaints", requestData)
 end
 
 local function getOrCreate(ledger, player_id)
@@ -595,22 +681,23 @@ local function isValidPayment(sender_id, paymentData)
 end
 
 function payPlayer(player_id, data)
+	received("payments")
 	local paymentData = Util.JsonDecode(data)
 	if type(paymentData) ~= "table" then return end
 	paymentData.sender = MP.GetPlayerName(player_id)
 	if Config.server.allowTransactions then
 		if isValidPayment(player_id, paymentData) then
 			if attemptTransaction(player_id, paymentData.target_player_id, paymentData.money, signalTimer:GetCurrent()) then
-				MP.TriggerClientEventJson(paymentData.target_player_id, "rxPayment", paymentData)
-				MP.TriggerClientEventJson(player_id, "rxConfirmation", paymentData)
+				sendJson("payments", paymentData.target_player_id, "rxPayment", paymentData)
+				sendJson("payments", player_id, "rxConfirmation", paymentData)
 			else
-				MP.TriggerClientEventJson(player_id, "rxBounce", paymentData)
+				sendJson("payments", player_id, "rxBounce", paymentData)
 			end
 		else
-			MP.TriggerClientEventJson(player_id, "rxBounce", paymentData)
+			sendJson("payments", player_id, "rxBounce", paymentData)
 		end
 	else
-		MP.TriggerClientEventJson(player_id, "rxDeny", paymentData)
+		sendJson("payments", player_id, "rxDeny", paymentData)
 	end
 end
 
@@ -667,7 +754,7 @@ local function updateAuthority(stripId)
 		else
 			print("[CareerMP] ---------- Drag strip '" .. stripId .. "' is empty")
 		end
-		MP.TriggerClientEventJson(-1, "rxDragAuthority", { stripId = stripId, playerId = elected })
+		sendJson("drag", -1, "rxDragAuthority", { stripId = stripId, playerId = elected })
 	end
 end
 
@@ -741,19 +828,21 @@ end
 
 --- A client asking who holds a strip (on join, or after reconnecting).
 function dragAuthorityRequest(player_id, data)
+	received("drag")
 	local req = Util.JsonDecode(data)
 	local stripId = req and req.stripId
 	if stripId then
-		MP.TriggerClientEventJson(player_id, "rxDragAuthority",
+		sendJson("drag", player_id, "rxDragAuthority",
 			{ stripId = stripId, playerId = dragAuthority[stripId] })
 		return
 	end
 	for id, holder in pairs(dragAuthority) do
-		MP.TriggerClientEventJson(player_id, "rxDragAuthority", { stripId = id, playerId = holder })
+		sendJson("drag", player_id, "rxDragAuthority", { stripId = id, playerId = holder })
 	end
 end
 
 function dragMP(player_id, data)
+	received("drag")
 	local envelope = Util.JsonDecode(data)
 	if not envelope or not envelope.msg then return end
 
@@ -777,7 +866,7 @@ function dragMP(player_id, data)
 		-- To whoever holds the strip this message concerns.
 		local target = resolveAuthorityFor(d)
 		if target and MP.IsPlayerConnected(target) then
-			MP.TriggerClientEvent(target, "rxDragMP", payload)
+			send("drag", target, "rxDragMP", payload)
 		end
 		return
 	end
@@ -786,7 +875,7 @@ function dragMP(player_id, data)
 		for _, id in pairs(to) do
 			local pid = tonumber(id)
 			if pid and pid ~= player_id and MP.IsPlayerConnected(pid) then
-				MP.TriggerClientEvent(pid, "rxDragMP", payload)
+				send("drag", pid, "rxDragMP", payload)
 			end
 		end
 		return
@@ -795,50 +884,54 @@ function dragMP(player_id, data)
 	-- default: everyone but the sender
 	for id in pairs(MP.GetPlayers()) do
 		if id ~= player_id then
-			MP.TriggerClientEvent(id, "rxDragMP", payload)
+			send("drag", id, "rxDragMP", payload)
 		end
 	end
 end
 
 function speedTrap(player_id, data)
+	received("notifications")
 	local speedTrapData = Util.JsonDecode(data)
 	local triggerName = speedTrapData.triggerName
 	local triggerNumber = tonumber(string.match(triggerName, "%d+"))
 	local triggerPlace = trapNames[triggerNumber] or "Unknown"
 	local player_name = MP.GetPlayerName(player_id)
-	MP.SendNotification(-1, "Speed Violation by " .. player_name .. "!", "survellianceCamera", "survellianceCamera")
-	MP.SendNotification(-1, "Speed: " .. string.format( "%.1f", speedTrapData.playerSpeed * 2.23694 ) .. " in " .. string.format( "%.0f", speedTrapData.speedLimit * 2.23694 ) .. " MPH Zone", "powerGauge05", "powerGauge05")
-	MP.SendNotification(-1, "Location: " .. triggerPlace, "location1", "location1")
-	MP.SendNotification(-1, "Vehicle: " .. speedTrapData.vehicleModel, "car", "car")
-	MP.SendNotification(-1, "Plate: " .. speedTrapData.licensePlate, "code", "code")
+	notify("notifications", -1, "Speed Violation by " .. player_name .. "!", "survellianceCamera", "survellianceCamera")
+	notify("notifications", -1, "Speed: " .. string.format( "%.1f", speedTrapData.playerSpeed * 2.23694 ) .. " in " .. string.format( "%.0f", speedTrapData.speedLimit * 2.23694 ) .. " MPH Zone", "powerGauge05", "powerGauge05")
+	notify("notifications", -1, "Location: " .. triggerPlace, "location1", "location1")
+	notify("notifications", -1, "Vehicle: " .. speedTrapData.vehicleModel, "car", "car")
+	notify("notifications", -1, "Plate: " .. speedTrapData.licensePlate, "code", "code")
 end
 
 function redLight(player_id, data)
+	received("notifications")
 	local redLightData = Util.JsonDecode(data)
 	local triggerName = redLightData.triggerName
 	local triggerNumber = tonumber(string.match(triggerName, "%d+"))
 	local triggerPlace = trapNames[triggerNumber] or "Unknown"
 	local player_name = MP.GetPlayerName(player_id)
-	MP.SendNotification(-1, "Failure to stop at Red Light by " .. player_name .. "!", "trafficLight", "trafficLight")
-	MP.SendNotification(-1, "Speed: " .. string.format( "%.1f", redLightData.playerSpeed * 2.23694 ) .. " MPH", "powerGauge05", "powerGauge05")
-	MP.SendNotification(-1, "Location: " .. triggerPlace, "location1", "location1")
-	MP.SendNotification(-1, "Vehicle: " .. redLightData.vehicleModel, "car", "car")
-	MP.SendNotification(-1, "Plate: " .. redLightData.licensePlate, "code", "code")
+	notify("notifications", -1, "Failure to stop at Red Light by " .. player_name .. "!", "trafficLight", "trafficLight")
+	notify("notifications", -1, "Speed: " .. string.format( "%.1f", redLightData.playerSpeed * 2.23694 ) .. " MPH", "powerGauge05", "powerGauge05")
+	notify("notifications", -1, "Location: " .. triggerPlace, "location1", "location1")
+	notify("notifications", -1, "Vehicle: " .. redLightData.vehicleModel, "car", "car")
+	notify("notifications", -1, "Plate: " .. redLightData.licensePlate, "code", "code")
 end
 
 function trafficLightTimer()
 	for id in pairs(MP.GetPlayers()) do
 		if MP.IsPlayerConnected(id) then
-			MP.TriggerClientEvent(id, "rxTrafficSignalTimer", tostring(signalTimer:GetCurrent()))
+			send("trafficLights", id, "rxTrafficSignalTimer", tostring(signalTimer:GetCurrent()))
 		end
 	end
 end
 
 function careerVehSyncRequested(player_id)
-	MP.TriggerClientEventJson(player_id, "rxCareerVehSync", vehicleStates)
+	received("carStates")
+	sendJson("carStates", player_id, "rxCareerVehSync", vehicleStates)
 end
 
 function careerPrefabSync(player_id, data)
+	received("prefabs")
 	local prefab = Util.JsonDecode(data)
 	if not prefab then return end
 	-- Guard: a player disconnecting mid-sync clears their loadedPrefabs entry.
@@ -850,7 +943,7 @@ function careerPrefabSync(player_id, data)
 	end
 	for id in pairs(MP.GetPlayers()) do
 		if player_id ~= id then
-			MP.TriggerClientEvent(id, "rxPrefabSync", data)
+			send("prefabs", id, "rxPrefabSync", data)
 		end
 	end
 end
@@ -875,7 +968,7 @@ end
 -- Sends every player the state of one vehicle; the full map goes only to a player who
 -- asks for it (careerVehSyncRequested).
 local function sendVehicleState(serverVehicleID)
-	MP.TriggerClientEventJson(-1, "rxCareerVehSync", {[serverVehicleID] = vehicleStates[serverVehicleID]})
+	sendJson("carStates", -1, "rxCareerVehSync", {[serverVehicleID] = vehicleStates[serverVehicleID]})
 end
 
 -- Console-safe text from a client: control characters removed, length capped.
@@ -896,7 +989,8 @@ local function dropUnstartedPlayer(player_id, why)
 end
 
 function careerSyncRequested(player_id, data)
-	MP.TriggerClientEventJson(player_id, "rxCareerSync", Config.client)
+	received("config")
+	sendJson("config", player_id, "rxCareerSync", Config.client)
 	-- Guard: the entry is gone if the player disconnected between join and sync.
 	local entry = pendingActivation[player_id]
 	if not entry or entry.careerActive then return end
@@ -913,6 +1007,7 @@ end
 -- {"started": false, "reason": "..."}. Only accepted from a client that said it
 -- confirms its start, after its settings request; the reason is printed, never used.
 function careerStartResult(player_id, data)
+	received("config")
 	local entry = pendingActivation[player_id]
 	if not entry or not entry.confirmsStart or entry.careerActive or entry.dropped then return end
 	local result = decodeTable(data)
@@ -926,11 +1021,12 @@ function careerStartResult(player_id, data)
 end
 
 function prefabSyncRequested(player_id)
+	received("prefabs")
 	for id in pairs(MP.GetPlayers()) do
 		if player_id ~= id then
 			if loadedPrefabs[id] then
 				for k,v in pairs(loadedPrefabs[id]) do
-					MP.TriggerClientEventJson(player_id, "rxPrefabSync", loadedPrefabs[id][k])
+					sendJson("prefabs", player_id, "rxPrefabSync", loadedPrefabs[id][k])
 				end
 			end
 		end
@@ -939,6 +1035,7 @@ end
 
 -- A player's game hid or showed one of its own cars: {"serverVehicleID", "active"}.
 function careerVehicleActiveHandler(player_id, data)
+	received("carStates")
 	local vehicleData = decodeTable(data)
 	if not vehicleData or type(vehicleData.active) ~= "boolean" then return end
 	local serverVehicleID = vehicleData.serverVehicleID
@@ -953,6 +1050,7 @@ end
 -- {"<player_id>-<vehicle_id>": true | false, ...}. Other games hide the nametag on a
 -- marked car. Marks for another player's car, an unknown car or a non-boolean are ignored.
 function careerVehicleTrafficMarks(player_id, data)
+	received("trafficMarks")
 	local marks = decodeTable(data)
 	if not marks then return end
 	-- Marks that changed together go out together, holding only those cars.
@@ -964,7 +1062,7 @@ function careerVehicleTrafficMarks(player_id, data)
 			changed[serverVehicleID] = state
 		end
 	end
-	if next(changed) then MP.TriggerClientEventJson(-1, "rxCareerVehSync", changed) end
+	if next(changed) then sendJson("trafficMarks", -1, "rxCareerVehSync", changed) end
 end
 
 --Damage between players
@@ -993,18 +1091,20 @@ local function withinDamageRate(kind, player_id)
 end
 
 function careerDamage(player_id, data)
+	received("damage")
 	if type(data) ~= "string" or #data > DAMAGE_MAX_BYTES then return end
 	if not withinDamageRate("send", player_id) then return end
 	local message = decodeTable(data)
 	if not message or not ownsVehicle(player_id, message.v) then return end
 	for id in pairs(MP.GetPlayers()) do
 		if id ~= player_id then
-			MP.TriggerClientEvent(id, "rxCareerDamage", data)
+			send("damage", id, "rxCareerDamage", data)
 		end
 	end
 end
 
 function careerDamageRequest(player_id, data)
+	received("damage")
 	if type(data) ~= "string" or #data > DAMAGE_REQUEST_MAX_BYTES then return end
 	if not withinDamageRate("request", player_id) then return end
 	local request = decodeTable(data)
@@ -1014,7 +1114,7 @@ function careerDamageRequest(player_id, data)
 	owner = tonumber(owner)
 	if not owner or owner == player_id or not MP.GetPlayers()[owner] then return end
 	if not ownsVehicle(owner, serverVehicleID) then return end
-	MP.TriggerClientEvent(owner, "rxCareerDamageRequest", '{"v":"' .. serverVehicleID .. '"}')
+	send("damage", owner, "rxCareerDamageRequest", '{"v":"' .. serverVehicleID .. '"}')
 end
 
 function validateCareerMPActivation()
@@ -1037,7 +1137,7 @@ end
 local function sendAlive()
 	for id in pairs(MP.GetPlayers()) do
 		if MP.IsPlayerConnected(id) then
-			MP.TriggerClientEvent(id, "rxCareerMPAlive", "")
+			send("alive", id, "rxCareerMPAlive", "")
 		end
 	end
 end
@@ -1160,7 +1260,7 @@ function SetConfig(arguments)
 	Config[section][key] = checkValue(value)
 	print("[CareerMP] ---------- Config:    " .. section .. " " .. tostring(key) .. " set to " .. tostring(Config[section][key]))
 	WriteJson(configPath .. "config.json", Config)
-	MP.TriggerClientEventJson(-1, "rxClientConfigUpdate", Config.client)
+	sendJson("config", -1, "rxClientConfigUpdate", Config.client)
 end
 
 function Update(arguments)
@@ -1171,7 +1271,70 @@ function Help(arguments)
 	print("CareerMP GetConfig <section> <key>            - Displays Config, or section, or key")
 	print("CareerMP SetConfig <section*> <key*> <value*> - Sets Config section key to value, * = REQUIRED")
 	print("CareerMP Update                               - Checks for CareerMP update")
+	print("CareerMP Stats [reset]                        - Shows what each part of CareerMP sends, reset starts it again")
 	print("CareerMP Help                                 - Displays Commands Usage")
+end
+
+-- The counts of the last STATS_SECONDS, summed from the slots still inside the window.
+local function windowCounts()
+	local cutoff = math.floor(signalTimer:GetCurrent()) - STATS_SECONDS
+	local sums = {}
+	for _, slot in pairs(stats.slots) do
+		if slot.second > cutoff then
+			for feature, counts in pairs(slot.counts) do
+				local sum = countsIn(sums, feature)
+				for key, n in pairs(counts) do sum[key] = sum[key] + n end
+			end
+		end
+	end
+	return sums
+end
+
+local function printStats()
+	local window = windowCounts()
+	print(string.format("[CareerMP] Stats - last %d s | since start (%d s ago)", STATS_SECONDS,
+		math.floor(signalTimer:GetCurrent() - stats.since)))
+	print(string.format("%-14s %8s %8s %8s %10s | %8s %8s %8s %12s", "feature", "received", "sent", "to",
+		"bytes", "received", "sent", "to", "bytes"))
+	for _, feature in ipairs(STATS_FEATURES) do
+		local w, t = countsIn(window, feature), countsIn(stats.totals, feature)
+		print(string.format("%-14s %8d %8d %8d %10d | %8d %8d %8d %12d", feature, w.received, w.sent,
+			w.recipients, w.bytes, t.received, t.sent, t.recipients, t.bytes))
+	end
+
+	local players, cars = {}, {}
+	for id in pairs(MP.GetPlayers() or {}) do
+		table.insert(players, id)
+		cars[id] = {all = 0, traffic = 0}
+	end
+	table.sort(players)
+	local carCount, trafficCount = 0, 0
+	for serverVehicleID, state in pairs(vehicleStates) do
+		local owner = tonumber(serverVehicleID:match("^(%d+)%-"))
+		carCount = carCount + 1
+		if state.traffic == true then trafficCount = trafficCount + 1 end
+		if owner and cars[owner] then
+			cars[owner].all = cars[owner].all + 1
+			if state.traffic == true then cars[owner].traffic = cars[owner].traffic + 1 end
+		end
+	end
+	print(string.format("Players: %d", #players))
+	print(string.format("Cars: %d, %d of them traffic or parked", carCount, trafficCount))
+	for _, id in ipairs(players) do
+		print(string.format("  %s: %d cars, %d traffic or parked", describePlayer(id), cars[id].all, cars[id].traffic))
+	end
+end
+
+function Stats(arguments)
+	local argument = arguments and arguments[1]
+	if argument == nil then
+		printStats()
+	elseif argument == "reset" then
+		resetStats()
+		print("[CareerMP] Stats reset")
+	else
+		print("Usage: CareerMP Stats [reset]")
+	end
 end
 
 function ReadJson(path)

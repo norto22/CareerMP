@@ -342,23 +342,25 @@ local function newWorld()
 		core_input_actionFilter = {setGroup = function() end, addAction = function() end},
 	}
 	MPConfig = {getNickname = function() return "player" end}
-	Util = {JsonDecode = decode}
+	Util = {JsonDecode = decode, JsonEncode = encode}
+	world.now = 0
 	MP = {
-		CreateTimer = function() return {GetCurrent = function() return 0 end, Start = function() end} end,
+		CreateTimer = function() return {GetCurrent = function() return world.now end, Start = function() end} end,
 		GetPlayers = function()
 			local names = {}
 			for id, p in pairs(world.players) do names[id] = p.name end
 			return names
 		end,
-		IsPlayerConnected = function() return true end,
+		IsPlayerConnected = function(id) return world.players[id] ~= nil end,
 		GetPlayerName = function(id) return world.players[id] and world.players[id].name end,
-		TriggerClientEventJson = function(target, event, data)
-			local message = {target = target, event = event, data = encode(data), table = data}
-			table.insert(world.toClients, message)
-			if event == "rxCareerVehSync" then table.insert(world.broadcasts, message) end
-		end,
+		-- The server encodes its tables itself and sends text.
 		TriggerClientEvent = function(target, event, data)
-			table.insert(world.toClients, {target = target, event = event, data = data})
+			local message = {target = target, event = event, data = data}
+			table.insert(world.toClients, message)
+			if event == "rxCareerVehSync" then
+				message.table = decode(data)
+				table.insert(world.broadcasts, message)
+			end
 		end,
 	}
 	local realPrint = print

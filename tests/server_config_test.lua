@@ -20,9 +20,11 @@ end
 -- Loads the real plugin with a stand-in BeamMP server.
 local function loadPlugin()
 	printed, written, sentToClients = {}, nil, nil
+	Util = {JsonEncode = function() return "{}" end}
 	MP = {
 		CreateTimer = function() return {GetCurrent = function() return 0 end, Start = function() end} end,
-		TriggerClientEventJson = function(player, event, data) sentToClients = {event = event, data = data} end,
+		GetPlayers = function() return {} end,
+		TriggerClientEvent = function(player, event, data) sentToClients = {event = event, data = data} end,
 	}
 	dofile(SOURCE)
 	local prepareConfig = upvalue(onInit, "prepareConfig")
