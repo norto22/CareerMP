@@ -116,6 +116,8 @@ local function setup()
 		end,
 		enterVehicle = function(_, player, veh) game.player = veh end,
 	}
+	-- BeamMP reports a server session; game.noSession makes it single player.
+	MPCoreNetwork = {isMPSession = function() return not game.noSession end}
 	MPVehicleGE = {
 		isOwn = function(id) local e = game.mp[id] return e ~= nil and e.own == true end,
 		getVehicleByGameID = function(id) return game.mp[id] end,
@@ -221,6 +223,11 @@ local function rebuiltOnly(id)
 end
 
 local COMPUTER_FACILITY = {id = "garageComputer", name = "Garage", doors = {{}}}
+
+-- Car A has no entry in BeamMP's list of this player's cars.
+local function unlink(obj) game.mp[obj.id] = nil end
+
+local function lastToast() return toasts[#toasts] end
 
 --== rebuilds go to the car the game named ===================================
 
@@ -379,6 +386,51 @@ test("a BeamMP that picks the car another way is logged as an error and shown", 
 	same(#toasts, 1, "messages shown")
 	same(toasts[1].type, "error", "message type")
 	same(getPlayerVehicle(0), game.carB, "the player's car")
+end)
+
+--== a car BeamMP does not list as this player's is never rebuilt ============
+
+local function refusesUnlinkedCarA(name, prepare)
+	test(name, function()
+		setup()
+		installBeamMP()
+		patches.apply()
+		unlink(game.carA)
+		if prepare then prepare() end
+		local back = core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA)
+		same(pickups(), 1, "copies of car A")
+		same(back, nil, "what the rebuild returned")
+		same(#game.rebuilt, 0, "cars rebuilt")
+		same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+		same(game.carB.JBeam, "sedan", "car B")
+		same(game.walker.JBeam, "unicycle", "the walking avatar")
+		same(#toasts, 1, "messages shown")
+		same(toasts[1].type, "warning", "message type")
+		same(toasts[1].title, "Mileage", "message title")
+		expect(string.find(toasts[1].msg, "not linked to you on the server", 1, true), "message: " .. tostring(toasts[1].msg))
+		same(countLines(logs, "W mileage.patches: "), 1, "warning lines")
+		same(getPlayerVehicle(0), game.player, "the player's car after the refusal")
+	end)
+end
+
+refusesUnlinkedCarA("on foot, fitting a part to an unlinked car A rebuilds nothing and says so")
+refusesUnlinkedCarA("seated in car B, fitting a part to an unlinked car A rebuilds nothing and says so", function()
+	game.player = game.carB
+end)
+refusesUnlinkedCarA("with car A and the walking avatar unlinked, nothing is rebuilt or spawned", function()
+	unlink(game.walker)
+end)
+
+test("the quick repair on an unlinked car A, on foot, leaves the garage pointing at car A", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	unlink(game.carA)
+	career_modules_inventory.spawnVehicle(CAR_A, 2)
+	same(game.invToVeh[CAR_A], game.carA.id, "the garage's game vehicle for car A")
+	same(game.walker.JBeam, "unicycle", "the walking avatar")
+	same(pickups(), 1, "copies of car A")
+	same(#game.rebuilt, 0, "cars rebuilt")
 end)
 
 --== everything else keeps BeamMP's behaviour ================================
