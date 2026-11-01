@@ -293,5 +293,6 @@ function M.report()
 end
 
 M.pick = pick
+M.pickOrWarn = pickOrWarn
 
 return M

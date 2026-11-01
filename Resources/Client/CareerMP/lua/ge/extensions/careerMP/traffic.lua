@@ -184,8 +184,6 @@ end
 -- untagged vehicle into traffic. On a server the restore uses the server's amounts and
 -- leaves road traffic off when the server has it off.
 
-local warnedTutorialMissing = false
-
 local function serverRestoreTrafficAfterTutorialPhase(module)
 	local ok, err = xpcall(function()
 		local road, parked = M.serverAmounts(serverConfig() or {})
@@ -204,15 +202,13 @@ end
 local function installTutorialRestore()
 	local module = career_modules_playerDriving
 	if tutorial and tutorial.module == module then return end
-	if type(module) ~= "table" or type(module.restoreTrafficAfterTutorialPhase) ~= "function"
-			or type(module.setTrafficAfterTutorial) ~= "function" then
-		if not warnedTutorialMissing then
-			warnedTutorialMissing = true
-			log("W", logTag, "career_modules_playerDriving.restoreTrafficAfterTutorialPhase or " ..
-				"setTrafficAfterTutorial missing - the tutorial restore keeps the player's own amounts")
-		end
-		return
-	end
+	-- A missing function is reported once, by name, through compat like every other
+	-- game function CareerMP relies on.
+	local compat = extensions.careerMP_compat
+	local consequence = "the tutorial traffic restore keeps the player's own amounts"
+	local restoreFn = compat.pickOrWarn(module, "career_modules_playerDriving", "restoreTrafficAfterTutorialPhase", consequence)
+	local afterFn = compat.pickOrWarn(module, "career_modules_playerDriving", "setTrafficAfterTutorial", consequence)
+	if not restoreFn or not afterFn then return end
 	tutorial = {module = module, original = module.restoreTrafficAfterTutorialPhase}
 	module.restoreTrafficAfterTutorialPhase = function()
 		serverRestoreTrafficAfterTutorialPhase(module)
@@ -270,7 +266,12 @@ function M.onUpdate()
 	end
 	replacedSince = replacedSince or os.clockhp()
 	if (os.clockhp() - replacedSince) <= METER_MAX_SECONDS then return end
-	if start and not start.applied then warnNotApplied() end
+	if start and not start.applied then
+		warnNotApplied()
+	elseif start then
+		log("W", logTag, string.format("traffic not ready %ds after the career start - asked for road %d, parked %d",
+			METER_MAX_SECONDS, start.applied.road, start.applied.parked))
+	end
 	start = nil
 	restoreAll("timed out")
 	replacedSince = nil
