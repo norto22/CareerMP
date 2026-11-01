@@ -421,3 +421,133 @@ test("a disabled drag mode returns 0 from its countdown repair without touching 
 	same(game.getDataCalls, 0, "drag core calls")
 	same(countLines(logs, "failed"), 0, "failure lines logged")
 end)
+
+--== the guard's edges =======================================================
+
+-- One frame of any per-frame hook, as the game's loop runs it.
+local function runHook(funcName, n)
+	for _ = 1, n do
+		local ok, err = pcall(extensions.hook, funcName, 0.016)
+		if not ok then table.insert(game.frameErrors, tostring(err)) end
+	end
+end
+
+test("every per-frame hook of a drag module is guarded, not only onUpdate", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	local counts = {onPreRender = 0, onGuiUpdate = 0, onDrawDebug = 0}
+	for hook in pairs(counts) do
+		gameplay_drag_display[hook] = function() error("gameplay_drag_display: " .. hook .. " failed") end
+		gameplay_traffic[hook] = function() counts[hook] = counts[hook] + 1 end
+	end
+	game.sync.onCareerActive(true)
+	for hook in pairs(counts) do
+		runHook(hook, FRAMES)
+		same(counts[hook], FRAMES, "traffic " .. hook .. " runs (frame error: " .. tostring(game.frameErrors[1]) .. ")")
+		same(countLines(logs, "gameplay_drag_display." .. hook), 1, "log lines naming gameplay_drag_display." .. hook)
+	end
+	same(#game.frameErrors, 0, "frames ended early")
+end)
+
+test("Mileage's own drag mode is guarded as a drag module", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	multiplayer_gamemodes_drag_drag.onUpdate = function() error("drag mode: attempt to index a nil value") end
+	game.sync.onCareerActive(true)
+	runFrames(FRAMES)
+	same(game.counts.traffic, FRAMES, "traffic updates (frame error: " .. tostring(game.frameErrors[1]) .. ")")
+	same(countLines(logs, "multiplayer_gamemodes_drag_drag.onUpdate"), 1, "log lines naming the drag mode")
+end)
+
+test("modules that are not drag modules are left unguarded", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	local trafficOriginal = gameplay_traffic.onUpdate
+	gameplay_parking.onUpdate = function() error("parking: attempt to index a nil value") end
+	local parkingFailing = gameplay_parking.onUpdate
+	game.sync.onCareerActive(true)
+	same(gameplay_traffic.onUpdate, trafficOriginal, "traffic's update")
+	same(gameplay_parking.onUpdate, parkingFailing, "parking's update")
+	runFrames(1)
+	same(#game.frameErrors, 1, "a non-drag error still ends the frame, as the game has it")
+	same(countLines(logs, "gameplay_parking"), 0, "log lines naming parking")
+end)
+
+test("a career starting after the game cached the stock updates still runs the guarded ones", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	runFrames(5) -- the game has cached the unguarded, failing drag times update
+	same(game.counts.traffic, 0, "traffic updates before the career starts")
+	game.sync.onCareerActive(true)
+	runFrames(FRAMES)
+	same(game.counts.traffic, FRAMES, "traffic updates after the career starts (frame error: " ..
+		tostring(game.frameErrors[#game.frameErrors]) .. ")")
+end)
+
+test("a guarded update is handed the frame's arguments", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	local seen = {}
+	gameplay_drag_times.onUpdate = function(dtReal, dtSim, dtRaw) seen = {dtReal, dtSim, dtRaw} end
+	game.sync.onCareerActive(true)
+	gameplay_drag_times.onUpdate(0.016, 0.017, 0.018)
+	same(seen[1], 0.016, "dtReal")
+	same(seen[2], 0.017, "dtSim")
+	same(seen[3], 0.018, "dtRaw")
+end)
+
+test("after leaving, a loader left under another mod's loader guards nothing", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	game.sync.onCareerActive(true)
+	local ours = extensions.load
+	extensions.load = function(...) return ours(...) end
+	game.sync.onBeamMPServerLeave()
+	extensions.load("gameplay/drag/late")
+	runFrames(1)
+	same(#game.frameErrors, 1, "frame errors from the late module once the guard is off")
+	same(countLines(logs, "gameplay_drag_late"), 0, "log lines naming the late module")
+end)
+
+--== the drag mode's countdown repair, when nothing fails ====================
+
+-- The real drag mode, enabled, with a drag core holding one racer whose tree was lost.
+local function repairingDragMode(isHost)
+	local drag = failingDragMode()
+	mileage_dragTransport.isHost = function() return isHost end
+	local racer = {vehId = 7, currentPhase = 2, treeStarted = false,
+		phases = {{}, {started = true, startedOffset = 0.5}}}
+	game.getDataCalls = 0
+	gameplay_drag_core = {
+		getData = function()
+			game.getDataCalls = game.getDataCalls + 1
+			return {racers = {[7] = racer}}
+		end,
+	}
+	game.countdowns = {}
+	gameplay_drag_display = {
+		startDragCountdown = function(vehId, offset) table.insert(game.countdowns, {vehId, offset}) end,
+	}
+	drag.getCountdownStartTime = function() return 0 end
+	return drag, racer
+end
+
+test("the countdown repair still re-issues a lost tree when nothing fails, and returns 0", function()
+	local drag, racer = repairingDragMode(true)
+	same(drag.checkTimerDrift(), 0, "checkTimerDrift's result")
+	same(#game.countdowns, 1, "countdowns re-issued")
+	same(game.countdowns[1][1], 7, "the racer's car")
+	same(game.countdowns[1][2], 0, "the countdown offset")
+	same(racer.phases[2].timerOffset, 0.5, "the tree's timer offset")
+	for _ = 1, 5 do same(drag.checkTimerDrift(), 0, "checkTimerDrift's result") end
+	same(#game.countdowns, 3, "countdowns re-issued, at most three times")
+	same(countLines(logs, "will not start its tree"), 1, "the give-up line")
+	same(countLines(logs, "failed"), 0, "failure lines logged")
+end)
+
+test("the countdown repair does nothing on a player who is not the strip's authority", function()
+	local drag = repairingDragMode(false)
+	same(drag.checkTimerDrift(), 0, "checkTimerDrift's result")
+	same(game.getDataCalls, 0, "drag core calls")
+	same(#game.countdowns, 0, "countdowns re-issued")
+end)
