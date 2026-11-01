@@ -226,3 +226,108 @@ test("a missing insurance module is reported", function()
 	same(summary.loaded, false, "loaded")
 	same(countLines(logs, "W careerMP.insurance: missing career_modules_insurance_insurance"), 1, "warning")
 end)
+
+--== edges of the contract ===================================================
+
+test("the game's load is asked for an active career", function()
+	local restore = setup()
+	-- the game's handler loads only when it is told the career is active
+	local load = career_modules_insurance_insurance.onCareerActive
+	career_modules_insurance_insurance.onCareerActive = function(active)
+		if active == true then return load(active) end
+	end
+	local summary = restore.ensureLoaded()
+	same(summary.loaded, true, "loaded")
+	same(ins.loads, 1, "game loads")
+end)
+
+test("the summary line reports a reload that added a car, once", function()
+	local restore = setup()
+	restore.ensureLoaded()
+	same(countLines(logs, "I careerMP.insurance: loaded=true reloaded=true backedUp=false added=1"), 1, "summary line")
+	same(countLines(logs, "loaded="), 1, "one summary line")
+end)
+
+test("a save system with only getCurrentSaveSlot still finds the save folder", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 100}
+	local restore = setup({file = saved})
+	career_saveSystem.getCurrentProfile = nil
+	career_saveSystem.getCurrentSaveSlot = function() return "player", SAVE end
+	local summary = restore.ensureLoaded()
+	same(summary.backedUp, true, "backedUp")
+	same(files[BACKUP].driverScore, 100, "backup written")
+end)
+
+test("no save folder skips the file step and the game's load still runs", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 100}
+	local restore = setup({file = saved})
+	career_saveSystem.getCurrentProfile = function() return "player" end
+	local ok, summary = pcall(restore.ensureLoaded)
+	expect(ok, "ensureLoaded raised: " .. tostring(summary))
+	same(#writes, 0, "file writes")
+	same(summary.backedUp, false, "backedUp")
+	same(ins.loads, 1, "game loads")
+	same(summary.loaded, true, "loaded")
+end)
+
+test("a file blanked by an earlier reset is not reset again, so the first backup is kept", function()
+	local restore = setup({file = {}})
+	files[BACKUP] = {invVehs = {}, plInsurancesData = {}, driverScore = 100}
+	local summary = restore.ensureLoaded()
+	same(#writes, 0, "file writes")
+	same(summary.backedUp, false, "backedUp")
+	same(files[BACKUP].driverScore, 100, "first backup kept")
+end)
+
+test("a backup write that reports failure without raising leaves insurance.json untouched", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 100}
+	local restore = setup({file = saved})
+	career_saveSystem.jsonWriteFileSafe = function(path)
+		table.insert(writes, path)
+		return false
+	end
+	local summary = restore.ensureLoaded()
+	expect(not contains(writes, FILE), "insurance.json written")
+	same(files[FILE].driverScore, 100, "insurance.json content")
+	same(summary.backedUp, false, "backedUp")
+	expect(countLines(logs, "E careerMP.insurance:") >= 1, "error logged")
+end)
+
+test("a reset write that fails is logged, not counted as backed up, and the game's load still runs", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 100}
+	local restore = setup({file = saved, writeFails = FILE})
+	local ok, summary = pcall(restore.ensureLoaded)
+	expect(ok, "ensureLoaded raised: " .. tostring(summary))
+	same(summary.backedUp, false, "backedUp")
+	same(files[FILE].driverScore, 100, "insurance.json content")
+	same(files[BACKUP].driverScore, 100, "backup kept")
+	same(ins.loads, 1, "game loads")
+	same(countLines(logs, "E careerMP.insurance: could not reset"), 1, "error logged")
+end)
+
+test("a load that leaves the records empty is reported and no cars are added", function()
+	local restore = setup()
+	career_modules_insurance_insurance.onCareerActive = function() ins.loads = ins.loads + 1 end
+	local summary = restore.ensureLoaded()
+	same(summary.loaded, false, "loaded")
+	same(#ins.added, 0, "cars added")
+	expect(summary.error ~= nil, "summary carries the error")
+	same(countLines(logs, "E careerMP.insurance:"), 1, "error logged")
+end)
+
+test("records the game returns as nil count every owned car as missing", function()
+	local restore = setup({loaded = true})
+	career_modules_insurance_insurance.getInvVehs = function() return nil end
+	local ok, summary = pcall(restore.ensureLoaded)
+	expect(ok, "ensureLoaded raised: " .. tostring(summary))
+	same(summary.added, 1, "added")
+end)
+
+test("a game without the inventory module is reported and the check still returns", function()
+	local restore = setup({loaded = true})
+	career_modules_inventory = nil
+	local ok, summary = pcall(restore.ensureLoaded)
+	expect(ok, "ensureLoaded raised: " .. tostring(summary))
+	same(summary.added, 0, "added")
+	same(countLines(logs, "W careerMP.insurance: missing career_modules_inventory.getVehicles"), 1, "warning")
+end)
