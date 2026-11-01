@@ -800,6 +800,7 @@ test("a remote car changed by something other than the server asks for the list 
 	local me = busyFriend()
 	as(me, function() me.objects[gameId(1, 15)]:setActive(0) end)
 	pump()
+	frames(me, 1)
 	same(listRequests(me), 1, "list requests")
 	same(me.objects[gameId(1, 15)].active, true, "the car the server says is showing")
 end)
@@ -814,9 +815,11 @@ test("a remote car the server never sent asks for the list", function()
 	me.vehicles["1-40"] = {gameVehicleID = 999, jbeam = "pickup", isLocal = false}
 	as(me, me.enabler.onVehicleSpawned, 999)
 	pump()
+	frames(me, 1)
 	same(listRequests(me), 1, "requests on spawn")
 	as(me, function() veh:setActive(0) end)
 	pump()
+	frames(me, 1)
 	same(listRequests(me), 2, "requests on a change")
 end)
 
@@ -840,5 +843,233 @@ test("leaving the server forgets the kept states", function()
 	as(me, me.enabler.onBeamMPServerLeave)
 	as(me, me.enabler.onVehicleSpawned, gameId(1, 3))
 	pump()
+	frames(me, 1)
 	same(listRequests(me), 1, "list requests for a car whose state is forgotten")
+end)
+
+--== joining a busy server ===================================================
+
+-- My game joins while 100 of my friend's cars appear on it, none with a state yet.
+local function joinBusyServer()
+	newWorld()
+	local friend = addPlayer(1, "Friend")
+	for vid = 0, 99 do spawn(1, vid, {JBeam = "covet", isParked = vid > 0 and "true" or nil}) end
+	local me = addPlayer(0, "Me")
+	world.broadcasts = {}
+	for vid = 0, 99 do
+		local gid = gameId(1, vid)
+		local veh = {owner = 1, serverVehicleID = "1-" .. vid, JBeam = "covet", active = true}
+		function veh:setActive(on) self.active = on == 1 end
+		function veh:getActive() return self.active end
+		function veh:queueLuaCommand() end
+		function veh:setField() end
+		function veh:setDynDataFieldbyName(name, _, value) self[name] = value end
+		me.objects[gid] = veh
+		me.vehicles["1-" .. vid] = {gameVehicleID = gid, jbeam = "covet", isLocal = false}
+		as(me, me.enabler.onVehicleSpawned, gid)
+	end
+	pump()
+	return me, friend
+end
+
+local function listsTo(id)
+	local n = 0
+	for _, m in ipairs(world.broadcasts) do
+		if m.target == id and rows(m.table) > 1 then n = n + 1 end
+	end
+	return n
+end
+
+test("a game that sees 100 cars appear asks for the car list once in that second", function()
+	local me = joinBusyServer()
+	same(listRequests(me), 0, "list requests before the next frame")
+	frames(me, 0.5)
+	same(listRequests(me), 1, "list requests in the first second")
+	frames(me, 3)
+	same(listRequests(me), 1, "list requests once nothing else changed")
+	same(me.objects[gameId(1, 5)].active, true, "a car on my game")
+end)
+
+test("a car change inside the second after a list request waits for the next second", function()
+	local me = joinBusyServer()
+	frames(me, 0.5)
+	as(me, me.enabler.onVehicleActiveChanged, gameId(1, 7), false)
+	frames(me, 0.5)
+	same(listRequests(me), 1, "list requests half a second later")
+	frames(me, 0.5)
+	same(listRequests(me), 2, "list requests a second later")
+end)
+
+test("leaving the server drops a list request still waiting", function()
+	local me = joinBusyServer()
+	as(me, me.enabler.onBeamMPServerLeave)
+	frames(me, 2)
+	same(listRequests(me), 0, "list requests after leaving")
+end)
+
+test("the server answers a player's list requests at most once a second, the rest at the next tick", function()
+	newWorld()
+	addPlayer(0, "Me")
+	addPlayer(1, "Friend")
+	spawn(1, 0)
+	spawn(1, 1)
+	world.broadcasts = {}
+	world.now = 10
+	for _ = 1, 20 do careerVehSyncRequested(0, "") end
+	same(listsTo(0), 1, "answers at once")
+	world.now = 10.5
+	tick()
+	same(listsTo(0), 1, "answers half a second later")
+	world.now = 11
+	tick()
+	same(listsTo(0), 2, "answers a second later")
+	world.now = 12
+	tick()
+	world.now = 13
+	tick()
+	same(listsTo(0), 2, "answers once nothing more was asked")
+	careerVehSyncRequested(0, "")
+	same(listsTo(0), 3, "a request a second after the last answer is answered at once")
+end)
+
+test("a list request still waiting when its player leaves is never answered", function()
+	newWorld()
+	local me = addPlayer(0, "Me")
+	addPlayer(1, "Friend")
+	spawn(1, 0)
+	spawn(1, 1)
+	world.broadcasts = {}
+	careerVehSyncRequested(0, "")
+	careerVehSyncRequested(0, "")
+	world.players[0] = nil
+	onPlayerDisconnectHandler(0)
+	world.now = 5
+	tick()
+	same(listsTo(0), 1, "answers")
+end)
+
+test("the cars of a player who leaves are gone from later lists, other players' cars stay", function()
+	newWorld()
+	addPlayer(0, "Me")
+	addPlayer(3, "Three")
+	addPlayer(13, "Thirteen")
+	spawn(3, 0)
+	spawn(3, 1)
+	spawn(13, 0)
+	spawn(13, 1)
+	world.players[3] = nil
+	onPlayerDisconnectHandler(3)
+	world.broadcasts = {}
+	world.now = 5
+	careerVehSyncRequested(0, "")
+	local list = world.broadcasts[1].table
+	same(list["3-0"], nil, "car 3-0")
+	same(list["3-1"], nil, "car 3-1")
+	expect(list["13-0"] ~= nil and list["13-1"] ~= nil, "player 13's cars kept")
+end)
+
+--== requests for traffic ====================================================
+
+-- Captures what the server sends without delivering it.
+local function capture(fn)
+	world.toClients = {}
+	fn()
+	local sent = world.toClients
+	world.toClients = {}
+	return sent
+end
+
+local function countEvent(list, target, event)
+	local n = 0
+	for _, m in ipairs(list) do
+		if m.target == target and m.event == event then n = n + 1 end
+	end
+	return n
+end
+
+test("the server drops damage and paint requests for traffic without using up the requester's allowance", function()
+	newWorld()
+	addPlayer(0, "Me")
+	addPlayer(2, "Two")
+	spawn(2, 0)
+	spawn(2, 1)
+	careerVehicleTrafficMarks(2, encode({["2-0"] = true}))
+	pump()
+	local sent = capture(function()
+		for _ = 1, 10 do
+			careerDamageRequest(0, encode({v = "2-0"}))
+			requestPartPaintsHandler(0, encode({serverVehicleID = "2-0"}))
+		end
+		careerDamageRequest(0, encode({v = "2-1"}))
+		requestPartPaintsHandler(0, encode({serverVehicleID = "2-1"}))
+	end)
+	same(countEvent(sent, 2, "rxCareerDamageRequest"), 1, "damage requests reaching the owner")
+	same(sent[1] and sent[1].data, '{"v":"2-1"}', "the request that got through")
+	same(countEvent(sent, 2, "rxRequestPartPaints"), 1, "paint requests reaching the owner")
+end)
+
+test("a paint request reaches the owner by the whole player id", function()
+	newWorld()
+	addPlayer(0, "Me")
+	addPlayer(1, "One")
+	addPlayer(12, "Twelve")
+	spawn(12, 0)
+	local sent = capture(function() requestPartPaintsHandler(0, encode({serverVehicleID = "12-0"})) end)
+	same(countEvent(sent, 12, "rxRequestPartPaints"), 1, "requests to player 12")
+	same(countEvent(sent, 1, "rxRequestPartPaints"), 0, "requests to player 1")
+	same(decode(sent[1].data).originID, 0, "who asked")
+end)
+
+test("a paint request with a malformed id or for a player who is not here is dropped", function()
+	newWorld()
+	addPlayer(0, "Me")
+	addPlayer(1, "One")
+	for _, data in ipairs({encode({serverVehicleID = "x-0"}), encode({serverVehicleID = 5}), encode({}), "{broken",
+			encode({serverVehicleID = "7-0"})}) do
+		local sent = capture(function() requestPartPaintsHandler(0, data) end)
+		same(#sent, 0, "messages sent for " .. data)
+	end
+end)
+
+test("isRemoteTraffic is true only for another player's car the server marked as traffic", function()
+	local me, friend = twoPlayers()
+	frames(friend, 1)
+	same(me.enabler.isRemoteTraffic("1-1"), true, "my friend's police car")
+	same(me.enabler.isRemoteTraffic("1-2"), true, "my friend's parked car")
+	same(me.enabler.isRemoteTraffic("1-0"), false, "the car my friend drives")
+	same(me.enabler.isRemoteTraffic("1-99"), false, "a car the server never sent")
+end)
+
+local PAINT = "Resources/Client/CareerMP/lua/ge/extensions/careerMPPerPartPaint.lua"
+
+-- The paint requests careerMPPerPartPaint sends when cars 1-0 and 1-1 of another player
+-- are ready on this game, with the server's traffic marks as `traffic` says.
+local function paintRequests(traffic, withCheck)
+	local sent = {}
+	function log() end
+	function setExtensionUnloadMode() end
+	jsonEncode = encode
+	function TriggerServerEvent(name, data) table.insert(sent, {name = name, data = data}) end
+	MPVehicleGE = {
+		getServerVehicleID = function(gid) return "1-" .. gid end,
+		isOwn = function() return false end,
+	}
+	careerMPEnabler = {}
+	if withCheck ~= false then
+		careerMPEnabler.isRemoteTraffic = function(sid) return traffic[sid] == true end
+	end
+	local paint = dofile(PAINT)
+	paint.onVehicleReady(0)
+	paint.onVehicleReady(1)
+	local requests = {}
+	for _, m in ipairs(sent) do
+		if m.name == "requestPartPaints" then table.insert(requests, decode(m.data).serverVehicleID) end
+	end
+	table.sort(requests)
+	return table.concat(requests, ",")
+end
+
+test("a game asks for the part paints of another player's car, never of their traffic", function()
+	same(paintRequests({["1-1"] = true}), "1-0", "paint requests")
+	same(paintRequests({}, false), "1-0,1-1", "paint requests with an enabler that cannot tell traffic")
 end)

@@ -222,7 +222,13 @@ local function onVehicleReady(gameVehicleID)
 	local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
 	if not serverVehicleID then return end
 	if not MPVehicleGE.isOwn(gameVehicleID) then
-		-- Someone else's vehicle appeared; ask its owner for the part paints.
+		-- Someone else's vehicle appeared; ask its owner for the part paints. Their
+		-- traffic and parked cars have none.
+		local enabler = careerMPEnabler
+		if type(enabler) == "table" and type(enabler.isRemoteTraffic) == "function"
+				and enabler.isRemoteTraffic(serverVehicleID) then
+			return
+		end
 		TriggerServerEvent("requestPartPaints", jsonEncode({serverVehicleID = serverVehicleID}))
 	else
 		local inventoryId = career_modules_inventory.getInventoryIdFromVehicleId(gameVehicleID)

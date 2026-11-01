@@ -135,6 +135,31 @@ local function applyKnownState(serverVehicleID)
 	return true
 end
 
+-- The whole list is asked for at most once every LIST_EVERY_SECONDS: a game joining a
+-- busy server sees many cars appear at once, and one answer puts them all right.
+local LIST_EVERY_SECONDS = 1
+local listWanted = false
+local sinceList = LIST_EVERY_SECONDS
+
+local function requestVehicleStates()
+	listWanted = true
+end
+
+local function updateListRequest(dtReal)
+	local dt = tonumber(dtReal)
+	if dt and dt > 0 then sinceList = math.min(sinceList + dt, LIST_EVERY_SECONDS) end
+	if not listWanted or sinceList < LIST_EVERY_SECONDS then return end
+	listWanted = false
+	sinceList = 0
+	TriggerServerEvent("careerVehSyncRequested", "")
+end
+
+-- true when the server says another player's car is their traffic or a parked car.
+local function isRemoteTraffic(serverVehicleID)
+	local state = knownStates[serverVehicleID]
+	return type(state) == "table" and state.traffic == true
+end
+
 -- Career constantly hides/shows vehicles (garage, shopping, missions). A vehicle
 -- hidden locally must be hidden for everyone, so the server keeps the
 -- authoritative active-state map and we apply it to everything we do not own. The
@@ -234,7 +259,7 @@ local function onVehicleActiveChanged(gameVehicleID, active)
 		local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
 		local known = serverVehicleID and knownStates[serverVehicleID]
 		if known and (known.active and true or false) == (active and true or false) then return end
-		TriggerServerEvent("careerVehSyncRequested", "")
+		requestVehicleStates()
 	end
 end
 
@@ -248,7 +273,7 @@ local function onVehicleSpawned(gameVehicleID)
 	-- A car BeamMP builds after its state arrived takes the kept state.
 	local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
 	if not (serverVehicleID and applyKnownState(serverVehicleID)) then
-		TriggerServerEvent("careerVehSyncRequested", "")
+		requestVehicleStates()
 	end
 end
 
@@ -743,6 +768,7 @@ end
 local function onUpdate(dtReal, dtSim, dtRaw)
 	updateCareerStart()
 	updateJoinHold()
+	updateListRequest(dtReal)
 	if worldReadyState ~= 2 or not clientConfig then return end
 	updateTrafficMarks(dtReal)
 	local vehicles = MPVehicleGE.getVehicles()
@@ -804,6 +830,8 @@ local function onBeamMPServerLeave()
 	careerMPActive = false
 	syncRequested = false
 	knownStates = {}
+	listWanted = false
+	sinceList = LIST_EVERY_SECONDS
 	sentMarks = {}
 	sinceMarks = 0
 	trafficFocusPinned = false
@@ -814,6 +842,7 @@ end
 
 M.getClientConfig = getClientConfig
 M.isTrafficCar = isTrafficCar
+M.isRemoteTraffic = isRemoteTraffic
 
 M.onCareerActive = onCareerActive
 

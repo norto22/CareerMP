@@ -1219,6 +1219,66 @@ test("a copy reset in place keeps the rotation BeamMP's own reset gives it", fun
 	expect(math.abs(math.abs(dot) - 1) < 1e-6, string.format("rotation differs from BeamMP's reset; |dot| = %.3f", math.abs(dot)))
 end)
 
+--== no requests for another player's traffic ================================
+
+-- Player 0's cars 0-0 to 0-(n-1) on both games, their owner answering nothing (as
+-- traffic never does), and the server's traffic marks as `traffic` says.
+local function trafficOwner(n, traffic)
+	newWorld()
+	local owners, copies = addGame(0), addGame(1)
+	owners.handlers.rxCareerDamageRequest = nil
+	owners.ge.onUpdate = nil
+	for vid = 0, n - 1 do
+		addCar(owners, 0, vid)
+		addCar(copies, 0, vid)
+	end
+	enabler.isRemoteTraffic = function(sid) return traffic[sid] == true end
+	return copies
+end
+
+local function requestsFrom1(sid)
+	local n = 0
+	for _, m in ipairs(sentToServer("careerDamageRequest", 1)) do
+		if m.data == '{"v":"' .. sid .. '"}' then n = n + 1 end
+	end
+	return n
+end
+
+test("a copy of another player's traffic is never asked for its full damage, a real car's copy is", function()
+	trafficOwner(2, {["0-1"] = true})
+	step(30)
+	same(requestsFrom1("0-1"), 0, "requests for the traffic car")
+	same(requestsFrom1("0-0"), 4, "requests for the real car, retried as today")
+end)
+
+test("a copy marked as traffic after it was first asked for is not asked again", function()
+	local traffic = {}
+	trafficOwner(1, traffic)
+	step(2)
+	same(requestsFrom1("0-0"), 1, "requests before the mark")
+	traffic["0-0"] = true
+	step(30)
+	same(requestsFrom1("0-0"), 1, "requests after the mark")
+end)
+
+test("requests still queued for cars the server then marks as traffic are dropped", function()
+	local traffic = {}
+	trafficOwner(9, traffic)
+	step(1)
+	local before = #sentToServer("careerDamageRequest", 1)
+	expect(before < 9, "requests already sent: " .. before)
+	for vid = 0, 8 do traffic["0-" .. vid] = true end
+	step(30)
+	same(#sentToServer("careerDamageRequest", 1), before, "requests sent after the marks")
+end)
+
+test("with an enabler that cannot tell traffic, copies are asked for as today", function()
+	trafficOwner(1, {})
+	enabler.isRemoteTraffic = nil
+	step(30)
+	same(requestsFrom1("0-0"), 4, "requests for the car")
+end)
+
 --== full-damage requests and the copy's check, second review ===============
 
 -- Requests the copy's game (player 1) sent for one car.

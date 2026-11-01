@@ -202,6 +202,20 @@ local function notify(feature, target, text, ...)
 	count(feature, 0, 1, recipients, #tostring(text) * recipients)
 end
 
+local function decodeTable(data)
+	if type(data) ~= "string" or data == "" then return nil end
+	local ok, decoded = pcall(Util.JsonDecode, data)
+	if ok and type(decoded) == "table" then return decoded end
+	return nil
+end
+
+-- true for a car its owner's game marked as traffic or parked. Such a car never answers
+-- a request for its damage or paint, so the requests are dropped.
+local function isTraffic(serverVehicleID)
+	local state = vehicleStates[serverVehicleID]
+	return type(state) == "table" and state.traffic == true
+end
+
 local trapNames = {
 	[1] = "Riverway Plaza",
 	[2] = "Plaza Northbound",
@@ -599,12 +613,17 @@ function perPartPaintingHandler(player_id, data)
 	end
 end
 
+-- A game asks the owner of one car for its part paints: {"serverVehicleID"}. The owner
+-- is read from the whole player number of the id.
 function requestPartPaintsHandler(player_id, data)
 	received("paint")
-	local requestData = Util.JsonDecode(data)
-	local targetID = tonumber(requestData.serverVehicleID:sub(1,1))
+	local requestData = decodeTable(data)
+	local serverVehicleID = requestData and requestData.serverVehicleID
+	if type(serverVehicleID) ~= "string" or isTraffic(serverVehicleID) then return end
+	local owner = tonumber(serverVehicleID:match("^(%d+)%-%d+$"))
+	if not owner or not MP.GetPlayers()[owner] then return end
 	requestData.originID = player_id
-	sendJson("paint", targetID, "rxRequestPartPaints", requestData)
+	sendJson("paint", owner, "rxRequestPartPaints", requestData)
 end
 
 local function getOrCreate(ledger, player_id)
@@ -925,9 +944,37 @@ function trafficLightTimer()
 	end
 end
 
+-- The whole car-state list goes to a player at most once every LIST_EVERY_SECONDS; a
+-- request inside that time is answered once, from the first tick after it.
+local LIST_EVERY_SECONDS = 1
+local listAnsweredAt = {}
+local listWanted = {}
+
+local function sendVehicleList(player_id)
+	listAnsweredAt[player_id] = signalTimer:GetCurrent()
+	listWanted[player_id] = nil
+	sendJson("carStates", player_id, "rxCareerVehSync", vehicleStates)
+end
+
+local function sendWantedVehicleLists()
+	local now = signalTimer:GetCurrent()
+	for player_id in pairs(listWanted) do
+		if not MP.IsPlayerConnected(player_id) then
+			listWanted[player_id] = nil
+		elseif now - (listAnsweredAt[player_id] or -math.huge) >= LIST_EVERY_SECONDS then
+			sendVehicleList(player_id)
+		end
+	end
+end
+
 function careerVehSyncRequested(player_id)
 	received("carStates")
-	sendJson("carStates", player_id, "rxCareerVehSync", vehicleStates)
+	local last = listAnsweredAt[player_id]
+	if last and signalTimer:GetCurrent() - last < LIST_EVERY_SECONDS then
+		listWanted[player_id] = true
+		return
+	end
+	sendVehicleList(player_id)
 end
 
 function careerPrefabSync(player_id, data)
@@ -946,13 +993,6 @@ function careerPrefabSync(player_id, data)
 			send("prefabs", id, "rxPrefabSync", data)
 		end
 	end
-end
-
-local function decodeTable(data)
-	if type(data) ~= "string" or data == "" then return nil end
-	local ok, decoded = pcall(Util.JsonDecode, data)
-	if ok and type(decoded) == "table" then return decoded end
-	return nil
 end
 
 -- true when serverVehicleID ("<player_id>-<vehicle_id>") names one of player_id's own
@@ -1106,10 +1146,10 @@ end
 function careerDamageRequest(player_id, data)
 	received("damage")
 	if type(data) ~= "string" or #data > DAMAGE_REQUEST_MAX_BYTES then return end
-	if not withinDamageRate("request", player_id) then return end
 	local request = decodeTable(data)
 	local serverVehicleID = request and request.v
-	if type(serverVehicleID) ~= "string" then return end
+	if type(serverVehicleID) ~= "string" or isTraffic(serverVehicleID) then return end
+	if not withinDamageRate("request", player_id) then return end
 	local owner = serverVehicleID:match("^(%d+)%-%d+$")
 	owner = tonumber(owner)
 	if not owner or owner == player_id or not MP.GetPlayers()[owner] then return end
@@ -1147,6 +1187,7 @@ function tick()
 		exit()
 	end
 	validateCareerMPActivation()
+	sendWantedVehicleLists()
 	ticksSinceAlive = ticksSinceAlive + 1
 	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
 		ticksSinceAlive = 0
@@ -1194,6 +1235,13 @@ function onPlayerDisconnectHandler(player_id)
 	pendingActivation[player_id] = nil
 	damageRate.send[player_id] = nil
 	damageRate.request[player_id] = nil
+	listAnsweredAt[player_id] = nil
+	listWanted[player_id] = nil
+	-- BeamMP removes a leaving player's cars; their states go with them.
+	local prefix = tostring(player_id) .. "-"
+	for serverVehicleID in pairs(vehicleStates) do
+		if serverVehicleID:sub(1, #prefix) == prefix then vehicleStates[serverVehicleID] = nil end
+	end
 end
 
 function onConsoleInputHandler(message)

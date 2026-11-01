@@ -72,8 +72,21 @@ local function queueRequest(serverVehicleID)
 	table.insert(requests, serverVehicleID)
 end
 
+-- Traffic and parked cars never answer, so their copies are not asked. The server's
+-- marks often arrive just after the copy is built, so this is checked again before each
+-- request goes out. An enabler without the check (an older CareerMP) asks for every car.
+local function isRemoteTraffic(serverVehicleID)
+	local enabler = careerMPEnabler
+	return type(enabler) == "table" and type(enabler.isRemoteTraffic) == "function"
+		and enabler.isRemoteTraffic(serverVehicleID) == true
+end
+
 -- Asks a copy's owner for its full damage, again later if no answer comes.
 local function requestFull(gameVehicleID, serverVehicleID)
+	if isRemoteTraffic(serverVehicleID) then
+		awaiting[gameVehicleID] = nil
+		return
+	end
 	awaiting[gameVehicleID] = {sid = serverVehicleID, wait = RETRY_SECONDS, tries = 1}
 	queueRequest(serverVehicleID)
 end
@@ -81,7 +94,9 @@ end
 local function retryRequests()
 	for gameVehicleID, a in pairs(awaiting) do
 		a.wait = a.wait - ROLES_EVERY_SECONDS
-		if a.wait <= 0 then
+		if isRemoteTraffic(a.sid) then
+			awaiting[gameVehicleID] = nil
+		elseif a.wait <= 0 then
 			if a.tries >= REQUEST_TRIES then
 				-- An owner on an older CareerMP never answers; its copy is left to the game.
 				awaiting[gameVehicleID] = nil
@@ -95,6 +110,7 @@ end
 
 local function sendRequests(dt)
 	sinceRequest = math.min(sinceRequest + dt, 1 / REQUESTS_PER_SECOND)
+	while #requests > 0 and isRemoteTraffic(requests[1]) do table.remove(requests, 1) end
 	if #requests == 0 or sinceRequest < 1 / REQUESTS_PER_SECOND then return end
 	sinceRequest = 0
 	TriggerServerEvent("careerDamageRequest", '{"v":"' .. table.remove(requests, 1) .. '"}')
