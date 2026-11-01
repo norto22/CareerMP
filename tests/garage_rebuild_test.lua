@@ -430,3 +430,156 @@ test("parts fitted after a click on car A are announced for car A", function()
 	career_modules_partShopping.installPart("bumper")
 	same(announced("onPartShoppingPartInstalledMP")[1].inventoryId, CAR_A, "inventory id")
 end)
+
+--== edges of the rebuild wrapper ============================================
+
+test("after a rebuild that raises, the next rebuild naming car A still goes to car A", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
+	game.raiseOnRebuild = true
+	pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	game.raiseOnRebuild = false
+	local back = core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(back, game.carA, "the car that came back")
+	expect(rebuiltOnly(game.carA.id), "only car A was rebuilt")
+	same(game.carB.JBeam, "sedan", "car B")
+end)
+
+test("during a rebuild naming car A, the answer for any other player is the real one", function()
+	setup()
+	local otherPlayersCar = newObj("van")
+	game.realGetPlayerVehicle = function(player)
+		if player == 0 then return game.player end
+		if player == 1 then return otherPlayersCar end
+		return nil
+	end
+	rawset(_G, "getPlayerVehicle", game.realGetPlayerVehicle)
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
+	local seenPlayer1
+	game.duringRebuild = function() seenPlayer1 = getPlayerVehicle(1) end
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(seenPlayer1, otherPlayersCar, "player 1's car during the rebuild")
+end)
+
+test("a rebuild passes every argument through, the fourth included, on both paths", function()
+	setup()
+	installBeamMP()
+	local beamMP = core_vehicles.replaceVehicle
+	local calls = {}
+	core_vehicles.replaceVehicle = function(model, opt, other, wholeCollection)
+		table.insert(calls, {model = model, opt = opt, other = other, whole = wholeCollection})
+		return beamMP(model, opt, other, wholeCollection)
+	end
+	patches.apply()
+	game.player = game.carB
+	local opt = {config = "x"}
+	local remote = newObj("van")
+	game.mp[remote.id] = {isLocal = false, own = false}
+	core_vehicles.replaceVehicle("pickup", opt, game.carA, true)
+	core_vehicles.replaceVehicle("pickup", opt, remote, true)
+	same(#calls, 2, "calls reaching BeamMP")
+	for i, named in ipairs({game.carA, remote}) do
+		same(calls[i].model, "pickup", "model " .. i)
+		same(calls[i].opt, opt, "options table " .. i)
+		same(calls[i].other, named, "named car " .. i)
+		same(calls[i].whole, true, "replaceWholeCollection " .. i)
+	end
+end)
+
+test("outside multiplayer a rebuild naming car A goes straight to the game's rebuild", function()
+	setup()
+	MPVehicleGE = nil
+	patches.apply()
+	game.player = game.carB
+	local seen
+	game.duringRebuild = function() seen = rawget(_G, "getPlayerVehicle") end
+	local back = core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(back, game.carA, "the car that came back")
+	expect(rebuiltOnly(game.carA.id), "only car A was rebuilt")
+	same(seen, game.realGetPlayerVehicle, "the game's getPlayerVehicle during the rebuild")
+	same(#toasts, 0, "messages shown")
+	same(countLines(logs, "E careerMP.patches: "), 0, "error lines")
+end)
+
+test("a rebuild that returns nothing is not reported as a wrong car", function()
+	setup()
+	core_vehicles.replaceVehicle = function() return nil end
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
+	local back = core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(back, nil, "what the rebuild returned")
+	same(#toasts, 0, "messages shown")
+	same(countLines(logs, "E careerMP.patches: "), 0, "error lines")
+	same(getPlayerVehicle(0), game.carB, "the player's car")
+end)
+
+--== staying on top of BeamMP, over time ======================================
+
+test("BeamMP installed over the wrapper is wrapped again once over many updates", function()
+	setup()
+	patches.apply()
+	installBeamMP()
+	for _ = 1, 6 do patches.onUpdate(3) end
+	same(countLines(logs, "wrapped it again"), 1, "times wrapped again")
+end)
+
+test("revert after wrapping BeamMP again leaves BeamMP's rebuild in place", function()
+	setup()
+	patches.apply()
+	installBeamMP()
+	patches.onUpdate(3)
+	patches.revert()
+	same(core_vehicles.replaceVehicle, game.beamMPReplace, "core_vehicles.replaceVehicle")
+end)
+
+test("career starting again after BeamMP was wrapped again still rebuilds only car A", function()
+	setup()
+	patches.apply()
+	installBeamMP()
+	patches.onUpdate(3)
+	patches.onCareerActive(true)
+	game.player = game.carB
+	local back = core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(back, game.carA, "the car that came back")
+	expect(rebuiltOnly(game.carA.id), "only car A was rebuilt")
+	same(game.beamMPCalls, 1, "BeamMP's rebuild calls")
+	same(game.carB.JBeam, "sedan", "car B")
+	same(getPlayerVehicle(0), game.carB, "the player's car after the rebuild")
+end)
+
+test("the walking avatar still spawns with BeamMP's visible config beside the rebuild wrapper", function()
+	setup()
+	local spawned
+	core_vehicles.spawnNewVehicle = function(model, opt) spawned = opt return newObj(model) end
+	patches.apply()
+	installBeamMP()
+	patches.onUpdate(3)
+	core_vehicles.spawnNewVehicle("unicycle", {config = "vehicles/unicycle/without_mesh.pc"})
+	same(spawned and spawned.config, "vehicles/unicycle/beammp_default.pc", "the avatar's config")
+end)
+
+--== the garage computer, edges ===============================================
+
+test("the garage computer still runs its buttons when CareerMP's patches are not loaded", function()
+	setup()
+	extensions.careerMP_patches = nil
+	local ok, err = pcall(function()
+		career_modules_computer.openMenu(COMPUTER_FACILITY)
+		career_modules_computer.computerButtonCallback("repair", CAR_A)
+	end)
+	expect(ok, "the computer raised: " .. tostring(err))
+end)
+
+test("a click on car A wins over a Parts session left recorded for car B", function()
+	setup()
+	patches.apply()
+	career_modules_partShopping.startShopping(CAR_B)
+	patches.onPartShoppingStarted()
+	clickAt("partShopping", CAR_A)
+	same(announced("onPartShoppingStartedMP")[2], CAR_A, "inventory id")
+end)
