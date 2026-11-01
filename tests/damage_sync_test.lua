@@ -1218,3 +1218,91 @@ test("a copy reset in place keeps the rotation BeamMP's own reset gives it", fun
 	local dot = got[1] * want.x + got[2] * want.y + got[3] * want.z + got[4] * want.w
 	expect(math.abs(math.abs(dot) - 1) < 1e-6, string.format("rotation differs from BeamMP's reset; |dot| = %.3f", math.abs(dot)))
 end)
+
+--== full-damage requests and the copy's check, second review ===============
+
+-- Requests the copy's game (player 1) sent for one car.
+local function requestsFor(sid)
+	local n = 0
+	for _, m in ipairs(sentToServer("careerDamageRequest", 1)) do
+		if m.data == '{"v":"' .. sid .. '"}' then n = n + 1 end
+	end
+	return n
+end
+
+-- Player 0 on an older CareerMP (nothing answers a request), and player 1's copies of
+-- player 0's cars 0-0 to 0-(n-1).
+local function silentOwner(n)
+	newWorld()
+	local owners, copies = addGame(0), addGame(1)
+	owners.handlers.rxCareerDamageRequest = nil
+	owners.ge.onUpdate = nil
+	local cars = {}
+	for vid = 0, n - 1 do
+		addCar(owners, 0, vid)
+		cars[vid] = addCar(copies, 0, vid)
+	end
+	return copies, cars
+end
+
+test("a full-damage request the owner answers is not asked again", function()
+	local owner, copy, owners, copies = twoGames()
+	step(30)
+	same(#sentToServer("careerDamageRequest", 1), 1, "requests from the copy's game")
+end)
+
+test("a copy removed before its owner answers is not asked for again", function()
+	local copies, cars = silentOwner(1)
+	step(2)
+	same(requestsFor("0-0"), 1, "requests before the copy is removed")
+	local copy = cars[0]
+	copies.cars[copy.gid], copies.objects[copy.gid], copies.vehicles[copy.sid] = nil, nil, nil
+	as(copies, copies.ge.onVehicleDestroyed, copy.gid)
+	step(30)
+	same(requestsFor("0-0"), 1, "requests after the copy is removed")
+end)
+
+test("leaving the server drops the full-damage requests still waiting", function()
+	local copies = silentOwner(10)
+	step(1)
+	local before = #sentToServer("careerDamageRequest", 1)
+	expect(before < 10, "requests already sent when leaving: " .. before)
+	as(copies, copies.ge.onBeamMPServerLeave)
+	-- Off the server BeamMP lists no cars.
+	copies.vehicles = {}
+	step(30)
+	same(#sentToServer("careerDamageRequest", 1) - before, 0, "requests sent after leaving")
+end)
+
+test("a car asked for twice while its first request still waits is asked for once", function()
+	local copies, cars = silentOwner(6)
+	step(1)
+	local waiting
+	for vid = 0, 5 do
+		if requestsFor("0-" .. vid) == 0 then waiting = vid end
+	end
+	expect(waiting ~= nil, "a request still queued")
+	-- That copy drifts from its owner and asks again before its first request went out.
+	as(copies, copies.ge.resetCopy, cars[waiting].gid, 1)
+	pump()
+	step(3)
+	same(requestsFor("0-" .. waiting), 1, "requests for 0-" .. waiting)
+end)
+
+test("phantom damage after quiet checks is still counted", function()
+	local copy = heardCopy(30)
+	tick(copy, 3)
+	phantomDents(copy, 50, 74)
+	tick(copy, 2)
+	same(resetRequests(copy).resync, 1, "resyncs")
+end)
+
+test("a copy whose damage and reports have not moved does not read its beams again", function()
+	local copy = heardCopy(30)
+	tick(copy, 1)
+	local reads = 0
+	local read = copy.obj.getBeamRestLength
+	function copy.obj:getBeamRestLength(cid) reads = reads + 1; return read(self, cid) end
+	tick(copy, 5)
+	same(reads, 0, "beam reads over five quiet checks")
+end)
