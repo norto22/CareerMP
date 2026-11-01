@@ -13,6 +13,7 @@ local files = {
 	"tests/join_insurance_check_test.lua",
 	"tests/connection_watch_test.lua",
 	"tests/vehicle_sync_test.lua",
+	"tests/remote_vehicle_test.lua",
 }
 
 local passed, failed = 0, 0
