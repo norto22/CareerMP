@@ -1940,7 +1940,16 @@ local function finishCounts(player_id, seconds, start, finish, sinceGreen)
 	return near
 end
 
-Money.finishCounts, Money.metresBetween = finishCounts, metresBetween
+-- Reads the cars of the named racers once, when their race or event starts, so the server
+-- has found out whether it can read positions before the first finish report arrives.
+local function readCars(names, point)
+	for _, name in ipairs(names) do
+		local id = playerIdByName(name)
+		if id then carNear(id, point, math.huge) end
+	end
+end
+
+Money.finishCounts, Money.metresBetween, Money.readCars = finishCounts, metresBetween, readCars
 
 -- A racer's game reports: {race, pose = {pos, dir, up}} (the challenger, for the start),
 -- {race, ready = true} (the challenged, beside it), {race, failed = why},
@@ -1980,6 +1989,7 @@ function mileageRaceReport(player_id, data)
 		sendRace(race.b, {race = race.id, phase = "teleport", pose = report.pose, other = race.a})
 	elseif live.phase == "teleport" and name == race.b and report.ready == true then
 		live.phase = "countdown"
+		readCars({race.a, race.b}, live.finish)
 		live.goAt = signalTimer:GetCurrent() + COUNTDOWN_SECONDS
 		live.deadline = live.goAt + serverNumber("raceTimeLimitMinutes", 1, 120) * 60
 		sendBothRace(race, {race = race.id, phase = "countdown", seconds = COUNTDOWN_SECONDS, finish = live.finish,
@@ -2380,6 +2390,9 @@ local function startEventRace()
 		return
 	end
 	live.racers = #names
+	-- The cars are still where the players left them; reading them tells the server whether
+	-- it can see cars before any finish arrives.
+	Money.readCars(names, live.finish)
 	local poses = gridPoses(live.start, live.finish, #names)
 	live.phase = "racing"
 	live.goAt = signalTimer:GetCurrent() + EVENT_COUNTDOWN_SECONDS

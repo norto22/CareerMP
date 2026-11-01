@@ -569,13 +569,33 @@ World.test("once car positions have been read, a racer whose car cannot be read 
 	same(world:printedMatching("cannot read cars' positions"), 0, "positions are readable here")
 end)
 
-World.test("with no car positions readable, a plausible finish time stands on the game's word and is logged once",
+World.test("a racer with no readable car is refused even when theirs is the first report on a freshly started server",
 		function(world)
 	local ann, bob = pair(world)
+	ann.hideCar = true
 	startRace(world, ann, bob, 1000)
 	local _, race = races(world)
 	world:advance(40)
+	world:drive(ann, KM.x + 5, KM.y)
+	world:serverOutput(function() mileageRaceReport(ann.id, World.encode({race = race.id, finished = 40})) end)
+	world:advance(2)
+	same(lastRaceMessage(world, ann, "result"), nil, "Ann's report was not taken")
+	world:advance(10)
+	arrive(world, bob)
+	world:advance(6)
+	local result = lastRaceMessage(world, bob, "result")
+	same(result.winner, "Bob", "Bob, whose car the server sees, wins")
+	same(result.times.Ann, nil, "Ann's time was never taken")
+end)
+
+World.test("with no car positions readable, a plausible finish time stands on the game's word and is logged once",
+		function(world)
+	local ann, bob = pair(world)
+	-- This server never answers for a car's position (an older BeamMP, say).
 	world.hidePositions = true
+	startRace(world, ann, bob, 1000)
+	local _, race = races(world)
+	world:advance(40)
 	world:drive(ann, KM.x + 5, KM.y)
 	-- The server cannot see cars here: the report stands, and the console says so once.
 	world:serverOutput(function() mileageRaceReport(ann.id, World.encode({race = race.id, finished = 40})) end)
