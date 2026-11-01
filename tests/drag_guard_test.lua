@@ -551,3 +551,40 @@ test("the countdown repair does nothing on a player who is not the strip's autho
 	same(game.getDataCalls, 0, "drag core calls")
 	same(#game.countdowns, 0, "countdowns re-issued")
 end)
+
+--== failures the guard must still name =====================================
+
+test("two drag functions failing every frame are each logged once, by their own name", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	gameplay_drag_display.onUpdate = function() error("gameplay_drag_display: attempt to call a nil value") end
+	game.sync.onCareerActive(true)
+	runFrames(FRAMES)
+	same(game.counts.traffic, FRAMES, "traffic updates (frame error: " .. tostring(game.frameErrors[1]) .. ")")
+	same(countLines(logs, "gameplay_drag_times.onUpdate"), 1, "log lines naming the drag timer")
+	same(countLines(logs, "gameplay_drag_display.onUpdate"), 1, "log lines naming the drag display")
+end)
+
+test("a drag update raising a value that is not a string is still contained and logged once", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	gameplay_drag_times.onUpdate = function() error({code = 7}) end
+	game.sync.onCareerActive(true)
+	runFrames(FRAMES)
+	same(game.counts.traffic, FRAMES, "traffic updates (frame error: " .. tostring(game.frameErrors[1]) .. ")")
+	same(#game.frameErrors, 0, "frames ended early")
+	same(countLines(logs, "gameplay_drag_times.onUpdate"), 1, "log lines naming the drag timer")
+end)
+
+test("the drag mode's countdown repair and result finaliser failing together are each logged once", function()
+	local drag = failingDragMode()
+	pcall(drag.onDragMpTimeslipRequested)
+	for _ = 1, FRAMES do
+		local ok, result = pcall(drag.checkTimerDrift)
+		expect(ok, "checkTimerDrift raised: " .. tostring(result))
+		local ok2, err = pcall(drag.onUpdate)
+		expect(ok2, "onUpdate raised: " .. tostring(err))
+	end
+	same(countLines(logs, "multiplayer_gamemodes_drag_drag.checkTimerDrift"), 1, "log lines naming checkTimerDrift")
+	same(countLines(logs, "multiplayer_gamemodes_drag_drag.onUpdate"), 1, "log lines naming the finaliser")
+end)
