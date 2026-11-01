@@ -413,15 +413,6 @@ function hideList() {
 	if (localStorage.getItem('plHorizontal') == "right") { hiddenText = "&gt;"; }
 	var plContainer = document.getElementById("plist-container");
 	var btn = document.getElementById("show-button");
-	plContainer.style.display = "block";
-	btn.innerHTML = shownText;
-}
-
-function hideList() {
-	var hiddenText = "&lt;";
-	if (localStorage.getItem('plHorizontal') == "right") { hiddenText = "&gt;"; }
-	var plContainer = document.getElementById("plist-container");
-	var btn = document.getElementById("show-button");
 	plContainer.style.display = "none";
 	btn.innerHTML = hiddenText;
 	btn.style.height = "75px";
