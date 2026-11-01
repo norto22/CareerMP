@@ -1859,11 +1859,20 @@ end
 -- (plus REPORT_SLACK_SECONDS for the delay between the two games' greens). A time before
 -- green, or a few hundredths of a second, is ignored.
 --
+-- A game reports its time at the moment its car arrives, so the time also has to match the
+-- server's own clock: it cannot be more than REPORT_SLACK_SECONDS above the time since
+-- green, nor more than REPORT_EARLY_SECONDS below it (the delay of the two messages). A
+-- game can therefore not claim a quicker time than the server saw pass, and only has the gap
+-- between two arrivals to play with.
+--
 -- When the server cannot read cars' positions at all (BeamMP's MP.GetPlayerVehicles or
--- MP.GetPositionRaw missing, or their answer in a form not understood) the car is not
--- checked and the time stands on the game's word; that is logged once.
+-- MP.GetPositionRaw missing, or no car of any player has ever been read in a form
+-- understood) the car is not checked and the time stands on the game's word; that is logged
+-- once. Once any car has been read, a player whose car cannot be read is refused.
 local MAX_SPEED_MPS = 100
 local REPORT_SLACK_SECONDS = 3
+local REPORT_EARLY_SECONDS = 5
+local positionsEverRead = false
 -- The game reports within FINISH_RADIUS of the finish; the server's last position of the
 -- car can be a moment old, so it is allowed a wider circle.
 local FINISH_CHECK_METRES = 150
@@ -1876,7 +1885,7 @@ end
 local function plausibleTime(seconds, metres, sinceGreen)
 	if type(seconds) ~= "number" or seconds ~= seconds or seconds <= 0 then return false end
 	if seconds < math.max(0, metres - FINISH_RADIUS) / MAX_SPEED_MPS then return false end
-	return seconds <= sinceGreen + REPORT_SLACK_SECONDS
+	return seconds <= sinceGreen + REPORT_SLACK_SECONDS and seconds >= sinceGreen - REPORT_EARLY_SECONDS
 end
 
 -- A position as {x, y, z} from BeamMP's position data, which may carry it as x, y, z or
@@ -1894,7 +1903,9 @@ end
 local function carNear(player_id, point, metres)
 	if type(MP.GetPlayerVehicles) ~= "function" or type(MP.GetPositionRaw) ~= "function" then return nil end
 	local ok, vehicles = pcall(MP.GetPlayerVehicles, player_id)
-	if not ok or type(vehicles) ~= "table" then return nil end
+	if not ok then return nil end
+	-- BeamMP answers nothing for a player with no car: handled as a car that cannot be read.
+	if type(vehicles) ~= "table" then vehicles = {} end
 	local seen = false
 	for vehicleId in pairs(vehicles) do
 		if not isTraffic(tostring(player_id) .. "-" .. tostring(vehicleId)) then
@@ -1902,11 +1913,15 @@ local function carNear(player_id, point, metres)
 			local at = readOk and positionOf(raw) or nil
 			if at then
 				seen = true
+				positionsEverRead = true
 				if metresBetween(at, point) <= metres then return true end
 			end
 		end
 	end
 	if seen then return false end
+	-- The calls work but this player has no readable car of their own: refused, unless no
+	-- car has ever been readable here, which means the format is not understood.
+	if positionsEverRead then return false end
 	return nil
 end
 

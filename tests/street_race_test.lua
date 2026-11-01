@@ -533,6 +533,42 @@ World.test("a finish time that could not have been driven is ignored: too quick,
 	same(bob.money, 11000, "Bob won the stakes")
 end)
 
+World.test("a time quicker than the server's own clock allows is ignored, even from a car at the finish", function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	local _, race = races(world)
+	world:advance(60)
+	world:drive(ann, KM.x + 5, KM.y)
+	-- 60 s have passed since green; a game cannot have arrived with a time of 26 s.
+	world:serverOutput(function() mileageRaceReport(ann.id, World.encode({race = race.id, finished = 26})) end)
+	same(next(lastRaceMessage(world, ann, "result") or {}), nil, "no result from the quick time")
+	-- The game's own report, taken at the finish, matches the server's clock and counts.
+	world:advance(6)
+	local time = lastRaceMessage(world, ann, "result").times.Ann
+	expect(time >= 60 and time <= 63, "Ann's time matches the clock: " .. tostring(time))
+end)
+
+World.test("once car positions have been read, a racer whose car cannot be read is refused", function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	local _, race = races(world)
+	world:advance(40)
+	ann.hideCar = true
+	world:drive(ann, KM.x + 5, KM.y)
+	world:drive(bob, KM.x + 5, KM.y)
+	local function report(p, seconds)
+		world:serverOutput(function() mileageRaceReport(p.id, World.encode({race = race.id, finished = seconds})) end)
+	end
+	-- Bob's car is read, so the server can see cars; Ann has no car it can read.
+	report(bob, 41)
+	report(ann, 41)
+	world:advance(6)
+	local result = lastRaceMessage(world, bob, "result")
+	same(result.winner, "Bob", "Bob wins")
+	same(result.times.Ann, nil, "Ann's time was not taken")
+	same(world:printedMatching("cannot read cars' positions"), 0, "positions are readable here")
+end)
+
 World.test("with no car positions readable, a plausible finish time stands on the game's word and is logged once",
 		function(world)
 	local ann, bob = pair(world)

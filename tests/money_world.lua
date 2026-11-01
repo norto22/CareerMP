@@ -243,7 +243,7 @@ function World:startServer()
 		-- world.hidePositions makes it unreadable, as on a BeamMP without these calls.
 		GetPlayerVehicles = function(id)
 			local p = world.players[id]
-			if world.hidePositions or not p or not p.car then return nil end
+			if world.hidePositions or p.hideCar or not p or not p.car then return nil end
 			return {[0] = {name = p.car.JBeam}}
 		end,
 		GetPositionRaw = function(id, vid)
