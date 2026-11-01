@@ -400,6 +400,7 @@ local function spawn(owner, vid, fields)
 		function veh:getActive() return self.active end
 		function veh:queueLuaCommand() end
 		function veh:setField() end
+		function veh:setDynDataFieldbyName(name, _, value) self[name] = value end
 		p.objects[gid] = veh
 		p.vehicles[sid] = {gameVehicleID = gid, jbeam = veh.JBeam, isLocal = id == owner}
 	end
@@ -515,6 +516,7 @@ test("a player who joins later gets the marks with the vehicle list", function()
 		function veh:getActive() return self.active end
 		function veh:queueLuaCommand() end
 		function veh:setField() end
+		function veh:setDynDataFieldbyName(name, _, value) self[name] = value end
 		late.objects[gid] = veh
 		late.vehicles["1-" .. vid] = {gameVehicleID = gid, jbeam = model, isLocal = false}
 	end
@@ -628,8 +630,82 @@ end)
 
 test("a player cannot hide another player's car", function()
 	local me, friend = busyFriend()
-	as(me, TriggerServerEvent, "careerVehicleActiveHandler", encode({serverVehicleID = "1-0", active = false}))
+	as(me, function()
+		TriggerServerEvent("careerVehicleActiveHandler", encode({serverVehicleID = "1-0", active = false}))
+	end)
 	pump()
 	same(#toEveryone(), 0, "updates sent")
 	same(me.objects[gameId(1, 0)].active, true, "my friend's car on my game")
+end)
+
+test("the server ignores hides with a malformed id, a non-boolean or a bad payload", function()
+	local me, friend = busyFriend()
+	for _, payload in ipairs({encode({serverVehicleID = "1-0x", active = false}), encode({serverVehicleID = 10, active = false}),
+			encode({serverVehicleID = "1-0", active = 0}), encode({serverVehicleID = "1-0"}), "{broken", ""}) do
+		careerVehicleActiveHandler(1, payload)
+	end
+	careerVehicleActiveHandler(1, nil)
+	pump()
+	same(#toEveryone(), 0, "updates sent")
+	same(me.objects[gameId(1, 0)].active, true, "my friend's car on my game")
+end)
+
+test("a player who asks still gets the full list, hides and marks included", function()
+	local me, friend = busyFriend()
+	hide14(friend)
+	world.broadcasts = {}
+	careerVehSyncRequested(0, "")
+	same(#world.broadcasts, 1, "lists sent")
+	local list = world.broadcasts[1]
+	same(list.target, 0, "sent to")
+	same(rows(list.table), 17, "cars in the list")
+	same(list.table["1-1"].active, false, "a hidden car")
+	same(list.table["1-1"].traffic, true, "its mark")
+end)
+
+test("a remote car changed by something other than the server asks for the list once", function()
+	local me = busyFriend()
+	as(me, function() me.objects[gameId(1, 15)]:setActive(0) end)
+	pump()
+	same(listRequests(me), 1, "list requests")
+	same(me.objects[gameId(1, 15)].active, true, "the car the server says is showing")
+end)
+
+test("a remote car the server never sent asks for the list", function()
+	local me = busyFriend()
+	local veh = {owner = 1, serverVehicleID = "1-40", JBeam = "pickup", active = true}
+	function veh:setActive(on) self.active = on == 1; as(me, me.enabler.onVehicleActiveChanged, 999, self.active) end
+	function veh:queueLuaCommand() end
+	function veh:setDynDataFieldbyName(name, _, value) self[name] = value end
+	me.objects[999] = veh
+	me.vehicles["1-40"] = {gameVehicleID = 999, jbeam = "pickup", isLocal = false}
+	as(me, me.enabler.onVehicleSpawned, 999)
+	pump()
+	same(listRequests(me), 1, "requests on spawn")
+	as(me, function() veh:setActive(0) end)
+	pump()
+	same(listRequests(me), 2, "requests on a change")
+end)
+
+test("a remote car built after its hidden state arrived takes it without asking", function()
+	local me, friend = busyFriend()
+	-- My game has not built car 1-3 yet when my friend hides it.
+	local entry = me.vehicles["1-3"]
+	me.vehicles["1-3"] = nil
+	as(friend, function() friend.objects[gameId(1, 3)]:setActive(0) end)
+	pump()
+	me.vehicles["1-3"] = entry
+	as(me, me.enabler.onVehicleSpawned, gameId(1, 3))
+	pump()
+	same(listRequests(me), 0, "list requests")
+	same(me.objects[gameId(1, 3)].active, false, "car 1-3 on my game")
+	same(nametag(me, "1-3"), true, "its nametag")
+end)
+
+test("leaving the server forgets the kept states", function()
+	local me = busyFriend()
+	as(me, me.enabler.onBeamMPServerLeave)
+	as(me, me.enabler.onVehicleSpawned, gameId(1, 3))
+	pump()
+	same(listRequests(me), 1, "list requests for a car whose state is forgotten")
 end)

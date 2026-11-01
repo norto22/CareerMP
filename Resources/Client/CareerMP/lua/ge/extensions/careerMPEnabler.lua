@@ -116,6 +116,20 @@ local function nametagHidden(jbeam, state)
 	return state.active == false or state.traffic == true
 end
 
+-- Puts the server's last state on another player's car on this game; false when the
+-- car is not here yet, is our own, or the server never sent its state.
+local function applyKnownState(serverVehicleID)
+	local state = knownStates[serverVehicleID]
+	local entry = MPVehicleGE.getVehicles()[serverVehicleID]
+	local gameVehicleID = entry and entry.gameVehicleID
+	if not state or not gameVehicleID or gameVehicleID == -1 or MPVehicleGE.isOwn(gameVehicleID) then return false end
+	local veh = be:getObjectByID(gameVehicleID)
+	if not veh then return false end
+	veh:setActive(state.active and 1 or 0)
+	entry.hideNametag = nametagHidden(entry.jbeam, state)
+	return true
+end
+
 -- Career constantly hides/shows vehicles (garage, shopping, missions). A vehicle
 -- hidden locally must be hidden for everyone, so the server keeps the
 -- authoritative active-state map and we apply it to everything we do not own. The
@@ -124,19 +138,10 @@ local function rxCareerVehSync(data)
 	if data == "null" then return end
 	local vehicleStates = jsonDecode(data)
 	if type(vehicleStates) ~= "table" then return end
-	local vehicles = MPVehicleGE.getVehicles()
 	for serverVehicleID, state in pairs(vehicleStates) do
 		if type(state) == "table" then
 			knownStates[serverVehicleID] = state
-			local entry = vehicles[serverVehicleID]
-			local gameVehicleID = entry and entry.gameVehicleID
-			if gameVehicleID and gameVehicleID ~= -1 and not MPVehicleGE.isOwn(gameVehicleID) then
-				local veh = be:getObjectByID(gameVehicleID)
-				if veh then
-					veh:setActive(state.active and 1 or 0)
-					entry.hideNametag = nametagHidden(entry.jbeam, state)
-				end
-			end
+			applyKnownState(serverVehicleID)
 		end
 	end
 end
@@ -212,6 +217,11 @@ local function onVehicleActiveChanged(gameVehicleID, active)
 			}))
 		end
 	else
+		-- Another player's car changed here. Applying the server's own update needs no
+		-- answer; any other change is put right from the server's full map.
+		local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
+		local known = serverVehicleID and knownStates[serverVehicleID]
+		if known and (known.active and true or false) == (active and true or false) then return end
 		TriggerServerEvent("careerVehSyncRequested", "")
 	end
 end
@@ -222,7 +232,10 @@ local function onVehicleSpawned(gameVehicleID)
 	if veh then
 		veh:queueLuaCommand('careerMPEnabler.onVehicleReady()')
 	end
-	if not MPVehicleGE.isOwn(gameVehicleID) then
+	if MPVehicleGE.isOwn(gameVehicleID) then return end
+	-- A car BeamMP builds after its state arrived takes the kept state.
+	local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
+	if not (serverVehicleID and applyKnownState(serverVehicleID)) then
 		TriggerServerEvent("careerVehSyncRequested", "")
 	end
 end

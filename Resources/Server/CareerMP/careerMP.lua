@@ -860,6 +860,20 @@ local function decodeTable(data)
 	return nil
 end
 
+-- true when serverVehicleID ("<player_id>-<vehicle_id>") names one of player_id's own
+-- vehicles. A player's game may only change its own cars.
+local function ownsVehicle(player_id, serverVehicleID)
+	if type(serverVehicleID) ~= "string" then return false end
+	local owner = serverVehicleID:match("^(%d+)%-%d+$")
+	return owner ~= nil and tonumber(owner) == tonumber(player_id)
+end
+
+-- Sends every player the state of one vehicle; the full map goes only to a player who
+-- asks for it (careerVehSyncRequested).
+local function sendVehicleState(serverVehicleID)
+	MP.TriggerClientEventJson(-1, "rxCareerVehSync", {[serverVehicleID] = vehicleStates[serverVehicleID]})
+end
+
 -- Console-safe text from a client: control characters removed, length capped.
 local function consoleText(text)
 	return (tostring(text):gsub("%c", " "):sub(1, START_REASON_MAX_LENGTH))
@@ -919,23 +933,16 @@ function prefabSyncRequested(player_id)
 	end
 end
 
+-- A player's game hid or showed one of its own cars: {"serverVehicleID", "active"}.
 function careerVehicleActiveHandler(player_id, data)
-	local vehicleData = Util.JsonDecode(data)
-	if vehicleStates[vehicleData.serverVehicleID] then
-		vehicleStates[vehicleData.serverVehicleID].active = vehicleData.active
-	else
-		vehicleStates[vehicleData.serverVehicleID] = {}
-		vehicleStates[vehicleData.serverVehicleID].active = vehicleData.active
-	end
-	MP.TriggerClientEventJson(-1, "rxCareerVehSync", vehicleStates)
-end
-
--- true when serverVehicleID ("<player_id>-<vehicle_id>") names one of player_id's own
--- vehicles. A player's game may only change its own cars.
-local function ownsVehicle(player_id, serverVehicleID)
-	if type(serverVehicleID) ~= "string" then return false end
-	local owner = serverVehicleID:match("^(%d+)%-%d+$")
-	return owner ~= nil and tonumber(owner) == tonumber(player_id)
+	local vehicleData = decodeTable(data)
+	if not vehicleData or type(vehicleData.active) ~= "boolean" then return end
+	local serverVehicleID = vehicleData.serverVehicleID
+	if not ownsVehicle(player_id, serverVehicleID) then return end
+	local state = vehicleStates[serverVehicleID] or {}
+	state.active = vehicleData.active
+	vehicleStates[serverVehicleID] = state
+	sendVehicleState(serverVehicleID)
 end
 
 -- The owner's game marks which of its cars are traffic or parked:
@@ -944,6 +951,7 @@ end
 function careerVehicleTrafficMarks(player_id, data)
 	local marks = decodeTable(data)
 	if not marks then return end
+	-- Marks that changed together go out together, holding only those cars.
 	local changed, any = {}, false
 	for serverVehicleID, mark in pairs(marks) do
 		local state = vehicleStates[serverVehicleID]
@@ -1002,9 +1010,9 @@ function onPlayerJoinHandler(player_id)
 end
 
 function onVehicleSpawnHandler(player_id, vehicle_id,  data)
-	vehicleStates[player_id .. "-" .. vehicle_id] = {}
-	vehicleStates[player_id .. "-" .. vehicle_id].active = true
-	MP.TriggerClientEventJson(-1, "rxCareerVehSync", vehicleStates)
+	local serverVehicleID = player_id .. "-" .. vehicle_id
+	vehicleStates[serverVehicleID] = {active = true}
+	sendVehicleState(serverVehicleID)
 end
 
 function onVehicleEditedHandler(player_id, vehicle_id,  data)
