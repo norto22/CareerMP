@@ -1040,8 +1040,10 @@ end
 -- its career spawns traffic) keeps the per-player amount until the players together
 -- would pass server.roadTrafficTotal / parkedTrafficTotal; then the total is split
 -- evenly, one spare car each to the lowest player ids. A total of 0 means no limit. A
--- joiner's share goes in its own settings; players already in get rxCareerTrafficShare
--- SHARE_SETTLE_SECONDS after the last join or leave, only when their share changed.
+-- joiner's share goes in its own settings, and players already in get their smaller
+-- share (rxCareerTrafficShare) at once, so the total is never passed; a share that grows
+-- (a player left) goes SHARE_SETTLE_SECONDS after the last join or leave. Only changed
+-- shares are sent.
 
 local SHARE_MAX = 50
 local TOTAL_MAX = 400
@@ -1093,16 +1095,24 @@ local function sharesChanged()
 	sharesChangedAt = signalTimer:GetCurrent()
 end
 
-local function sendChangedShares()
-	if not sharesChangedAt or signalTimer:GetCurrent() - sharesChangedAt < SHARE_SETTLE_SECONDS then return end
-	sharesChangedAt = nil
+-- Sends each player already in its share when it changed. With onlyDecreases (a join),
+-- only shares that went down go now, so the players together never pass the total; the
+-- rest wait for sendChangedShares.
+local function sendShares(onlyDecreases)
 	for id, share in pairs(trafficShares()) do
 		local last = sharesSent[id]
-		if last and MP.IsPlayerConnected(id) and (last.road ~= share.road or last.parked ~= share.parked) then
+		if last and MP.IsPlayerConnected(id) and (last.road ~= share.road or last.parked ~= share.parked)
+				and (not onlyDecreases or (share.road <= last.road and share.parked <= last.parked)) then
 			sharesSent[id] = share
 			sendJson("trafficShare", id, "rxCareerTrafficShare", share)
 		end
 	end
+end
+
+local function sendChangedShares()
+	if not sharesChangedAt or signalTimer:GetCurrent() - sharesChangedAt < SHARE_SETTLE_SECONDS then return end
+	sharesChangedAt = nil
+	sendShares(false)
 end
 
 -- The client settings with this player's share added; Config.client itself never gets one.
@@ -1121,11 +1131,13 @@ end
 function careerSyncRequested(player_id, data)
 	received("config")
 	local counted = pendingActivation[player_id]
-	if counted and not counted.counted then
-		counted.counted = true
+	local joined = counted and not counted.counted
+	if joined then counted.counted = true end
+	sendJson("config", player_id, "rxCareerSync", settingsFor(player_id))
+	if joined then
+		sendShares(true)
 		sharesChanged()
 	end
-	sendJson("config", player_id, "rxCareerSync", settingsFor(player_id))
 	-- Guard: the entry is gone if the player disconnected between join and sync.
 	local entry = pendingActivation[player_id]
 	if not entry or entry.careerActive then return end

@@ -143,27 +143,46 @@ end)
 
 --== joins and leaves ========================================================
 
-test("players already in get their new share 3 seconds after the last join, once", function()
+-- The traffic all players have now: each one's last share added up.
+local function totalShares()
+	local road, parked = 0, 0
+	for id in pairs(server.players) do
+		local share = shareOf(id)
+		if share then road, parked = road + share.road, parked + share.parked end
+	end
+	return road, parked
+end
+
+test("players already in get their smaller share at once when someone joins, so the total is never passed", function()
 	newServer()
 	for id = 0, 2 do join(id) end
 	wait(5)
 	server.sent = {}
 	join(3)
+	local road, parked = totalShares()
+	expect(road <= 18 and parked <= 24, string.format("traffic right after the fourth join: %d, %d", road, parked))
+	same(shareOf(0).road, 5, "player 0's road share right after the fourth join")
+	same(shareOf(2).road, 4, "player 2's road share right after the fourth join")
 	server.now = server.now + 0.5
 	join(4)
-	wait(2)
-	same(#sentOf("rxCareerTrafficShare"), 0, "shares sent within 3 seconds of the last join")
-	wait(2)
-	local shares = sentOf("rxCareerTrafficShare")
-	local to = {}
-	for _, m in ipairs(shares) do to[m.target] = (to[m.target] or 0) + 1 end
-	same(to[0], 1, "shares to player 0")
-	same(to[1], 1, "shares to player 1")
-	same(to[2], 1, "shares to player 2")
-	same(to[3], 1, "shares to player 3, whose share changed when player 4 joined")
-	same(to[4], nil, "shares to player 4, who got its share with its settings")
+	road, parked = totalShares()
+	expect(road <= 18 and parked <= 24, string.format("traffic right after the fifth join: %d, %d", road, parked))
+	local sent = #sentOf("rxCareerTrafficShare")
 	wait(10)
-	same(#sentOf("rxCareerTrafficShare"), 4, "shares sent once nothing changed")
+	same(#sentOf("rxCareerTrafficShare"), sent, "shares sent later, when nothing grew")
+	same(#sentOf("rxCareerTrafficShare", 4), 0, "shares to player 4, who got its share with its settings")
+end)
+
+test("a share that grows waits 3 seconds after the last join or leave", function()
+	newServer()
+	for id = 0, 3 do join(id) end
+	wait(5)
+	server.sent = {}
+	leave(3)
+	wait(2)
+	same(#sentOf("rxCareerTrafficShare"), 0, "shares sent within 3 seconds of the leave")
+	wait(2)
+	same(#sentOf("rxCareerTrafficShare"), 3, "shares sent once, to each player left")
 end)
 
 test("a player who leaves gives the others their share back within 5 seconds", function()
