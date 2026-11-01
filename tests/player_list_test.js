@@ -51,7 +51,7 @@ function load() {
 	vm.createContext(context);
 	vm.runInContext(fs.readFileSync(SOURCE, "utf8"), context, {filename: SOURCE});
 	controller(scope, null, {values: {}});
-	return {scope, table, lua};
+	return {scope, table, lua, page: byId, context};
 }
 
 const PLAYERS = JSON.stringify([
@@ -173,6 +173,24 @@ test("Try saving again shows only after a failed save; Return to menu always", (
 	assert.strictEqual(shown("saved"), false, "after a save");
 	assert.strictEqual(shown("failed"), true, "after a failed save");
 	assert.ok(/<button(?![^>]*ng-show)[^>]*ng-click="returnToMenu\(\)"[^>]*>Return to menu</.test(banner), "Return to menu always shown");
+});
+
+test("folding the list hides it and unfolding shows it again", () => {
+	const {page, context} = load();
+	context.hideList();
+	assert.strictEqual(page("plist-container").style.display, "none", "folded");
+	assert.strictEqual(page("show-button").innerHTML, "&lt;", "fold button");
+	context.showList();
+	assert.strictEqual(page("plist-container").style.display, "block", "unfolded");
+	assert.strictEqual(page("show-button").innerHTML, "&gt;", "unfold button");
+});
+
+test("every function in the app script is declared once", () => {
+	const source = fs.readFileSync(SOURCE, "utf8");
+	const counts = {};
+	for (const m of source.matchAll(/^function (\w+)\s*\(/gm)) counts[m[1]] = (counts[m[1]] || 0) + 1;
+	const twice = Object.keys(counts).filter((name) => counts[name] > 1);
+	assert.deepStrictEqual(twice, [], "functions declared more than once");
 });
 
 let failed = 0;

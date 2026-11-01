@@ -233,6 +233,21 @@ test("a changed ghost setting from the server is sent once to each car", functio
 	same(objects[9].queued[2], "careerMPEnabler.setGhost(true)", "the new setting")
 end)
 
+test("another player's unicycle follows remoteUnicycleGhost even when it is off and cars are ghosted", function()
+	local enabler, objects = startedEnabler()
+	objects[10].JBeam = "unicycle"
+	local i = 1
+	while true do
+		local n, v = debug.getupvalue(enabler.onUpdate, i)
+		if n == nil then error("clientConfig not found") end
+		if n == "clientConfig" then v.remoteVehicleGhost, v.remoteUnicycleGhost = true, false; break end
+		i = i + 1
+	end
+	enabler.onUpdate(0.016)
+	same(objects[9].queued[1], "careerMPEnabler.setGhost(true)", "the other player's car")
+	same(objects[10].queued[1], "careerMPEnabler.setGhost(false)", "the other player's unicycle")
+end)
+
 test("leaving the server forgets the ghost settings, so a rejoin sends them again", function()
 	local enabler, objects = startedEnabler()
 	enabler.onUpdate(0.016)
