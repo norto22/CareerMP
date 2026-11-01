@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/poster.jpg" width="280" alt="Mileage: Co-op career. Cruise together. Race your friends.">
+  <img src=".github/poster.jpg" width="400" alt="Mileage: Co-op career. Cruise together. Race your friends.">
 </p>
 
 # Mileage
