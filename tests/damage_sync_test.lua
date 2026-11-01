@@ -869,21 +869,43 @@ test("21 beams more than 2 cm off the owner's rest length start a resync", funct
 	same(resetRequests(copy).resync, 1, "resyncs")
 end)
 
+-- Dents only the copy's game simulated, on beams first..last: plain dents, which the
+-- game's damage tracker does not list.
+local function phantomDents(copy, first, last, len)
+	for cid = first, last do copy.restLen[cid] = len or 0.7 end
+	copy.beamstate.damage = copy.beamstate.damage + 1000
+end
+
 test("lengths within 2 cm, or only 20 disagreeing beams, start no resync", function()
 	local copy = heardCopy(30)
 	for cid = 0, 29 do copy.restLen[cid] = 0.9 - 0.015 end
-	for cid = 50, 69 do copy.beamstate.deformedBeams[cid] = 0.5 end
+	phantomDents(copy, 50, 69)
 	tick(copy, 5)
 	same(resetRequests(copy).resync, 0, "resyncs")
 end)
 
+test("25 plain dents the owner never reported start a resync", function()
+	local copy = heardCopy(30)
+	phantomDents(copy, 50, 74)
+	tick(copy, 2)
+	same(resetRequests(copy).resync, 1, "resyncs")
+end)
+
+test("25 beams broken by the copy's physics, outside the game's tracker, start a resync", function()
+	local copy = heardCopy(30)
+	for cid = 50, 74 do copy.broken[cid] = true end
+	copy.beamstate.damage = copy.beamstate.damage + 1000
+	tick(copy, 2)
+	same(resetRequests(copy).resync, 1, "resyncs")
+end)
+
 test("damage that settles within one check starts no resync", function()
 	local copy = heardCopy(30)
-	for cid = 50, 74 do copy.beamstate.deformedBeams[cid] = 0.5 end
+	phantomDents(copy, 50, 74)
 	tick(copy, 1)
 	inVehicle(copy, copy.ext.applyDamage, 0, (function()
 		local rows = {}
-		for cid = 50, 74 do for _, x in ipairs({cid, 1, 0, 0.5}) do table.insert(rows, x) end end
+		for cid = 50, 74 do for _, x in ipairs({cid, 0.7, 0, 0.5}) do table.insert(rows, x) end end
 		return rows
 	end)(), {})
 	tick(copy, 3)
@@ -892,7 +914,7 @@ end)
 
 test("a second resync for the same car waits 10 seconds", function()
 	local copy = heardCopy(30)
-	for cid = 50, 74 do copy.beamstate.deformedBeams[cid] = 0.5 end
+	phantomDents(copy, 50, 74)
 	tick(copy, 2)
 	same(resetRequests(copy).resync, 1, "first resync")
 	tick(copy, 9.5)
@@ -903,7 +925,8 @@ end)
 
 test("a copy that never heard from its owner never resyncs", function()
 	local copy = copyCar({beams = 100})
-	for cid = 50, 99 do copy.beamstate.deformedBeams[cid] = 1 end
+	phantomDents(copy, 50, 99)
+	for cid = 50, 99 do copy.broken[cid] = true end
 	tick(copy, 5)
 	same(resetRequests(copy).resync, 0, "resyncs")
 end)
@@ -997,11 +1020,19 @@ test("more than 30 queued messages are dropped and the owner car sends its full 
 	step(2.5)
 	local before = #sentToServer("careerDamage", 0)
 	for _ = 1, 31 do as(owners, owners.ge.onLocalDamage, owner.gid, '{"c":0,"b":[],"n":[]}') end
-	same(countLines(owner.vehicleQueue, "careerMPDamage.sendFull()"), 1, "full-damage requests to the owner car")
+	same(countLines(owner.vehicleQueue, "careerMPDamage.sendFull(1)"), 1, "cleared-then-full requests to the owner car")
 	same(countLines(logs, "full damage sent again"), 1, "warnings")
 	step(15)
-	local sent = #sentToServer("careerDamage", 0) - before
-	expect(sent >= 1 and sent <= 3, "messages sent after the queue was dropped: " .. sent)
+	local all = sentToServer("careerDamage", 0)
+	local sent = #all - before
+	-- At most: the owner's announcement still leaving, the message that overflowed, a
+	-- cleared notice and the (empty) full damage.
+	expect(sent >= 1 and sent <= 4, "messages sent after the queue was dropped: " .. sent)
+	local cleared = 0
+	for i = before + 1, #all do
+		if string.find(all[i].data, '"c":1', 1, true) then cleared = cleared + 1 end
+	end
+	same(cleared, 1, "cleared notices sent after the drop")
 end)
 
 test("a reset request for a car that is not a copy changes nothing", function()
@@ -1072,4 +1103,118 @@ test("an owner whose direction cannot be read keeps its changes and sends them o
 	local m = takeMessages(car)
 	same(#m, 1, "messages once the frame is back")
 	same(table.concat(beamIds(m[1]), ","), "7", "beams")
+end)
+
+--== found in review =========================================================
+
+test("a cleared message resets a copy that carries the owner's plain dents and breaks", function()
+	local copy = copyCar({beams = 100})
+	-- The game's breakBeam does not write beamstate's tracker.
+	function copy.obj:breakBeam(cid) copy.breakCalls = copy.breakCalls + 1; copy.broken[cid] = true end
+	inVehicle(copy, copy.ext.applyDamage, 0, {7, 0.8, 0, 0, 9, 1, 1, 0}, {})
+	same(copy.restLen[7], 0.8, "the owner's dent applied")
+	same(copy.broken[9], true, "the owner's break applied")
+	copy.game.geQueue = {}
+	inVehicle(copy, copy.ext.applyDamage, 1, {}, {})
+	same(resetRequests(copy).cleared, 1, "resets for a copy still dented and broken")
+end)
+
+test("a player who joins a server with default traffic still gets the owner's dents", function()
+	local owner, copy, owners, copies = syncedGames()
+	-- The owner's game runs its share of traffic: 6 road and 8 parked cars by default.
+	for vid = 1, 14 do
+		addCar(owners, 0, vid, {isTraffic = "true"})
+		addCar(copies, 0, vid)
+	end
+	step(3)
+	local late = addGame(2)
+	for vid = 1, 14 do addCar(late, 0, vid) end
+	local lateCopy = addCar(late, 0, 0, {fwd = {x = 0, y = -1, z = 0}})
+	local before = #sentToServer("careerDamageRequest", 2)
+	step(1)
+	local firstSecond = #sentToServer("careerDamageRequest", 2) - before
+	expect(firstSecond <= 4, "requests sent in the first second: " .. firstSecond)
+	step(15)
+	same(lateCopy.restLen[7], 0.8, "the late joiner's beam 7")
+end)
+
+test("a full-damage request with no answer is asked again, at most four times", function()
+	newWorld()
+	local owners, copies = addGame(0), addGame(1)
+	-- An owner on an older CareerMP: its game has no damage module answering.
+	owners.handlers.rxCareerDamageRequest = nil
+	addCar(owners, 0, 0)
+	addCar(copies, 0, 0)
+	owners.ge.onUpdate = nil
+	step(30)
+	same(#sentToServer("careerDamageRequest", 1), 4, "requests from the copy's game")
+end)
+
+test("a beam that changes during a full transfer is sent again afterwards", function()
+	local car = ownerCar({beams = 1000})
+	tick(car)
+	takeMessages(car)
+	for cid = 0, 999 do car.restLen[cid] = 0.9 end
+	car.beamstate.damage = 1000
+	inVehicle(car, car.ext.sendFull)
+	tick(car)
+	takeMessages(car)
+	-- Beam 5 went out in the first chunk; it changes while the rest is still going.
+	car.restLen[5] = 0.6
+	local resent = false
+	for _ = 1, 4 do
+		tick(car)
+		for _, m in ipairs(takeMessages(car)) do
+			for i = 1, #m.b, 4 do
+				if m.b[i] == 5 and m.b[i + 1] == 0.6 then resent = true end
+			end
+		end
+	end
+	same(resent, true, "beam 5 sent again with its new length")
+end)
+
+test("a copy reset in place keeps the rotation BeamMP's own reset gives it", function()
+	local owner, copy, owners, copies = twoGames()
+	step(2)
+	-- Real quaternion maths: Hamilton product, and a rotation from the car's axes.
+	local Q = {}
+	Q.__index = Q
+	local function rq(x, y, z, w) return setmetatable({x = x, y = y, z = z, w = w}, Q) end
+	Q.__mul = function(a, b)
+		return rq(a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+			a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+			a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+			a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z)
+	end
+	local function fromDir(d, u)
+		local fl = math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+		local f = {x = d.x / fl, y = d.y / fl, z = d.z / fl}
+		local r = {x = f.y * u.z - f.z * u.y, y = f.z * u.x - f.x * u.z, z = f.x * u.y - f.y * u.x}
+		local rl = math.sqrt(r.x * r.x + r.y * r.y + r.z * r.z)
+		r = {x = r.x / rl, y = r.y / rl, z = r.z / rl}
+		local up = {x = r.y * f.z - r.z * f.y, y = r.z * f.x - r.x * f.z, z = r.x * f.y - r.y * f.x}
+		local m00, m01, m02 = r.x, f.x, up.x
+		local m10, m11, m12 = r.y, f.y, up.y
+		local m20, m21, m22 = r.z, f.z, up.z
+		local w = math.sqrt(math.max(0, 1 + m00 + m11 + m22)) / 2
+		local x = math.sqrt(math.max(0, 1 + m00 - m11 - m22)) / 2
+		local y = math.sqrt(math.max(0, 1 - m00 + m11 - m22)) / 2
+		local z = math.sqrt(math.max(0, 1 - m00 - m11 + m22)) / 2
+		if m21 - m12 < 0 then x = -x end
+		if m02 - m20 < 0 then y = -y end
+		if m10 - m01 < 0 then z = -z end
+		return rq(x, y, z, w)
+	end
+	local saveQuat, saveFromDir = quat, quatFromDir
+	quat, quatFromDir = rq, fromDir
+	local got
+	copy.veh.setPositionRotation = function(self, x, y, z, rx, ry, rz, rw) got = {rx, ry, rz, rw} end
+	-- BeamMP's own reset of another player's car (MPVehicleGE onVehicleResetted sends it).
+	local want = fromDir(-vec3(copy.fwd), vec3(copy.up))
+	local ok, err = pcall(as, copies, copies.ge.resetCopy, copy.gid, 0)
+	quat, quatFromDir = saveQuat, saveFromDir
+	assert(ok, err)
+	expect(got ~= nil, "setPositionRotation was called")
+	local dot = got[1] * want.x + got[2] * want.y + got[3] * want.z + got[4] * want.w
+	expect(math.abs(math.abs(dot) - 1) < 1e-6, string.format("rotation differs from BeamMP's reset; |dot| = %.3f", math.abs(dot)))
 end)

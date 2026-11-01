@@ -27,12 +27,21 @@ local MAX_QUEUE = 30
 local MAX_MESSAGE_BYTES = 32768
 local MAX_BEAMS = 400
 local MAX_NODES = 500
+-- A game that joins a busy server builds many copies at once; their full-damage requests
+-- go out at most this many a second (the server passes 4), and one that gets no answer
+-- is asked again every RETRY_SECONDS, at most REQUEST_TRIES times in all.
+local REQUESTS_PER_SECOND = 3
+local RETRY_SECONDS = 5
+local REQUEST_TRIES = 4
 
 local roles = {}          -- game vehicle id -> "owner" | "copy"
 local ownerChecks = {}    -- game vehicle id -> checks in a row as an own player car
 local outbox = {}         -- messages waiting for the server
+local requests = {}       -- server vehicle ids whose full damage is still to be asked for
+local awaiting = {}       -- game vehicle id -> {sid, wait, tries} until its owner answers
 local sinceRoles = 0
 local sinceSend = 0
+local sinceRequest = 0
 local warned = {}
 
 local function warnOnce(key, msg)
@@ -56,13 +65,45 @@ local function isTrafficCar(gameVehicleID, veh)
 	return careerMPEnabler.isTrafficCar(gameVehicleID, veh)
 end
 
-local function requestFull(serverVehicleID)
-	TriggerServerEvent("careerDamageRequest", '{"v":"' .. serverVehicleID .. '"}')
+local function queueRequest(serverVehicleID)
+	for _, queued in ipairs(requests) do
+		if queued == serverVehicleID then return end
+	end
+	table.insert(requests, serverVehicleID)
+end
+
+-- Asks a copy's owner for its full damage, again later if no answer comes.
+local function requestFull(gameVehicleID, serverVehicleID)
+	awaiting[gameVehicleID] = {sid = serverVehicleID, wait = RETRY_SECONDS, tries = 1}
+	queueRequest(serverVehicleID)
+end
+
+local function retryRequests()
+	for gameVehicleID, a in pairs(awaiting) do
+		a.wait = a.wait - ROLES_EVERY_SECONDS
+		if a.wait <= 0 then
+			if a.tries >= REQUEST_TRIES then
+				-- An owner on an older CareerMP never answers; its copy is left to the game.
+				awaiting[gameVehicleID] = nil
+			else
+				a.tries, a.wait = a.tries + 1, RETRY_SECONDS
+				queueRequest(a.sid)
+			end
+		end
+	end
+end
+
+local function sendRequests(dt)
+	sinceRequest = math.min(sinceRequest + dt, 1 / REQUESTS_PER_SECOND)
+	if #requests == 0 or sinceRequest < 1 / REQUESTS_PER_SECOND then return end
+	sinceRequest = 0
+	TriggerServerEvent("careerDamageRequest", '{"v":"' .. table.remove(requests, 1) .. '"}')
 end
 
 local function forget(gameVehicleID)
 	roles[gameVehicleID] = nil
 	ownerChecks[gameVehicleID] = nil
+	awaiting[gameVehicleID] = nil
 end
 
 local function assignRoles()
@@ -88,7 +129,7 @@ local function assignRoles()
 			if roles[gameVehicleID] ~= wanted then
 				roles[gameVehicleID] = wanted
 				veh:queueLuaCommand(string.format("careerMPDamage.setRole(%q)", wanted or "none"))
-				if wanted == "copy" then requestFull(serverVehicleID) end
+				if wanted == "copy" then requestFull(gameVehicleID, serverVehicleID) end
 			end
 		end
 	end
@@ -114,9 +155,11 @@ local function onLocalDamage(gameVehicleID, message)
 		-- full damage again instead.
 		warnOnce("queue", "damage messages queued faster than they can be sent - full damage sent again")
 		outbox = {}
+		-- A dropped cleared notice would leave old damage on the copies, so each sends a
+		-- cleared notice first.
 		for ownedID, role in pairs(roles) do
 			local veh = role == "owner" and be:getObjectByID(ownedID)
-			if veh then veh:queueLuaCommand("careerMPDamage.sendFull()") end
+			if veh then veh:queueLuaCommand("careerMPDamage.sendFull(1)") end
 		end
 	end
 	table.insert(outbox, full)
@@ -169,6 +212,7 @@ local function rxCareerDamage(data)
 		return
 	end
 	local cleared = message.c == 1 and 1 or 0
+	awaiting[gameVehicleID] = nil
 	veh:queueLuaCommand(string.format("careerMPDamage.applyDamage(%d,{%s},{%s})", cleared, beams, nodes))
 end
 
@@ -193,13 +237,14 @@ local function resetCopy(gameVehicleID, wantFull)
 	local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
 	if not veh or not isServerVehicleID(serverVehicleID) then return end
 	local pos = veh:getPosition()
-	-- As BeamMP: the car's rotation from its direction vectors, turned 180 degrees.
-	local rot = quat(0, 0, 1, 0) * quatFromDir(-vec3(veh:getDirectionVector()), vec3(veh:getDirectionVectorUp()))
+	-- The rotation BeamMP's own reset of another player's car uses (MPVehicleGE
+	-- onVehicleResetted). Its spawn turns the car 180 degrees; a reset must not.
+	local rot = quatFromDir(-vec3(veh:getDirectionVector()), vec3(veh:getDirectionVectorUp()))
 	veh:setPositionRotation(pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w)
 	veh:resetBrokenFlexMesh()
 	if wantFull == 1 then
 		log("I", logTag, "copy of " .. serverVehicleID .. " disagreed with its owner - reset and resynced")
-		requestFull(serverVehicleID)
+		requestFull(gameVehicleID, serverVehicleID)
 	end
 end
 
@@ -212,8 +257,10 @@ local function onUpdate(dtReal)
 	if sinceRoles >= ROLES_EVERY_SECONDS then
 		sinceRoles = 0
 		assignRoles()
+		retryRequests()
 	end
 	sendQueued(dt)
+	sendRequests(dt)
 end
 
 -- A respawned car has a fresh vehicle Lua: it gets its role (and a copy its damage)
@@ -223,8 +270,8 @@ local function onVehicleSpawned(gameVehicleID)
 end
 
 local function onBeamMPServerLeave()
-	roles, ownerChecks, outbox = {}, {}, {}
-	sinceRoles, sinceSend = 0, 0
+	roles, ownerChecks, outbox, requests, awaiting = {}, {}, {}, {}, {}
+	sinceRoles, sinceSend, sinceRequest = 0, 0, 0
 end
 
 local function onExtensionLoaded()
