@@ -294,6 +294,49 @@ test("a rebuild that raises is logged with the line it came from", function()
 	expect(string.find(logged, "garage_rebuild_test.lua", 1, true), "the traceback names where it came from: " .. logged)
 end)
 
+test("a rebuild that raises hands the caller the very error it raised, not the logged traceback", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
+	game.duringRebuild = function() error("rebuild broke", 0) end
+	local ok, err = pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	expect(not ok, "the rebuild raised")
+	same(err, "rebuild broke", "the error the caller sees")
+
+	local errObj = {reason = "rebuild broke"}
+	game.duringRebuild = function() error(errObj) end
+	ok, err = pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	expect(not ok, "the rebuild raised an error object")
+	same(err, errObj, "the error object the caller sees")
+	local logged
+	for _, line in ipairs(logs) do
+		if string.find(line, "E careerMP.patches: garage rebuild of vehicle " .. game.carA.id .. " failed", 1, true)
+			and string.find(line, "stack traceback", 1, true) then
+			logged = (logged or 0) + 1
+		end
+	end
+	same(logged, 2, "failed rebuilds logged with car A's id and a traceback")
+end)
+
+test("the logged traceback is taken where the rebuild failed, not after it returned", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
+	local raiseLine
+	game.duringRebuild = function() raiseLine = debug.getinfo(1, "l").currentline; error("deep failure", 0) end
+	pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	local logged
+	for _, line in ipairs(logs) do
+		if string.find(line, "deep failure", 1, true) then logged = line end
+	end
+	expect(logged, "the failed rebuild is logged")
+	expect(string.find(logged, "garage_rebuild_test.lua:" .. raiseLine .. ": in ", 1, true),
+		"the traceback has the frame that raised (line " .. tostring(raiseLine) .. "): " .. logged)
+	expect(not string.find(logged, "vehicle " .. game.carB.id .. " ", 1, true), "the log names car A, not the player's car")
+end)
+
 test("a nested rebuild while one is running passes straight through", function()
 	setup()
 	installBeamMP()
