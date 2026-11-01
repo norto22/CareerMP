@@ -164,7 +164,8 @@ local ledger = {
 
 local STATS_SECONDS = 60
 local STATS_FEATURES = {"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-	"payments", "transfers", "offers", "races", "leaderboard", "alive", "trafficLights", "notifications", "config"}
+	"payments", "transfers", "offers", "races", "leaderboard", "events", "alive", "trafficLights", "notifications",
+	"config"}
 
 -- totals[feature] and slots[second % STATS_SECONDS].counts[feature]:
 -- {received, sent, recipients, bytes}.
@@ -904,6 +905,7 @@ function onInit()
 	MP.RegisterEvent("Stats","Stats")
 	MP.RegisterEvent("Transfers","Transfers")
 	MP.RegisterEvent("Leaderboard","Leaderboard")
+	MP.RegisterEvent("Event","Event")
 
 	MP.RegisterEvent("tick","tick")
 	MP.CreateEventTimer("tick", 1000)
@@ -2059,12 +2061,420 @@ end
 Money.loadLeaderboard = loadLeaderboard
 end
 
+--== Events ==================================================================
+-- A race event the owner schedules: `Mileage Event <minutes> <prize> <route|random>`.
+-- Every player is told 10, 5 and 1 minutes ahead in chat and in the prompts app
+-- (rxMileageEvent "announce") and may join until the start with the same answer as an
+-- offer (mileageOfferAnswer carrying the event id). At the start each joined player is
+-- moved to a grid behind the start facing the finish; the race then runs as a street race
+-- without stakes, timed by each game from its own green, and the fastest finish within
+-- DECIDE_SECONDS of the first is paid the prize as a transfer from the server.
+--
+-- A named route runs between two of the game's West Coast parking spots. `random`
+-- starts at a random route's start and asks the first joined player's game for a road
+-- point 1.5 to 4 km away from the game's road map; with no answer in PICK_SECONDS it
+-- uses the next route's finish. One event at a time; the schedule is kept in
+-- data/events.json until it starts.
+
+do
+local readData, writeData, startTransfer = Money.readData, Money.writeData, Money.startTransfer
+local playerIdByName, isPoint = Money.playerIdByName, Money.isPoint
+local SERVER_PARTY = Money.SERVER
+
+local EVENTS_FILE = "events.json"
+local ANNOUNCE_MINUTES = {10, 5, 1}
+local PICK_SECONDS = 10
+local EVENT_COUNTDOWN_SECONDS = 5
+local EVENT_DECIDE_SECONDS = 5
+local EVENT_FINISH_RADIUS = 20
+local GRID_ROW_METRES, GRID_SIDE_METRES = 6, 4
+local RANDOM_MIN, RANDOM_MAX = 1500, 4000
+local PRIZE_MAX = 1000000
+
+-- Parking spots from BeamNG.drive 0.40.4.0's levels/west_coast_usa/facilities.sites.json
+-- (the spot each name gives in parentheses), positions in metres.
+local SPOTS = {
+	serviceStation = {name = "Service station garage", pos = {x = 904.49, y = -546.27, z = 163.8}}, -- serviceStationParking1
+	commercialGarage = {name = "Commercial garage", pos = {x = -284.25, y = -69.43, z = 119.44}}, -- commercialGarageParkingOutside1
+	alderDragway = {name = "Alder Dragway", pos = {x = -203.27, y = -203.98, z = 118.82}}, -- alderDragwayGarageParking1
+	belascoAuto = {name = "Belasco Auto", pos = {x = -698.6, y = 808.69, z = 74.86}}, -- belascoAuto1
+	jerryRigs = {name = "Jerry Rigs", pos = {x = -68.03, y = 2.58, z = 119.83}}, -- jerryRigs1
+	dealership = {name = "Garage dealership", pos = {x = 836.36, y = -535.39, z = 165.15}}, -- garageDealership1
+	richs = {name = "Rich's parking", pos = {x = -820.68, y = 905.03, z = 74.87}}, -- richsparking1
+	jefferson = {name = "Jefferson parking", pos = {x = -393.43, y = 178.1, z = 100.74}}, -- jeffersonparking1
+}
+
+local ROUTES = {
+	{id = "service-dragway", from = "serviceStation", to = "alderDragway"},
+	{id = "service-belasco", from = "serviceStation", to = "belascoAuto"},
+	{id = "commercial-belasco", from = "commercialGarage", to = "belascoAuto"},
+	{id = "jerryrigs-service", from = "jerryRigs", to = "serviceStation"},
+	{id = "jefferson-dealership", from = "jefferson", to = "dealership"},
+	{id = "richs-dragway", from = "richs", to = "alderDragway"},
+	{id = "belasco-jerryrigs", from = "belascoAuto", to = "jerryRigs"},
+	{id = "dealership-commercial", from = "dealership", to = "commercialGarage"},
+}
+
+-- The scheduled event, kept in events.json: {id, at (os.time of the start), prize,
+-- route (a route id or "random"), announced = {["10"] = true, ...}, joined = {[name] =
+-- true}}; nil when none.
+local event = nil
+-- The event under way, not kept: {id, phase = "picking" | "racing", start, finish,
+-- pickDeadline, goAt, deadline, reports, firstReportAt, joined}.
+local live = nil
+local eventSeq = 0
+
+local function routeName(route)
+	return SPOTS[route.from].name .. " to " .. SPOTS[route.to].name
+end
+
+-- The route a console argument names: its id, its number in the list, or nil.
+local function findRoute(text)
+	local n = tonumber(text)
+	if n and ROUTES[n] then return ROUTES[n] end
+	for _, route in ipairs(ROUTES) do
+		if route.id == text then return route end
+	end
+	return nil
+end
+
+local function saveEvent()
+	return writeData(EVENTS_FILE, event or {})
+end
+
+local function chatAll(text)
+	if MP.SendChatMessage then
+		MP.SendChatMessage(-1, text)
+		count("events", 0, 1, playerCount(), #text * playerCount())
+	end
+end
+
+local function joinedCount(joined)
+	local n = 0
+	for _ in pairs(joined or {}) do n = n + 1 end
+	return n
+end
+
+local function eventRouteText(e)
+	if e.route == "random" then return "random finish" end
+	local route = findRoute(e.route)
+	return route and routeName(route) or tostring(e.route)
+end
+
+-- The event as each player's prompts app shows it.
+local function announcement(e, phase)
+	local secondsLeft = math.max(0, e.at - os.time())
+	return {id = e.id, phase = phase, route = eventRouteText(e), random = e.route == "random", prize = e.prize,
+		seconds = secondsLeft, joined = joinedCount(e.joined)}
+end
+
+local function announce(minutes)
+	local text = string.format("Race event in %d minute%s: %s, $%d to the winner. Join from the Mileage prompts.",
+		minutes, minutes == 1 and "" or "s", eventRouteText(event), event.prize)
+	chatAll(text)
+	local message = announcement(event, "announce")
+	for id, name in pairs(MP.GetPlayers() or {}) do
+		message.youJoined = event.joined[name] == true
+		sendJson("events", id, "rxMileageEvent", message)
+	end
+end
+
+local function sendEvent(name, message)
+	local id = playerIdByName(name)
+	if id then sendJson("events", id, "rxMileageEvent", message) end
+end
+
+-- Grid poses behind start, facing finish: pairs side by side, rows GRID_ROW_METRES apart.
+local function gridPoses(start, finish, count)
+	local dx, dy = finish.x - start.x, finish.y - start.y
+	local length = math.sqrt(dx * dx + dy * dy)
+	if length < 1 then dx, dy, length = 0, 1, 1 end
+	local fx, fy = dx / length, dy / length
+	local rx, ry = fy, -fx
+	local poses = {}
+	for i = 1, count do
+		local row = math.floor((i - 1) / 2)
+		local side = ((i - 1) % 2 == 0) and -GRID_SIDE_METRES / 2 or GRID_SIDE_METRES / 2
+		poses[i] = {
+			pos = {x = start.x - fx * row * GRID_ROW_METRES + rx * side, y = start.y - fy * row * GRID_ROW_METRES + ry * side,
+				z = start.z},
+			dir = {x = fx, y = fy, z = 0},
+			up = {x = 0, y = 0, z = 1},
+		}
+	end
+	return poses
+end
+
+local function endEvent(why)
+	if live then
+		for name in pairs(live.joined) do sendEvent(name, {id = live.id, phase = "over", why = why}) end
+	end
+	live = nil
+end
+
+-- Moves every joined player to the grid and starts the countdown.
+local function startEventRace()
+	local names = {}
+	for name in pairs(live.joined) do
+		if playerIdByName(name) then table.insert(names, name) end
+	end
+	table.sort(names)
+	if #names == 0 then
+		endEvent("nobody joined")
+		return
+	end
+	local poses = gridPoses(live.start, live.finish, #names)
+	live.phase = "racing"
+	live.goAt = signalTimer:GetCurrent() + EVENT_COUNTDOWN_SECONDS
+	live.deadline = live.goAt + serverNumber("raceTimeLimitMinutes", 1, 120) * 60
+	live.reports = {}
+	for i, name in ipairs(names) do
+		sendEvent(name, {id = live.id, phase = "start", pose = poses[i], finish = live.finish,
+			radius = EVENT_FINISH_RADIUS, seconds = EVENT_COUNTDOWN_SECONDS, route = live.routeText, prize = live.prize,
+			racers = #names, timeLimit = serverNumber("raceTimeLimitMinutes", 1, 120) * 60})
+	end
+end
+
+-- The scheduled time came: the event leaves events.json and starts.
+local function beginEvent()
+	local e = event
+	event = nil
+	saveEvent()
+	local route = e.route ~= "random" and findRoute(e.route) or ROUTES[math.random(#ROUTES)]
+	live = {id = e.id, prize = e.prize, joined = e.joined, start = SPOTS[route.from].pos,
+		finish = SPOTS[route.to].pos, routeText = eventRouteText(e), fallback = nil}
+	if joinedCount(e.joined) == 0 then
+		chatAll("The race event did not start: nobody joined.")
+		live = nil
+		return
+	end
+	if e.route ~= "random" then
+		startEventRace()
+		return
+	end
+	-- The fallback finish: the next route's.
+	local index = 1
+	for i, r in ipairs(ROUTES) do if r == route then index = i end end
+	live.fallback = SPOTS[ROUTES[index % #ROUTES + 1].to].pos
+	local names = {}
+	for name in pairs(live.joined) do if playerIdByName(name) then table.insert(names, name) end end
+	table.sort(names)
+	live.phase = "picking"
+	live.pickDeadline = signalTimer:GetCurrent() + PICK_SECONDS
+	live.picker = names[1]
+	if live.picker then
+		sendEvent(live.picker, {id = live.id, phase = "pickFinish", start = live.start, min = RANDOM_MIN,
+			max = RANDOM_MAX})
+	end
+end
+
+local function decideEvent()
+	local winner, best = nil, nil
+	for name, seconds in pairs(live.reports) do
+		if not best or seconds < best then winner, best = name, seconds end
+	end
+	local places = {}
+	for name, seconds in pairs(live.reports) do table.insert(places, {name = name, seconds = seconds}) end
+	table.sort(places, function(a, b) return a.seconds < b.seconds end)
+	if winner and live.prize > 0 then
+		startTransfer({kind = "prize", from = SERVER_PARTY, to = winner, amount = live.prize,
+			giveLabel = "Race event prize"})
+	end
+	if winner and Money.leaderboardWin then Money.leaderboardWin(winner) end
+	for name in pairs(live.joined) do
+		sendEvent(name, {id = live.id, phase = "result", winner = winner, places = places, prize = live.prize,
+			route = live.routeText, racers = joinedCount(live.joined), you = name})
+	end
+	live = nil
+end
+
+-- An answer to the event invitation: {id = the event id, accept}. Returns true when the
+-- answer was about the event.
+Money.answerEvent = function(player_id, answer)
+	if not event or answer.id ~= event.id then
+		return live ~= nil and answer.id == live.id
+	end
+	local name = MP.GetPlayerName(player_id)
+	if not name then return true end
+	if answer.accept == true then event.joined[name] = true else event.joined[name] = nil end
+	saveEvent()
+	local message = announcement(event, answer.accept == true and "joined" or "left")
+	message.youJoined = answer.accept == true
+	sendJson("events", player_id, "rxMileageEvent", message)
+	return true
+end
+
+-- Reports from a joined player's game: {race = event id, finish = {x, y, z}} (the random
+-- finish), {race, finished = seconds} or {race, gaveUp = true}. Returns true when the
+-- report was about the event.
+Money.eventRaceReport = function(player_id, report)
+	if not live or report.race ~= live.id then return false end
+	local name = MP.GetPlayerName(player_id)
+	if live.phase == "picking" and name == live.picker and isPoint(report.finish) then
+		local dx, dy = report.finish.x - live.start.x, report.finish.y - live.start.y
+		local metres = math.sqrt(dx * dx + dy * dy)
+		if metres >= RANDOM_MIN and metres <= RANDOM_MAX then
+			live.finish = {x = report.finish.x, y = report.finish.y, z = report.finish.z}
+			startEventRace()
+		end
+	elseif live.phase == "racing" and live.joined[name] and type(report.finished) == "number"
+			and report.finished > 0 and not live.reports[name] then
+		live.reports[name] = report.finished
+		live.firstReportAt = live.firstReportAt or signalTimer:GetCurrent()
+	end
+	return true
+end
+
+local function eventsTick()
+	if event and not serverSwitch("allowEvents") then
+		local id = event.id
+		event = nil
+		saveEvent()
+		sendJson("events", -1, "rxMileageEvent", {id = id, phase = "cancelled"})
+		chatAll("The race event was cancelled: race events were switched off.")
+	end
+	if event then
+		local minutesLeft = (event.at - os.time()) / 60
+		if minutesLeft <= 0 then
+			beginEvent()
+		else
+			for _, minutes in ipairs(ANNOUNCE_MINUTES) do
+				local key = tostring(minutes)
+				if minutesLeft <= minutes and not event.announced[key] then
+					-- Every mark already passed counts as announced, so an event scheduled 3
+					-- minutes ahead is announced now and at 1 minute, not again at 5.
+					for _, other in ipairs(ANNOUNCE_MINUTES) do
+						if other >= minutesLeft then event.announced[tostring(other)] = true end
+					end
+					saveEvent()
+					announce(math.max(1, math.ceil(minutesLeft - 0.001)))
+					break
+				end
+			end
+		end
+	end
+	if not live then return end
+	local now = signalTimer:GetCurrent()
+	if live.phase == "picking" and now >= live.pickDeadline then
+		live.finish = live.fallback
+		startEventRace()
+	elseif live.phase == "racing" then
+		if live.firstReportAt and now - live.firstReportAt >= EVENT_DECIDE_SECONDS then
+			decideEvent()
+		elseif now >= live.deadline then
+			for name in pairs(live.joined) do
+				sendEvent(name, {id = live.id, phase = "result", winner = nil, places = {}, prize = live.prize,
+					route = live.routeText, why = "timeout", you = name})
+			end
+			live = nil
+		end
+	end
+end
+
+local function eventsPlayerLeft(name)
+	if event and event.joined[name] then
+		event.joined[name] = nil
+		saveEvent()
+	end
+	if live then live.joined[name] = nil end
+end
+
+local function loadEvent()
+	local stored = readData(EVENTS_FILE)
+	event, live = nil, nil
+	if stored and type(stored.id) == "string" and tonumber(stored.at) then
+		event = {id = stored.id, at = tonumber(stored.at), prize = tonumber(stored.prize) or 0,
+			route = tostring(stored.route), announced = type(stored.announced) == "table" and stored.announced or {},
+			joined = type(stored.joined) == "table" and stored.joined or {}}
+		local n = tonumber(stored.id:match("^e(%d+)$"))
+		if n and n > eventSeq then eventSeq = n end
+	end
+end
+
+local function printRoutes()
+	print("[Mileage] Race event routes:")
+	for i, route in ipairs(ROUTES) do
+		print(string.format("  %d. %s: %s", i, route.id, routeName(route)))
+	end
+	print("  random: from a random route's start to a road point 1.5 to 4 km away")
+end
+
+local EVENT_USAGE = "Usage: Mileage Event <minutes 1-120> <prize 0-1000000> <route|random> | cancel | list"
+
+function Event(arguments)
+	local first = arguments and arguments[1]
+	if first == "list" then
+		printRoutes()
+		return
+	end
+	if first == "cancel" then
+		if not event and not live then
+			print("[Mileage] No race event is scheduled")
+			return
+		end
+		local id = event and event.id or live.id
+		if event then
+			event = nil
+			saveEvent()
+		end
+		endEvent("cancelled")
+		sendJson("events", -1, "rxMileageEvent", {id = id, phase = "cancelled"})
+		chatAll("The race event was cancelled.")
+		print("[Mileage] Race event " .. id .. " cancelled")
+		return
+	end
+	if not first or #arguments < 3 then
+		print(EVENT_USAGE)
+		return
+	end
+	if not serverSwitch("allowEvents") then
+		print("[Mileage] Race events are switched off on this server (server allowEvents)")
+		return
+	end
+	if event or live then
+		print("[Mileage] A race event is already scheduled; Mileage Event cancel first")
+		return
+	end
+	local minutes, prize = tonumber(arguments[1]), tonumber(arguments[2])
+	if not minutes or minutes % 1 ~= 0 or minutes < 1 or minutes > 120 then
+		print("[Mileage] Minutes must be a whole number from 1 to 120")
+		return
+	end
+	if not prize or prize % 1 ~= 0 or prize < 0 or prize > PRIZE_MAX then
+		print("[Mileage] The prize must be a whole number of dollars from 0 to " .. PRIZE_MAX)
+		return
+	end
+	local routeArg = arguments[3]
+	local route = routeArg ~= "random" and findRoute(routeArg) or nil
+	if routeArg ~= "random" and not route then
+		print("[Mileage] Unknown route " .. consoleText(routeArg) .. "; Mileage Event list shows them")
+		return
+	end
+	eventSeq = eventSeq + 1
+	event = {id = "e" .. eventSeq .. "-" .. os.time(), at = os.time() + minutes * 60, prize = prize,
+		route = route and route.id or "random", announced = {}, joined = {}}
+	if not saveEvent() then
+		event = nil
+		print("[Mileage] The event could not be kept in " .. EVENTS_FILE .. "; nothing was scheduled")
+		return
+	end
+	print(string.format("[Mileage] Race event %s in %d min: %s, $%d prize", event.id, minutes, eventRouteText(event),
+		prize))
+	eventsTick()
+end
+
+Money.eventsTick = eventsTick
+Money.eventsPlayerLeft = eventsPlayerLeft
+Money.loadEvent = loadEvent
+end
+
 -- Loads what the money, racing, leaderboard and event sections keep between starts.
 Money.start = function()
 	Money.loadTransfers()
 	Money.clearOffers()
 	Money.loadRaces()
 	Money.loadLeaderboard()
+	Money.loadEvent()
 end
 
 --== Drag racing relay =======================================================
@@ -2682,6 +3092,7 @@ function tick()
 	Money.transfersTick()
 	Money.offersTick()
 	Money.racesTick()
+	Money.eventsTick()
 	ticksSinceAlive = ticksSinceAlive + 1
 	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
 		ticksSinceAlive = 0
@@ -2729,7 +3140,10 @@ function onPlayerDisconnectHandler(player_id)
 	Money.offersPlayerLeft(player_id)
 	local entry = pendingActivation[player_id]
 	local name = entry and entry.name or MP.GetPlayerName(player_id)
-	if name then Money.racesPlayerLeft(name) end
+	if name then
+		Money.racesPlayerLeft(name)
+		Money.eventsPlayerLeft(name)
+	end
 	loadedPrefabs[player_id] = nil
 	ledger.send[player_id] = nil
 	ledger.receive[player_id] = nil

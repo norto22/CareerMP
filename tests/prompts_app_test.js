@@ -190,6 +190,46 @@ test("the leaderboard lists race wins and each strip's best drag times, names as
 	assert.strictEqual(scope.leaderboard, null);
 });
 
+//== race events ===================================================================
+
+test("an event invitation shows the route, prize and players, and Join sends once with the id encoded", () => {
+	const {scope, lua} = load();
+	scope.emit("MileageEvent", {id: "e1-5", phase: "announce", route: "Service station garage to Alder Dragway",
+		prize: 25000, seconds: 300, joined: 4, youJoined: false});
+	const v = scope.event.view;
+	assert.strictEqual(v.title, "Race event in 5 minutes");
+	assert.deepStrictEqual(rows(v), ["Route: Service station garage to Alder Dragway", "Prize: $25,000 to the winner",
+		"Joined: 4 players"]);
+	assert.strictEqual(v.joined, false);
+	scope.joinEvent();
+	assert.ok(lua.includes("if mileage_raceEvents then mileage_raceEvents.join(" + b64("e1-5") + ") end"));
+	scope.emit("MileageEvent", {id: "e1-5", phase: "joined", route: "random finish", random: true, prize: 25000,
+		seconds: 60, joined: 1, youJoined: true});
+	assert.strictEqual(scope.event.view.title, "Race event in 1 minute");
+	assert.strictEqual(scope.event.view.note, "The finish is picked when it starts.");
+	assert.strictEqual(scope.event.view.joined, true, "Leave event shown");
+	scope.leaveEvent();
+	assert.ok(lua.includes("if mileage_raceEvents then mileage_raceEvents.leave(" + b64("e1-5") + ") end"));
+});
+
+test("the event result names the winner and this player's place", () => {
+	const {scope} = load();
+	const places = [{name: "Alex_Rivera", seconds: 192.6}, {name: "Sam", seconds: 195}, {name: "norto22", seconds: 200.4}];
+	scope.emit("MileageEvent", {id: "e1", phase: "result", route: "R", winner: "Alex_Rivera", places, prize: 25000,
+		racers: 4, you: "norto22"});
+	assert.strictEqual(scope.event.view.title, "Race event over");
+	assert.deepStrictEqual(rows(scope.event.view), ["Winner: Alex_Rivera, 3:12.6", "You: 3rd of 4, 3:20.4"]);
+	scope.emit("MileageEvent", {id: "e1", phase: "result", route: "R", winner: "Alex_Rivera", places, prize: 25000,
+		racers: 4, you: "Alex_Rivera"});
+	assert.strictEqual(scope.event.view.title, "You won the race event");
+	assert.deepStrictEqual(rows(scope.event.view), ["Route: R", "Your time: 3:12.6, 1st of 4",
+		"Prize: $25,000 paid to you"]);
+	scope.emit("MileageEvent", {id: "e2", phase: "cancelled"});
+	assert.strictEqual(scope.event.view.title, "Race event cancelled");
+	scope.closeEvent();
+	assert.strictEqual(scope.event, null);
+});
+
 //== the template ================================================================
 
 test("the template binds every text as text, never as markup", () => {

@@ -203,6 +203,80 @@ mileageOffersApp.controller('MileageOffers', ['$scope', function ($scope) {
 		$scope.leaderboard = null;
 	};
 
+	//== a race event the owner runs ============================================
+
+	$scope.event = null;
+
+	function ordinal(n) {
+		var s = ["th", "st", "nd", "rd"], v = n % 100;
+		return n + (s[(v - 20) % 10] || s[v] || s[0]);
+	}
+
+	function eventView(data) {
+		var route = String(data.route || "");
+		switch (data.phase) {
+		case "announce":
+		case "joined":
+		case "left":
+			var minutes = Math.max(1, Math.ceil((Number(data.seconds) || 0) / 60));
+			var rows = [{label: "Route", value: route}, {label: "Prize", value: moDollars(data.prize) + " to the winner"},
+				{label: "Joined", value: (Number(data.joined) || 0) + " player" + (data.joined === 1 ? "" : "s")}];
+			return {
+				title: "Race event in " + minutes + " minute" + (minutes === 1 ? "" : "s"),
+				rows: rows,
+				note: data.random ? "The finish is picked when it starts." : "",
+				joined: data.youJoined === true,
+			};
+		case "result":
+			var places = Array.isArray(data.places) ? data.places : [];
+			var racers = Number(data.racers) || places.length;
+			var mine = null;
+			places.forEach(function (p, i) { if (p.name === data.you) mine = {place: i + 1, seconds: p.seconds}; });
+			if (!data.winner) {
+				return {title: "Race event over", rows: [{label: "Route", value: route}],
+					note: "Nobody reached the finish in time.", close: true};
+			}
+			if (data.winner === data.you) {
+				return {title: "You won the race event", close: true, rows: [
+					{label: "Route", value: route},
+					{label: "Your time", value: moTime(mine && mine.seconds) + ", 1st of " + racers},
+					{label: "Prize", value: moDollars(data.prize) + " paid to you"}]};
+			}
+			var winnerTime = places.length > 0 ? ", " + moTime(places[0].seconds) : "";
+			return {title: "Race event over", close: true, rows: [
+				{label: "Winner", value: String(data.winner) + winnerTime},
+				{label: "You", value: mine ? ordinal(mine.place) + " of " + racers + ", " + moTime(mine.seconds)
+					: "did not finish"}]};
+		case "over":
+			return {title: "Race event over", note: String(data.why || ""), close: true};
+		case "cancelled":
+			return {title: "Race event cancelled", close: true};
+		}
+		return null;
+	}
+
+	$scope.$on('MileageEvent', function (event, data) {
+		if (!data) return;
+		$scope.$evalAsync(function () {
+			var shown = eventView(data);
+			$scope.event = shown ? {id: data.id, phase: data.phase, view: shown} : null;
+		});
+	});
+
+	$scope.joinEvent = function () {
+		if (!$scope.event) return;
+		bngApi.engineLua('if mileage_raceEvents then mileage_raceEvents.join(' + moLuaString($scope.event.id) + ') end');
+	};
+
+	$scope.leaveEvent = function () {
+		if (!$scope.event) return;
+		bngApi.engineLua('if mileage_raceEvents then mileage_raceEvents.leave(' + moLuaString($scope.event.id) + ') end');
+	};
+
+	$scope.closeEvent = function () {
+		$scope.event = null;
+	};
+
 	// Redraws the time bars.
 	var ticker = setInterval(function () {
 		if ($scope.offers.length > 0) $scope.$evalAsync(function () {});
@@ -211,6 +285,7 @@ mileageOffersApp.controller('MileageOffers', ['$scope', function ($scope) {
 
 	bngApi.engineLua('if mileage_offers then mileage_offers.sendState() end');
 	bngApi.engineLua('if mileage_streetRace then mileage_streetRace.sendState() end');
+	bngApi.engineLua('if mileage_raceEvents then mileage_raceEvents.sendState() end');
 }]);
 
 // Seconds as m:ss.s.

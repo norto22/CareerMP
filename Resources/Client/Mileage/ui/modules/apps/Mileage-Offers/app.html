@@ -15,6 +15,21 @@
 		</div>
 	</div>
 
+	<div class="mo-card" ng-if="event">
+		<div class="mo-title" ng-bind="event.view.title"></div>
+		<div class="mo-row" ng-repeat="row in event.view.rows">
+			<span class="mo-label" ng-bind="row.label"></span>
+			<span class="mo-value" ng-bind="row.value"></span>
+		</div>
+		<div class="mo-note" ng-if="event.view.note" ng-bind="event.view.note"></div>
+		<div class="mo-actions">
+			<button class="mo-accept" ng-if="!event.view.close && !event.view.joined" ng-click="joinEvent()">Join</button>
+			<button class="mo-decline" ng-if="!event.view.close && !event.view.joined" ng-click="closeEvent()">Not this time</button>
+			<button class="mo-decline" ng-if="!event.view.close && event.view.joined" ng-click="leaveEvent()">Leave event</button>
+			<button ng-if="event.view.close" ng-click="closeEvent()">Close</button>
+		</div>
+	</div>
+
 	<div class="mo-card" ng-if="leaderboard">
 		<div class="mo-title">Leaderboard</div>
 		<div class="mo-tabs">

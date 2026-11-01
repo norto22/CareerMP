@@ -245,6 +245,10 @@ function World:startServer()
 		SendNotification = function(target, text)
 			table.insert(world.notifications, {target = target, text = text})
 		end,
+		SendChatMessage = function(target, text)
+			world.chat = world.chat or {}
+			table.insert(world.chat, {target = target, text = text})
+		end,
 		DropPlayer = function(id, why) world.dropped[id] = why end,
 		RegisterEvent = function(event, handler) world.events[event] = handler end,
 		CreateEventTimer = function(event, ms) world.timers[event] = ms end,
@@ -396,10 +400,10 @@ function World:giveCar(p)
 	return car
 end
 
--- Moves p's car to x, y (z 0); a frozen car does not move.
-function World:drive(p, x, y)
+-- Moves p's car to x, y, z (z 0 unless given); a frozen car does not move.
+function World:drive(p, x, y, z)
 	if p.car.frozen then return false end
-	p.car.pos = {x = x, y = y, z = 0}
+	p.car.pos = {x = x, y = y, z = z or 0}
 	return true
 end
 
@@ -445,6 +449,7 @@ function World:loadGame(p)
 	p.globals.gameplay_missions_missionManager = {getForegroundMissionId = function() return p.mission end}
 	p.globals.MPCoreNetwork = {isMPSession = function() return true end}
 	p.globals.gameplay_drag_core = {getData = function() return p.dragData end}
+	p.globals.map = {getMap = function() return {nodes = world.roadNodes or {}} end}
 	p.globals.spawn = {safeTeleport = function(veh, pos, rot)
 		table.insert(p.teleports, {pos = copy(pos), rot = copy(rot)})
 		veh.pos = {x = pos.x, y = pos.y, z = pos.z}
@@ -624,7 +629,7 @@ end
 --== a new world ==============================================================
 
 -- The real functions, kept once however many test files load this one.
-REAL_IO = REAL_IO or {open = io.open, rename = os.rename, remove = os.remove}
+REAL_IO = REAL_IO or {open = io.open, rename = os.rename, remove = os.remove, time = os.time}
 World.realOpen = REAL_IO.open
 
 -- opts.config: server settings to start with (merged into a config with autoUpdate off).
@@ -639,6 +644,12 @@ function World.new(opts)
 	settings = {getValue = function() return nil end, setValue = function() end}
 	installDisk(self)
 	self.serverFS = FS
+	-- The wall clock moves with the world's clock, so schedules follow advance().
+	self.epoch = 1793500000
+	os.time = function(t)
+		if t then return REAL_IO.time(t) end
+		return self.epoch + math.floor(self.now)
+	end
 	local server = {autoUpdate = false, autoExit = false}
 	for k, v in pairs(opts.server or {}) do server[k] = v end
 	self.disk["Resources/Server/Mileage/config/config.json"] = encode({server = server, client = opts.client or {}})
@@ -648,7 +659,7 @@ end
 
 -- Puts io and os back for the next test.
 function World.restoreIo()
-	io.open, os.rename, os.remove = REAL_IO.open, REAL_IO.rename, REAL_IO.remove
+	io.open, os.rename, os.remove, os.time = REAL_IO.open, REAL_IO.rename, REAL_IO.remove, REAL_IO.time
 end
 
 -- test(name, fn) with a new world, putting io and os back however fn ends.

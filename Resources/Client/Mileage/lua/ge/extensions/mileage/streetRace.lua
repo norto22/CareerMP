@@ -225,6 +225,24 @@ function M.onUpdate(dtReal)
 	updateRace(math.max(0, math.min(1, tonumber(dtReal) or 0)))
 end
 
+--- A race event's race, after mileage/raceEvents.lua moved this car to the grid: the
+--- same countdown, timing and finish report as a street race, without stakes.
+--- info: {id, finish, radius, seconds, timeLimit}
+function M.startEventRace(info)
+	if type(info) ~= "table" or type(info.id) ~= "string" or not isPoint(info.finish) then return false end
+	race = {id = info.id, phase = "countdown", other = "the race event", stake = 0, event = true,
+		finish = info.finish, radius = tonumber(info.radius) or 20, countdownLeft = tonumber(info.seconds) or 5,
+		timeLimit = tonumber(info.timeLimit)}
+	setFrozen(true)
+	ui({phase = "countdown", race = race.id, other = race.other, stake = 0, count = math.ceil(race.countdownLeft)})
+	return true
+end
+
+--- Ends the race with this id here (an event's result came, or it was called off).
+function M.stopRace(id)
+	if race and race.id == id then endRace() end
+end
+
 --- Sends the race under way to the prompts app, after a UI reload.
 function M.sendState()
 	if race then ui({phase = race.phase, race = race.id, other = race.other, stake = race.stake,

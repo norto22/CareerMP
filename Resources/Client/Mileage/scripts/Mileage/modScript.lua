@@ -48,6 +48,7 @@ loadPersistent('mileagePlayerPayments')
 loadPersistent('mileage/offers')
 loadPersistent('mileage/streetRace')
 loadPersistent('mileage/leaderboard')
+loadPersistent('mileage/raceEvents')
 loadPersistent('mileagePrefabSync')
 loadPersistent('mileagePerPartPaint')
 

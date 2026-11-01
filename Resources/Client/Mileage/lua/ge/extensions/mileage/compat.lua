@@ -293,6 +293,15 @@ function M.getForegroundMissionId()
 	return fn()
 end
 
+-- The game's road network nodes, {[name] = {pos, ...}}, or nil.
+function M.getMapNodes()
+	local fn = pickOrWarn(map, "map", "getMap", "a race event cannot pick a random finish here")
+	if not fn then return nil end
+	local ok, roads = pcall(fn)
+	if ok and type(roads) == "table" and type(roads.nodes) == "table" then return roads.nodes end
+	return nil
+end
+
 function M.hasRaceFunctions()
 	return pick(core_groundMarkers, "getTargetPos") ~= nil and pick(spawn, "safeTeleport") ~= nil
 end
