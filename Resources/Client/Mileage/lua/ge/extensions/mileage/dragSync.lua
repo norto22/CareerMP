@@ -1,12 +1,13 @@
 --Mileage :: drag multiplayer activation
 --
--- Small by design. Its whole job is to decide *whether* native multiplayer drag racing
--- is switched on, and to un-stub the one getter that gates it.
+-- Small by design. Its job is to decide *whether* native multiplayer drag racing is
+-- switched on, to un-stub the one getter that gates it, and to keep a failing drag update
+-- from stopping the rest of the game's frame (the frame guard, below).
 --
 -- The work is split three ways:
 --   mileage/dragTransport   messages on and off the wire, the bridge, the handlers
 --   multiplayer/gamemodes/drag/drag   the network adapter the game calls into
---   this file                 activation and the getDragGamemode patch
+--   this file                 activation, the getDragGamemode patch and the frame guard
 --
 -- gameplay/drag/core.lua ships getDragGamemode() hard-wired to nil, with a comment
 -- saying to restore it "once multiplayer drag is ready to ship". Pointing it at our
@@ -23,6 +24,166 @@ local function gamemode()
 	if multiplayer_gamemodes_drag_drag then return multiplayer_gamemodes_drag_drag end
 	extensions.load("multiplayer/gamemodes/drag/drag")
 	return multiplayer_gamemodes_drag_drag
+end
+
+--== the frame guard =========================================================
+
+-- The game runs every extension's per-frame update in one loop with no error protection
+-- (hookFast in lua/common/extensions.lua), and the drag modules come before traffic,
+-- parking and police in it. One drag update raising an error ends that frame's update
+-- for everything after it, so an error that repeats every frame stops traffic where it
+-- is while the player's own car and the rest of the game keep running.
+--
+-- From each career start on a server, synced drag on or off, every loaded drag module's
+-- per-frame updates run under xpcall. The first error from each one is logged with its
+-- traceback; repeats are counted, not logged every frame. The game caches each hook's list
+-- of functions, so the cache is dropped after wrapping and after putting the originals
+-- back, or the game would go on calling the old ones.
+
+local GUARDED_HOOKS = {"onUpdate", "onPreRender", "onGuiUpdate", "onDrawDebug"}
+
+-- Our own wrappers, recognised so a function is never wrapped twice.
+local guardWrappers = setmetatable({}, {__mode = "k"})
+
+-- "extension.hook" -> {module, hook, original, wrapper}
+local guarded = {}
+
+-- "extension.hook" -> failures since the guard went on
+local guardFailures = {}
+
+local guardOn = false
+
+local traceback = (type(debug) == "table" and type(debug.traceback) == "function") and debug.traceback
+	or function(msg) return msg end
+
+local function isDragExtension(name)
+	return name == "multiplayer_gamemodes_drag_drag" or name:find("^gameplay_drag_") ~= nil
+end
+
+local function finishGuarded(ok, ...)
+	if ok then return ... end
+end
+
+local function guardFunction(name, module, hook)
+	local original = rawget(module, hook)
+	if type(original) ~= "function" or guardWrappers[original] then return false end
+
+	local key = name .. "." .. hook
+	-- Made once per function, so a guarded frame allocates nothing.
+	local function onError(err)
+		local count = (guardFailures[key] or 0) + 1
+		guardFailures[key] = count
+		if count == 1 then
+			log("E", logTag, string.format(
+				"%s failed; it is stopped there so traffic and the rest of the game keep updating, " ..
+				"and later failures of it are counted, not logged: %s",
+				key, tostring(traceback(tostring(err), 2))))
+		end
+		return err
+	end
+	local function wrapper(...)
+		return finishGuarded(xpcall(original, onError, ...))
+	end
+
+	guardWrappers[wrapper] = true
+	guarded[key] = {module = module, hook = hook, original = original, wrapper = wrapper}
+	module[hook] = wrapper
+	return true
+end
+
+-- Wraps what is not wrapped yet; returns how many functions it wrapped.
+local function guardLoadedDragModules()
+	local ext = extensions
+	if type(ext) ~= "table" or type(ext.getLoadedExtensionsNames) ~= "function" then return 0 end
+	local count = 0
+	for _, name in ipairs(ext.getLoadedExtensionsNames() or {}) do
+		-- rawget: a plain lookup of a missing extension's global can load it.
+		local module = type(name) == "string" and isDragExtension(name) and rawget(_G, name)
+		if type(module) == "table" then
+			for _, hook in ipairs(GUARDED_HOOKS) do
+				if guardFunction(name, module, hook) then count = count + 1 end
+			end
+		end
+	end
+	return count
+end
+
+local function refreshHookCache()
+	local ext = extensions
+	if type(ext) ~= "table" or type(ext.hookUpdate) ~= "function" then return end
+	for _, hook in ipairs(GUARDED_HOOKS) do pcall(ext.hookUpdate, hook) end
+end
+
+-- Wraps what is not wrapped yet, and drops the cache only when something was.
+local function guardDragModules()
+	local ok, wrapped = pcall(guardLoadedDragModules)
+	if not ok then
+		log("E", logTag, "could not guard the drag modules' updates: " .. tostring(wrapped))
+		return 0
+	end
+	if wrapped > 0 then refreshHookCache() end
+	return wrapped
+end
+
+-- Several drag modules load only when a race starts, and the game announces no load, so
+-- extensions.load is wrapped to guard them before their first frame. A check run in a
+-- later frame could be cut off by the very error it is there to catch.
+-- {original, wrapper}, kept while the wrapper is anywhere in the loader chain.
+local loader = nil
+
+local function afterLoad(...)
+	if guardOn then guardDragModules() end
+	return ...
+end
+
+local function wrapLoader()
+	-- Still in place, or under another mod's loader: already covered.
+	if loader then return end
+	local ext = extensions
+	if type(ext) ~= "table" or type(ext.load) ~= "function" or guardWrappers[ext.load] then return end
+	local original = ext.load
+	local function wrapper(...)
+		-- No pcall: a failing load raises its own error to its caller, as before.
+		return afterLoad(original(...))
+	end
+	guardWrappers[wrapper] = true
+	loader = {original = original, wrapper = wrapper}
+	ext.load = wrapper
+end
+
+local function unwrapLoader()
+	local ext = extensions
+	if not loader or type(ext) ~= "table" then return end
+	-- Under another mod's loader it stays, doing nothing while the guard is off.
+	if ext.load == loader.wrapper then
+		ext.load = loader.original
+		loader = nil
+	end
+end
+
+-- Safe to call again: only what is new is wrapped.
+local function installFrameGuard()
+	guardOn = true
+	wrapLoader()
+	local wrapped = guardDragModules()
+	if wrapped > 0 then
+		log("I", logTag, string.format("guarding %d drag update(s) so a drag error cannot stop traffic", wrapped))
+	end
+end
+
+local function removeFrameGuard()
+	if not guardOn then return end
+	guardOn = false
+	unwrapLoader()
+	-- Only what is still ours goes back; a function another mod put in place stays.
+	for _, entry in pairs(guarded) do
+		if rawget(entry.module, entry.hook) == entry.wrapper then
+			entry.module[entry.hook] = entry.original
+		end
+	end
+	guarded = {}
+	guardFailures = {}
+	refreshHookCache()
 end
 
 --== the un-stub =============================================================
@@ -285,6 +446,11 @@ local function patchDragCore()
 		log("W", logTag, "could not de-duplicate drag messages: " .. tostring(msgResult))
 	end
 
+	-- The rebuilds copied unguarded functions over the live tables, and the game's hook
+	-- cache can still hold the stock ones, which would keep running with their own state.
+	if guardOn then guardDragModules() end
+	refreshHookCache()
+
 	return true
 end
 
@@ -346,8 +512,13 @@ end
 function M.onCareerActive(careerIsActive)
 	if not careerIsActive then
 		M.setActive(false)
+		removeFrameGuard()
 		return
 	end
+
+	-- Before the switch is read: the stock single-player drag code runs in the same
+	-- unprotected frame loop, so synced drag off keeps the guard.
+	installFrameGuard()
 
 	if not isEnabledByServer() then
 		log("I", logTag, "native MP drag sync is disabled (server client.nativeDragSyncEnabled " ..
@@ -370,11 +541,13 @@ end
 
 local function onExtensionUnloaded()
 	M.setActive(false)
+	removeFrameGuard()
 	log("I", logTag, "Mileage drag sync UNLOADED")
 end
 
 local function onBeamMPServerLeave()
 	M.setActive(false)
+	removeFrameGuard()
 end
 
 M.onExtensionLoaded = onExtensionLoaded

@@ -53,8 +53,33 @@ local function newModules()
 	m.gameplay_traffic = {onUpdate = function() game.counts.traffic = game.counts.traffic + 1 end}
 	m.gameplay_parking = {onUpdate = function() game.counts.parking = game.counts.parking + 1 end}
 	m.gameplay_police = {onUpdate = function() game.counts.police = game.counts.police + 1 end}
+	-- Loaded only when a race starts, and failing from its first frame.
+	m.gameplay_drag_late = {
+		onUpdate = function() error("gameplay_drag_late: attempt to call a nil value") end,
+	}
 	return m
 end
+
+-- What the drag core rebuild reads from the game's own core.lua: the stub it restores, and
+-- a per-frame update that counts its runs and fails when told to.
+local CORE_PATH = "/lua/ge/extensions/gameplay/drag/core.lua"
+local CORE_SOURCE = [[
+local M = {}
+
+local function getDragGamemode()
+  -- Restore the two lines below once multiplayer drag is ready to ship.
+  return nil
+end
+
+M.getDragGamemode = getDragGamemode
+M.getData = function() return {racers = {}} end
+M.onUpdate = function()
+  if dragTestCounts.rebuiltFails then error("rebuilt core: attempt to compare nil with number") end
+  dragTestCounts.rebuilt = dragTestCounts.rebuilt + 1
+end
+
+return M
+]]
 
 local function newGame(opts)
 	opts = opts or {}
@@ -62,7 +87,7 @@ local function newGame(opts)
 		order = {},
 		modules = newModules(),
 		cache = {},
-		counts = {core = 0, times = 0, traffic = 0, parking = 0, police = 0},
+		counts = {core = 0, times = 0, traffic = 0, parking = 0, police = 0, rebuilt = 0},
 		frameErrors = {},
 		timesFails = opts.timesFails ~= false,
 		syncEnabled = opts.syncEnabled == true,
@@ -70,6 +95,7 @@ local function newGame(opts)
 		hookUpdates = 0,
 	}
 	logs = {}
+	dragTestCounts = game.counts
 
 	function log(level, tag, msg) table.insert(logs, level .. " " .. tag .. ": " .. tostring(msg)) end
 	function setExtensionUnloadMode() end
@@ -91,7 +117,14 @@ local function newGame(opts)
 		for _, n in ipairs(game.order) do
 			if n == name then return true end
 		end
-		table.insert(game.order, name)
+		-- A drag module loaded later still runs before traffic, as in the game's career.
+		local at = #game.order + 1
+		if name:find("^gameplay_drag_") then
+			for i, n in ipairs(game.order) do
+				if n == "gameplay_traffic" then at = i break end
+			end
+		end
+		table.insert(game.order, at, name)
 		return true
 	end
 
@@ -134,7 +167,7 @@ local function newGame(opts)
 	end
 
 	for _, name in ipairs(LOAD_ORDER) do
-		if name ~= "mileage_dragSync" and not (opts.skip and opts.skip[name]) then addLoaded(name) end
+		if name ~= "mileage_dragSync" then addLoaded(name) end
 	end
 
 	-- The real dragSync, loaded as the game loads an extension.
@@ -174,4 +207,217 @@ test("a drag module failing every frame leaves traffic driving, synced drag off"
 	same(game.counts.parking, FRAMES, "parking updates")
 	same(game.counts.police, FRAMES, "police updates")
 	same(#game.frameErrors, 0, "frames ended early")
+end)
+
+test("the failing drag function is logged once, by module and function, with a traceback", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	game.sync.onCareerActive(true)
+	runFrames(FRAMES)
+	same(countLines(logs, "gameplay_drag_times.onUpdate"), 1, "log lines naming the failing function")
+	local line
+	for _, l in ipairs(logs) do
+		if l:find("gameplay_drag_times.onUpdate", 1, true) then line = l end
+	end
+	expect(line:sub(1, 2) == "E ", "logged as an error: " .. line)
+	expect(line:find("attempt to index a nil value", 1, true), "carries the error: " .. line)
+	expect(line:find("stack traceback", 1, true), "carries a traceback: " .. line)
+end)
+
+test("a drag update that succeeds runs every frame and returns what it returned", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	game.sync.onCareerActive(true)
+	runFrames(FRAMES)
+	same(game.counts.times, FRAMES, "drag times updates")
+	same(game.counts.core, FRAMES, "drag core updates")
+	same(game.counts.traffic, FRAMES, "traffic updates")
+	same(gameplay_drag_times.onUpdate(), "times ran", "guarded update's result")
+	same(countLines(logs, "failed"), 0, "failure lines logged")
+end)
+
+test("a second career start wraps nothing twice, and leaving the server puts the originals back", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	local timesOriginal = gameplay_drag_times.onUpdate
+	local coreOriginal = gameplay_drag_core.onUpdate
+	game.sync.onCareerActive(true)
+	expect(gameplay_drag_times.onUpdate ~= timesOriginal, "drag times guarded")
+	game.sync.onCareerActive(true)
+	runFrames(FRAMES)
+	same(game.counts.traffic, FRAMES, "traffic updates after two starts")
+	same(countLines(logs, "gameplay_drag_times.onUpdate"), 1, "log lines after two starts")
+
+	game.sync.onBeamMPServerLeave()
+	same(gameplay_drag_times.onUpdate, timesOriginal, "drag times after leaving")
+	same(gameplay_drag_core.onUpdate, coreOriginal, "drag core after leaving")
+	same(game.cache.onUpdate, nil, "cached onUpdate list after leaving")
+	same(gameplay_traffic.onUpdate ~= nil, true, "traffic left in place")
+end)
+
+test("the career ending and the extension unloading put the originals back", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	local timesOriginal = gameplay_drag_times.onUpdate
+	game.sync.onCareerActive(true)
+	runFrames(1)
+	game.sync.onCareerActive(false)
+	same(gameplay_drag_times.onUpdate, timesOriginal, "drag times after the career ends")
+	same(game.cache.onUpdate, nil, "cached onUpdate list after the career ends")
+
+	game.sync.onCareerActive(true)
+	expect(gameplay_drag_times.onUpdate ~= timesOriginal, "guarded again on the next start")
+	game.sync.onExtensionUnloaded()
+	same(gameplay_drag_times.onUpdate, timesOriginal, "drag times after unloading")
+end)
+
+test("a function another mod put in place after the guard is left alone", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	game.sync.onCareerActive(true)
+	local theirs = function() end
+	gameplay_drag_times.onUpdate = theirs
+	game.sync.onBeamMPServerLeave()
+	same(gameplay_drag_times.onUpdate, theirs, "the other mod's function")
+end)
+
+--== drag modules loaded mid-race, and the rebuilt drag core =================
+
+test("a failing drag module loaded mid-race is guarded before its first frame", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	game.sync.onCareerActive(true)
+	runFrames(10)
+	extensions.load("gameplay/drag/late")
+	runFrames(FRAMES)
+	same(game.counts.traffic, 10 + FRAMES, "traffic updates (frame error: " .. tostring(game.frameErrors[1]) .. ")")
+	same(#game.frameErrors, 0, "frames ended early")
+	same(countLines(logs, "gameplay_drag_late.onUpdate"), 1, "log lines naming the late module")
+end)
+
+test("the module loader is wrapped once across career starts and put back on leaving", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	local load = extensions.load
+	game.sync.onCareerActive(true)
+	local guardedLoad = extensions.load
+	expect(guardedLoad ~= load, "loader wrapped")
+	game.sync.onCareerActive(true)
+	same(extensions.load, guardedLoad, "loader after a second start")
+	game.sync.onBeamMPServerLeave()
+	same(extensions.load, load, "loader after leaving")
+
+	-- After leaving, a late drag module is the game's own again: nothing guards it.
+	extensions.load("gameplay/drag/late")
+	runFrames(1)
+	same(#game.frameErrors, 1, "frame errors once the guard is off")
+end)
+
+test("a loader another mod wrapped after the guard is left alone, and not wrapped again", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	game.sync.onCareerActive(true)
+	local ours = extensions.load
+	local theirs = function(...) return ours(...) end
+	extensions.load = theirs
+	game.sync.onBeamMPServerLeave()
+	same(extensions.load, theirs, "the other mod's loader after leaving")
+	game.sync.onCareerActive(true)
+	same(extensions.load, theirs, "the other mod's loader after the next start")
+	extensions.load("gameplay/drag/late")
+	runFrames(FRAMES)
+	same(game.counts.traffic, FRAMES, "traffic updates with the late module under the other loader")
+end)
+
+test("a failing load still raises its own error to the caller", function()
+	clearGlobals()
+	newGame({syncEnabled = false})
+	game.sync.onCareerActive(true)
+	game.loadFails = true
+	local ok, err = pcall(extensions.load, "gameplay/drag/late")
+	same(ok, false, "the failing load's result")
+	expect(tostring(err):find("cannot load gameplay_drag_late", 1, true), "its error: " .. tostring(err))
+end)
+
+test("with synced drag on, the frame loop runs the rebuilt drag core, guarded", function()
+	clearGlobals()
+	newGame({syncEnabled = true, timesFails = false, files = {[CORE_PATH] = CORE_SOURCE}})
+	game.sync.onCareerActive(true)
+	expect(game.sync.isPatched(), "drag core rebuilt")
+	game.counts.rebuiltFails = true
+	runFrames(FRAMES)
+	same(game.counts.traffic, FRAMES, "traffic updates (frame error: " .. tostring(game.frameErrors[1]) .. ")")
+	same(countLines(logs, "gameplay_drag_core.onUpdate"), 1, "log lines naming the rebuilt core")
+	expect(countLines(logs, "rebuilt core: attempt to compare") == 1, "the rebuilt core's own error is the one logged")
+end)
+
+test("turning synced drag on mid-session replaces the cached drag core with the rebuilt one", function()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false, files = {[CORE_PATH] = CORE_SOURCE}})
+	game.sync.onCareerActive(true)
+	runFrames(1) -- the game has cached the stock drag core's update
+	same(game.counts.core, 1, "stock drag core updates before the rebuild")
+	expect(game.sync.setActive(true), "synced drag switched on")
+	runFrames(FRAMES)
+	same(game.counts.rebuilt, FRAMES, "rebuilt drag core updates")
+	same(game.counts.core, 1, "stock drag core updates after the rebuild")
+	game.counts.rebuiltFails = true
+	runFrames(FRAMES)
+	same(game.counts.traffic, 1 + 2 * FRAMES, "traffic updates (frame error: " .. tostring(game.frameErrors[1]) .. ")")
+end)
+
+--== Mileage's own per-frame drag functions ==================================
+
+local DRAG_MODE = "Resources/Client/Mileage/lua/ge/extensions/multiplayer/gamemodes/drag/drag.lua"
+
+-- The real drag mode, enabled, as the strip's authority, with a drag core that fails.
+local function failingDragMode()
+	clearGlobals()
+	newGame({syncEnabled = false, timesFails = false})
+	mileage_dragTransport = {
+		isHost = function() return true end,
+		bridge = {getLocalPlayerId = function() return 1 end},
+	}
+	local drag = dofile(DRAG_MODE)
+	drag.setEnabled(true)
+	game.getDataCalls = 0
+	gameplay_drag_core = {
+		getData = function()
+			game.getDataCalls = game.getDataCalls + 1
+			error("getData: attempt to index a nil value")
+		end,
+	}
+	return drag
+end
+
+test("the drag mode's countdown repair returns 0 while its work fails, logged once", function()
+	local drag = failingDragMode()
+	for _ = 1, FRAMES do
+		local ok, result = pcall(drag.checkTimerDrift)
+		expect(ok, "checkTimerDrift raised: " .. tostring(result))
+		same(result, 0, "checkTimerDrift's result")
+	end
+	same(countLines(logs, "checkTimerDrift"), 1, "log lines naming checkTimerDrift")
+	expect(countLines(logs, "getData: attempt to index a nil value") == 1, "the error is in the log line")
+end)
+
+test("the drag mode's result finaliser returns quietly while its work fails, logged once", function()
+	local drag = failingDragMode()
+	-- A car stopping arms the finaliser; that call fails the same way, outside a frame.
+	pcall(drag.onDragMpTimeslipRequested)
+	for _ = 1, FRAMES do
+		local ok, err = pcall(drag.onUpdate)
+		expect(ok, "onUpdate raised: " .. tostring(err))
+	end
+	same(game.getDataCalls, 1 + FRAMES, "finaliser attempts")
+	same(countLines(logs, "multiplayer_gamemodes_drag_drag.onUpdate"), 1, "log lines naming the finaliser")
+end)
+
+test("a disabled drag mode returns 0 from its countdown repair without touching the drag core", function()
+	local drag = failingDragMode()
+	drag.setEnabled(false)
+	same(drag.checkTimerDrift(), 0, "checkTimerDrift's result")
+	drag.onUpdate()
+	same(game.getDataCalls, 0, "drag core calls")
+	same(countLines(logs, "failed"), 0, "failure lines logged")
 end)

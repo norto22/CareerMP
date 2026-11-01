@@ -112,6 +112,30 @@ local function transport()
 	return mileage_dragTransport
 end
 
+--- The two functions the game calls every frame of a race -- onUpdate and checkTimerDrift,
+--- the latter from inside the game's own drag timer -- catch their own errors. The game's
+--- frame loop has no protection, so an error escaping either one would end that frame's
+--- updates for the drag timer and everything after it. The first failure of each is
+--- logged with its traceback; repeats are not logged every frame.
+local traceback = (type(debug) == "table" and type(debug.traceback) == "function") and debug.traceback
+	or function(msg) return msg end
+
+local frameErrorLogged = {}
+
+local function frameErrorHandler(name)
+	return function(err)
+		if not frameErrorLogged[name] then
+			frameErrorLogged[name] = true
+			log("E", logTag, string.format("%s failed and returned quietly; later failures are not logged: %s",
+				name, tostring(traceback(tostring(err), 2))))
+		end
+		return err
+	end
+end
+
+local onFinalizeError = frameErrorHandler("multiplayer_gamemodes_drag_drag.onUpdate")
+local onTimerDriftError = frameErrorHandler("multiplayer_gamemodes_drag_drag.checkTimerDrift")
+
 local function core()
 	return gameplay_drag_core
 end
@@ -603,7 +627,7 @@ end
 --- The grace period above expires on a clock, not on a message, so it has to be polled.
 function M.onUpdate()
 	if not enabled or not timeslipPending then return end
-	tryFinalizeRace()
+	xpcall(tryFinalizeRace, onFinalizeError)
 end
 
 --- Tear the drag UI down at the end of a race.
@@ -716,15 +740,15 @@ end
 --- a non-stub racer that is marginally outside its lane zone (phaseHandlers.lua:307), so
 --- if the authority's car is over the line at the instant the countdown fires, only the
 --- stub advances and the local racer lands in exactly that state.
-function M.checkTimerDrift()
-	if not enabled or not M.isServerHost() then return 0 end
+local function repairTimerDrift()
+	if not M.isServerHost() then return end
 
 	local c = core()
 	local dragData = c and c.getData()
-	if not dragData or not dragData.racers or not next(dragData.racers) then return 0 end
+	if not dragData or not dragData.racers or not next(dragData.racers) then return end
 
 	local startTime = M.getCountdownStartTime()
-	if not startTime or os.clockhp() < startTime then return 0 end
+	if not startTime or os.clockhp() < startTime then return end
 
 	if M.advanceOutOfStaging() then
 		log("I", logTag, "countdown due - advancing racers out of staging (host)")
@@ -733,7 +757,7 @@ function M.checkTimerDrift()
 	-- Re-issue a countdown that was discarded. startDragCountdown recomputes dialOffset
 	-- from getCountdownStartTime(), so arriving late self-corrects rather than desyncing.
 	local display = gameplay_drag_display
-	if not display or not display.startDragCountdown then return 0 end
+	if not display or not display.startDragCountdown then return end
 	for _, racer in pairs(dragData.racers) do
 		local vehId = racer.vehId
 		local dq = racer.isDisqualified or racer.isDesqualified
@@ -756,7 +780,12 @@ function M.checkTimerDrift()
 			end
 		end
 	end
+end
 
+--- Returns 0, as it always has, whether or not the repair fails.
+function M.checkTimerDrift()
+	if not enabled then return 0 end
+	xpcall(repairTimerDrift, onTimerDriftError)
 	return 0
 end
 
