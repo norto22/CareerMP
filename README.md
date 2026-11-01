@@ -17,21 +17,18 @@ Played on a live server:
 - Tuning, painting, insurance and repairs
 - Seeing damage on other players' cars
 - Paint sync
-- Shared road traffic
-- Synced traffic lights
-- Other players' cars shown correctly
+- Shared road traffic, police and parked cars
+- Synced traffic lights, red-light cameras and speed traps
+- Other players' cars shown correctly, with nametags hidden for traffic
 - Chat
 - Local saves: continue on any Mileage server, or offline
 
 Built, waiting for a live test:
 - Mission and challenge props everyone sees ([#30](https://github.com/norto22/Mileage/issues/30))
-- Police and parked cars in shared traffic ([#99](https://github.com/norto22/Mileage/issues/99))
-- Red-light cameras and speed traps ([#34](https://github.com/norto22/Mileage/issues/34))
 - Paying and asking other players for money ([#33](https://github.com/norto22/Mileage/issues/33))
 - Street races for money ([#105](https://github.com/norto22/Mileage/issues/105))
 - Race events run by the server owner ([#106](https://github.com/norto22/Mileage/issues/106))
 - A server leaderboard ([#107](https://github.com/norto22/Mileage/issues/107))
-- Nametags hidden for traffic and spawnables ([#69](https://github.com/norto22/Mileage/issues/69))
 - Three or more players at once ([#32](https://github.com/norto22/Mileage/issues/32))
 - Mod vehicles and longer render distance ([#100](https://github.com/norto22/Mileage/issues/100))
 
