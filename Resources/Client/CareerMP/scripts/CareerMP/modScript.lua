@@ -38,6 +38,7 @@ loadPersistent('careerMPEnabler')
 -- Features
 loadPersistent('careerMP/connectionWatch')
 loadPersistent('careerMP/damageSync')
+loadPersistent('careerMP/positionRate')
 loadPersistent('careerMPUIApps')
 loadPersistent('careerMPPlayerPayments')
 loadPersistent('careerMPPrefabSync')
