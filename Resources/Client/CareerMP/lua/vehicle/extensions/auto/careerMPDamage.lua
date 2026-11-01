@@ -240,7 +240,9 @@ end
 -- for a beam it never reported, with the car as built): broken here while reported whole,
 -- or more than RESYNC_LENGTH off the rest length. Every beam is read, because the game's
 -- damage tracker lists only beams with deform triggers. Stops counting past `limit`.
-local function disagreeingBeams(limit)
+-- `tolerance` defaults to RESYNC_LENGTH, which lets a light scrape between players stand.
+local function disagreeingBeams(limit, tolerance)
+	tolerance = tolerance or RESYNC_LENGTH
 	local count = 0
 	for _, beam in pairs(v.data.beams or {}) do
 		local cid = beam.cid
@@ -252,7 +254,7 @@ local function disagreeingBeams(limit)
 				if not refBroken then count = count + 1 end
 			else
 				local len = obj:getBeamRestLength(cid)
-				if len and abs(len - refLen) > RESYNC_LENGTH then count = count + 1 end
+				if len and abs(len - refLen) > tolerance then count = count + 1 end
 			end
 			if limit and count > limit then return count end
 		end
@@ -285,7 +287,9 @@ local function applyDamage(cleared, beams, nodes)
 		-- so a copy with any damage (judged against the car as built) is reset too.
 		reported = {}
 		reportsChanged = true
-		if disagreeingBeams(0) > 0 then
+		-- Any change from the car as built counts here, however small: after a repair the
+		-- owner's car has none, so neither may the copy.
+		if disagreeingBeams(0, LENGTH_CHANGED) > 0 then
 			obj:queueGameEngineLua(string.format("careerMP_damageSync.resetCopy(%d,0)", obj:getID()))
 		end
 		return

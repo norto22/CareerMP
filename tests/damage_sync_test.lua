@@ -1306,3 +1306,17 @@ test("a copy whose damage and reports have not moved does not read its beams aga
 	tick(copy, 5)
 	same(reads, 0, "beam reads over five quiet checks")
 end)
+
+test("an owner's repair after a light scrape shows on the copy", function()
+	local owner, copy = twoGames({beams = 100})
+	step(2.5)
+	-- A scrape: 30 beams each 1.5 cm shorter, under the phantom check's 2 cm.
+	for cid = 0, 29 do dent(owner, cid, 0.985) end
+	step(1.5)
+	same(copy.restLen[3], 0.985, "the owner's scrape on the copy")
+	-- The repair: every beam as built and the damage total back to nothing.
+	for cid = 0, 29 do owner.restLen[cid] = 1 end
+	owner.beamstate.damage = 0
+	step(2)
+	same(copy.restLen[3], 1, "the copy's beam 3 after the owner's repair")
+end)
