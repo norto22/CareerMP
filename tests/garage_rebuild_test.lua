@@ -276,6 +276,24 @@ test("a rebuild that raises restores the player's car and the error reaches the 
 	same(getPlayerVehicle(0), game.carB, "the player's car")
 end)
 
+test("a rebuild that raises is logged with the line it came from", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
+	game.raiseOnRebuild = true
+	pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	local logged
+	for _, line in ipairs(logs) do
+		if string.find(line, "E careerMP.patches:", 1, true) and string.find(line, "rebuild broke", 1, true) then
+			logged = line
+		end
+	end
+	expect(logged, "the failed rebuild is logged as an error")
+	expect(string.find(logged, "stack traceback", 1, true), "the log line carries a traceback: " .. logged)
+	expect(string.find(logged, "garage_rebuild_test.lua", 1, true), "the traceback names where it came from: " .. logged)
+end)
+
 test("a nested rebuild while one is running passes straight through", function()
 	setup()
 	installBeamMP()

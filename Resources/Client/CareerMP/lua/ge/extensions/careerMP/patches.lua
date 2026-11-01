@@ -681,11 +681,21 @@ local function applyRebuildPatch()
 			return real(player, ...)
 		end)
 		rebuildingNamedCar = true
-		local results = pack(xpcall(original, function(err) return err end, modelName, opt, otherVeh, ...))
+		-- The traceback is taken inside the handler, where the failing line is still on the
+		-- stack; the caller still gets the original error, unchanged.
+		local traceback
+		local results = pack(xpcall(original, function(err)
+			traceback = debug.traceback(tostring(err), 2)
+			return err
+		end, modelName, opt, otherVeh, ...))
 		rebuildingNamedCar = false
 		rawset(_G, "getPlayerVehicle", previous)
 
-		if not results[1] then error(results[2], 0) end
+		if not results[1] then
+			log("E", "careerMP.patches", string.format("garage rebuild of vehicle %d failed: %s",
+				namedId, traceback or tostring(results[2])))
+			error(results[2], 0)
+		end
 
 		local returned = results[2]
 		if returned ~= nil then
