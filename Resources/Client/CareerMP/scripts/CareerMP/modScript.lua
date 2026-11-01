@@ -8,7 +8,9 @@
 --                      any career can start
 --   4. traffic       - hands the server's traffic amounts to the game's career
 --                      traffic setup
---   5. features
+--   5. insuranceRestore - loads the game's insurance records when a join's career
+--                      start leaves them empty
+--   6. features
 --
 -- 'manual' unload mode keeps these alive across level switches, which career
 -- does constantly.
@@ -23,6 +25,7 @@ loadPersistent('careerMP/compat')
 loadPersistent('careerMP/patches')
 loadPersistent('careerMP/careerPatches')
 loadPersistent('careerMP/traffic')
+loadPersistent('careerMP/insuranceRestore')
 
 -- Core
 loadPersistent('careerMPEnabler')
