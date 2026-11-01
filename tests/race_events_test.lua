@@ -107,6 +107,12 @@ World.test("an event race ignores a time that could not have been driven, and a 
 	same(lastEvent(world, ann, "result"), nil, "no result from impossible times")
 	same(ann.money, 1000, "Ann not paid")
 	world:advance(20)
+	-- A time that could have been driven, from a game whose car the server sees at the start.
+	report(bob, 25)
+	world:advance(7)
+	same(lastEvent(world, ann, "result"), nil, "a game that only says so does not win")
+	same(bob.money, 1000, "Bob not paid")
+	world:drive(bob, -203.27, -203.98, 118.82)
 	report(bob, 25)
 	world:advance(7)
 	same(lastEvent(world, bob, "result").winner, "Bob", "a time that could have been driven wins")

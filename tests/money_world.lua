@@ -239,6 +239,18 @@ function World:startServer()
 		IsPlayerConnected = function(id) local p = world.players[id]; return p ~= nil and p.connected end,
 		GetPlayerName = function(id) local p = world.players[id]; return p and p.name end,
 		GetOSName = function() return "Linux" end,
+		-- The server's view of each player's car: where their game last said it was.
+		-- world.hidePositions makes it unreadable, as on a BeamMP without these calls.
+		GetPlayerVehicles = function(id)
+			local p = world.players[id]
+			if world.hidePositions or not p or not p.car then return nil end
+			return {[0] = {name = p.car.JBeam}}
+		end,
+		GetPositionRaw = function(id, vid)
+			local p = world.players[id]
+			if world.hidePositions or not p or not p.car or vid ~= 0 then return nil end
+			return {pos = {p.car.pos.x, p.car.pos.y, p.car.pos.z}}
+		end,
 		TriggerClientEvent = function(target, event, data)
 			world:queue({way = "toClient", target = target, event = event, data = data})
 		end,

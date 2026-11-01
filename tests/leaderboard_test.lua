@@ -82,7 +82,7 @@ World.test("race wins are counted by the server and survive a restart", function
 		world:pump()
 		world:advance(3)
 		-- Quicker than the straight line at 150 m/s would be an impossible time.
-		world:advance(20)
+		world:advance(30)
 		world:drive(ann, 0, 2400)
 		world:advance(7)
 	end

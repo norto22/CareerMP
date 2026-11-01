@@ -1851,13 +1851,23 @@ function Money.transferOwners.race(transfer, event)
 	end
 end
 
--- Each game times its own race, so the server only accepts a time that could have been
--- driven: not quicker than the straight line to the finish at MAX_SPEED_MPS, and not
--- longer than the time since green (plus REPORT_SLACK_SECONDS for the delay between the
--- two games' greens). A game that reports a time before green, or a few hundredths of a
--- second, is ignored.
-local MAX_SPEED_MPS = 150
+-- Each game times its own race, so a time is only taken from a game that the server can
+-- also see at the finish: the server needs the racer's own car, as BeamMP's position data
+-- shows it, within FINISH_CHECK_METRES of the finish (a game that merely reports a time
+-- cannot win), and the time must be one that could have been driven: not quicker than the
+-- straight line to the finish at MAX_SPEED_MPS, and not longer than the time since green
+-- (plus REPORT_SLACK_SECONDS for the delay between the two games' greens). A time before
+-- green, or a few hundredths of a second, is ignored.
+--
+-- When the server cannot read cars' positions at all (BeamMP's MP.GetPlayerVehicles or
+-- MP.GetPositionRaw missing, or their answer in a form not understood) the car is not
+-- checked and the time stands on the game's word; that is logged once.
+local MAX_SPEED_MPS = 100
 local REPORT_SLACK_SECONDS = 3
+-- The game reports within FINISH_RADIUS of the finish; the server's last position of the
+-- car can be a moment old, so it is allowed a wider circle.
+local FINISH_CHECK_METRES = 150
+local positionsUnreadableLogged = false
 
 local function metresBetween(a, b)
 	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2)
@@ -1869,7 +1879,53 @@ local function plausibleTime(seconds, metres, sinceGreen)
 	return seconds <= sinceGreen + REPORT_SLACK_SECONDS
 end
 
-Money.plausibleTime, Money.metresBetween = plausibleTime, metresBetween
+-- A position as {x, y, z} from BeamMP's position data, which may carry it as x, y, z or
+-- as a list of three.
+local function positionOf(raw)
+	local pos = type(raw) == "table" and raw.pos
+	if type(pos) ~= "table" then return nil end
+	local x, y, z = pos.x or pos[1], pos.y or pos[2], pos.z or pos[3]
+	if type(x) == "number" and type(y) == "number" and type(z) == "number" then return {x = x, y = y, z = z} end
+	return nil
+end
+
+-- true when one of the player's own cars (not traffic) is within metres of point as the
+-- server sees it, false when none is, and nil when the server cannot see the player's cars.
+local function carNear(player_id, point, metres)
+	if type(MP.GetPlayerVehicles) ~= "function" or type(MP.GetPositionRaw) ~= "function" then return nil end
+	local ok, vehicles = pcall(MP.GetPlayerVehicles, player_id)
+	if not ok or type(vehicles) ~= "table" then return nil end
+	local seen = false
+	for vehicleId in pairs(vehicles) do
+		if not isTraffic(tostring(player_id) .. "-" .. tostring(vehicleId)) then
+			local readOk, raw = pcall(MP.GetPositionRaw, player_id, vehicleId)
+			local at = readOk and positionOf(raw) or nil
+			if at then
+				seen = true
+				if metresBetween(at, point) <= metres then return true end
+			end
+		end
+	end
+	if seen then return false end
+	return nil
+end
+
+-- Whether a finish report from player_id counts: a time that could have been driven, from
+-- a game whose car the server sees at the finish.
+local function finishCounts(player_id, seconds, start, finish, sinceGreen)
+	if not plausibleTime(seconds, metresBetween(start, finish), sinceGreen) then return false end
+	local near = carNear(player_id, finish, FINISH_CHECK_METRES)
+	if near == nil then
+		if not positionsUnreadableLogged then
+			positionsUnreadableLogged = true
+			print("[Mileage] ---------- Races: the server cannot read cars' positions here, so finish times are taken on the players' games' word")
+		end
+		return true
+	end
+	return near
+end
+
+Money.finishCounts, Money.metresBetween = finishCounts, metresBetween
 
 -- A racer's game reports: {race, pose = {pos, dir, up}} (the challenger, for the start),
 -- {race, ready = true} (the challenged, beside it), {race, failed = why},
@@ -1898,6 +1954,7 @@ function mileageRaceReport(player_id, data)
 			and isPoint(report.pose.dir) and isPoint(report.pose.up) then
 		-- The challenge was checked from where the car stood then; the car may have been
 		-- driven to the finish line since.
+		live.start = report.pose.pos
 		live.metres = metresBetween(report.pose.pos, live.finish)
 		if live.metres < serverNumber("raceMinDistance", 0, 20000) then
 			callOff(race, "the start was too close to the finish")
@@ -1914,7 +1971,8 @@ function mileageRaceReport(player_id, data)
 			radius = FINISH_RADIUS, stake = race.stake, a = race.a, b = race.b,
 			timeLimit = serverNumber("raceTimeLimitMinutes", 1, 120) * 60})
 	elseif (live.phase == "countdown" or live.phase == "racing") and not live.reports[name]
-			and plausibleTime(report.finished, live.metres or 0, signalTimer:GetCurrent() - live.goAt) then
+			and finishCounts(player_id, report.finished, live.start, live.finish,
+				signalTimer:GetCurrent() - live.goAt) then
 		live.reports[name] = report.finished
 		live.firstReportAt = live.firstReportAt or signalTimer:GetCurrent()
 		if live.reports[race.a] and live.reports[race.b] then
@@ -2416,7 +2474,7 @@ Money.eventRaceReport = function(player_id, report)
 		sendEvent(name, {id = live.id, phase = "over", why = "You gave up."})
 		if next(live.joined) == nil then live = nil end
 	elseif live.phase == "racing" and live.joined[name] and not live.reports[name]
-			and Money.plausibleTime(report.finished, Money.metresBetween(live.start, live.finish),
+			and Money.finishCounts(player_id, report.finished, live.start, live.finish,
 				signalTimer:GetCurrent() - live.goAt) then
 		live.reports[name] = report.finished
 		live.firstReportAt = live.firstReportAt or signalTimer:GetCurrent()

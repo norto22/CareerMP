@@ -65,10 +65,11 @@ local function lastRaceMessage(world, p, phase)
 	return found
 end
 
--- Drives p to the finish, 2.4 km away, once they have been racing at least 20 s (the
--- server does not accept a quicker time); their game reports on its next frame.
+-- Drives p to the finish, 2.4 km away, once they have been racing at least 30 s (the
+-- server does not accept a quicker time: 2.4 km at 100 m/s is 24 s); their game reports on
+-- its next frame.
 local function arrive(world, p)
-	local wait = 20 - (world.now - (world.greenAt or world.now))
+	local wait = 30 - (world.now - (world.greenAt or world.now))
 	if wait > 0 then world:advance(wait) end
 	assert(world:drive(p, KM.x + 5, KM.y), p.name .. "'s car is frozen")
 	world:advance(1)
@@ -347,7 +348,7 @@ World.test("a game reports its finish once, timed from its own green, and shows 
 		end
 	end
 	same(reports, 1, "finish reported once while the car stays at the finish")
-	same(lastRaceMessage(world, ann, "result").times.Ann, 21, "timed from the green: 20 s driving, 1 s frame")
+	same(lastRaceMessage(world, ann, "result").times.Ann, 31, "timed from the green: 30 s driving, 1 s frame")
 	local shown = world:ui(ann, "MileageRace")
 	same(shown[#shown].phase, "result", "result shown in the prompts app")
 	world:as(ann, function() expect(not mileage_streetRace.giveUp(), "no race left to give up") end)
@@ -358,8 +359,11 @@ World.test("a faster time reported within 5 s of the first wins, and a later one
 	startRace(world, ann, bob, 1000)
 	local _, race = races(world)
 	world:advance(130)
+	-- Each car reaches the finish, and the report is sent before the game's own frame does.
+	world:drive(ann, KM.x + 5, KM.y)
 	world:serverOutput(function() mileageRaceReport(ann.id, World.encode({race = race.id, finished = 130})) end)
 	world:advance(3)
+	world:drive(bob, KM.x + 5, KM.y)
 	world:serverOutput(function() mileageRaceReport(bob.id, World.encode({race = race.id, finished = 128})) end)
 	world:advance(3)
 	same(bob.money, 11000, "Bob won with the faster time reported second")
@@ -515,11 +519,33 @@ World.test("a finish time that could not have been driven is ignored: too quick,
 	report(ann, 8)
 	world:advance(6)
 	same(lastRaceMessage(world, ann, "result"), nil, "300 m/s is too fast")
-	world:advance(12)
-	report(bob, 20)
+	-- A time a car could have driven, from a game whose car the server sees still at the start.
+	world:advance(15)
+	report(ann, 28)
+	world:advance(6)
+	same(lastRaceMessage(world, ann, "result"), nil, "a game that only says so does not win")
+	same(ann.money, 9000, "Ann")
+	-- Bob's car is at the finish and the time could have been driven.
+	world:drive(bob, KM.x + 5, KM.y)
+	report(bob, 28)
 	world:advance(6)
 	same(lastRaceMessage(world, ann, "result").winner, "Bob", "a time that could have been driven counts")
 	same(bob.money, 11000, "Bob won the stakes")
+end)
+
+World.test("with no car positions readable, a plausible finish time stands on the game's word and is logged once",
+		function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	local _, race = races(world)
+	world:advance(40)
+	world.hidePositions = true
+	world:drive(ann, KM.x + 5, KM.y)
+	-- The server cannot see cars here: the report stands, and the console says so once.
+	world:serverOutput(function() mileageRaceReport(ann.id, World.encode({race = race.id, finished = 40})) end)
+	world:advance(6)
+	same(lastRaceMessage(world, ann, "result").winner, "Ann", "the time stands")
+	same(world:printedMatching("cannot read cars' positions"), 1, "logged once")
 end)
 
 World.test("a challenger who drove to the finish before lining up calls the race off", function(world)
