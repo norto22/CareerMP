@@ -183,3 +183,26 @@ test("every second tick sends each connected player one alive message", function
 		same(#sent, 4, "messages after four ticks")
 	end)
 end)
+
+test("the join activation check still runs on a tick that sends no alive message", function()
+	run(function()
+		local now = 0
+		local dropped, sent = {}, {}
+		MP = {
+			CreateTimer = function() return {GetCurrent = function() return now end, Start = function() end} end,
+			GetPlayers = function() return {[0] = "Ann"} end,
+			IsPlayerConnected = function() return true end,
+			GetPlayerName = function() return "Ann" end,
+			DropPlayer = function(id) table.insert(dropped, id) end,
+			TriggerClientEvent = function(id, event) table.insert(sent, event) end,
+		}
+		dofile(SOURCE)
+		print = function() end
+		onPlayerJoinHandler(0)
+		now = 90
+		tick()
+		same(#sent, 0, "alive messages on the first tick")
+		same(#dropped, 1, "a player who never asked for settings is dropped on the first tick")
+		same(dropped[1], 0, "dropped player")
+	end)
+end)
