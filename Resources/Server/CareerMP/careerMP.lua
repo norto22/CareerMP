@@ -52,12 +52,12 @@ local defaultConfig = {
 		serverSaveName = "",
 		serverSaveSuffix = "",
 		serverSaveNameEnabled = false,
-		roadTrafficAmount = 0,
-		extraTrafficAmount = 0,
-		parkedTrafficAmount = 0,
-		roadTrafficEnabled = false,
-		extraTrafficEnabled = false,
-		parkedTrafficEnabled = false,
+		-- Traffic each player spawns, shared with every other player: a server with two
+		-- players has twice these amounts on the map. 0 to 50 of each kind.
+		roadTrafficAmount = 6,
+		parkedTrafficAmount = 8,
+		roadTrafficEnabled = true,
+		parkedTrafficEnabled = true,
 		worldEditorEnabled = false,
 		consoleEnabled = false,
 		simplifyRemoteVehicles = false,
@@ -83,6 +83,15 @@ local defaultConfig = {
 		-- own rather than failing hard.
 		nativeDragSyncEnabled = true
 	}
+}
+
+-- Settings earlier versions wrote that are no longer read. prepareConfig removes them
+-- from a config like any unknown setting, with this reason instead of "is invalid".
+local retiredConfig = {
+	client = {
+		extraTrafficAmount = "extra traffic was never used by the game",
+		extraTrafficEnabled = "extra traffic was never used by the game",
+	},
 }
 
 -- Players whose career has not started yet, by player id. A player is dropped with
@@ -413,7 +422,12 @@ local function prepareConfig()
 			if Config[section] then
 				for field in pairs(Config[section]) do
 					if defaultConfig[section][field] == nil then
-						print("[CareerMP] ---------- CareerMP Config " .. section .. " " .. field .. " is invalid, removing")
+						local retired = retiredConfig[section] and retiredConfig[section][field]
+						if retired then
+							print("[CareerMP] ---------- CareerMP Config " .. section .. " " .. field .. " removed: " .. retired)
+						else
+							print("[CareerMP] ---------- CareerMP Config " .. section .. " " .. field .. " is invalid, removing")
+						end
 						updateFound = true
 						Config[section][field] = nil
 					end
