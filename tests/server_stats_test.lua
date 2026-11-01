@@ -247,6 +247,34 @@ test("Help lists the Stats command", function()
 	same(countLines(server.printed, "Mileage Stats"), 1, "Stats in the help")
 end)
 
+-- What one console line prints, with BeamMP's local event calling the named handler.
+local function consoleLines(line)
+	server.printed = {}
+	MP.TriggerLocalEvent = function(command, arguments) _G[command](arguments) end
+	local realPrint = print
+	print = function(text) table.insert(server.printed, tostring(text)) end
+	local ok, err = pcall(onConsoleInputHandler, line)
+	print = realPrint
+	if not ok then error(err, 0) end
+	return server.printed
+end
+
+for _, prefix in ipairs({"Mileage", "CareerMP", "CMP"}) do
+	test("the console command " .. prefix .. " Help prints Mileage's help", function()
+		newServer({0})
+		local lines = consoleLines(prefix .. " Help")
+		same(countLines(lines, "Mileage Help "), 1, "Help line")
+		same(countLines(lines, "Mileage SetConfig "), 1, "SetConfig line")
+		same(countLines(lines, "CareerMP"), 0, "old name in the help")
+	end)
+end
+
+test("a console line with another prefix runs no Mileage command", function()
+	newServer({0})
+	same(#consoleLines("Foo Help"), 0, "lines printed")
+	same(#consoleLines("Mileagex Help"), 0, "lines printed for a near miss")
+end)
+
 -- BeamMP drops a leaving player from its list before the plugin hears of the leave.
 test("Stats prints while a car's owner is no longer in the player list", function()
 	newServer({0, 1})

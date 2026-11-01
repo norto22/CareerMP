@@ -20,18 +20,18 @@ Confirmed in live sessions:
 ### In, waiting for a live test
 These are built and covered by tests, but have not been played through on a server yet:
 - Tuning, painting, insurance and repairs with other players on the server ([#28](https://github.com/norto22/Mileage/issues/28), [#29](https://github.com/norto22/Mileage/issues/29))
-- Damage sharing: dents on your car show on every other player's copy of it
+- Damage sharing: dents on your car show on every other player's copy of it ([#98](https://github.com/norto22/Mileage/issues/98))
 - Paint sync, part by part ([#31](https://github.com/norto22/Mileage/issues/31))
 - Mission, challenge and scenario props synced, so you see what others are doing and have to drive around it ([#30](https://github.com/norto22/Mileage/issues/30))
-- Road traffic with police, and parked cars, as in the single-player career. Each player spawns a share of the server's traffic total, and every player sees everyone's traffic. While you run a parking challenge, other players' traffic and parked cars are hidden on your game only, so the spaces are clear
+- Road traffic with police, and parked cars, as in the single-player career. Each player spawns a share of the server's traffic total, and every player sees everyone's traffic. While you run a parking challenge, other players' traffic and parked cars are hidden on your game only, so the spaces are clear ([#99](https://github.com/norto22/Mileage/issues/99))
 - Traffic signals synced for every player, and red-light camera and speed trap announcements for cars that players drive ([#34](https://github.com/norto22/Mileage/issues/34))
 - Paying other players from the player list ([#33](https://github.com/norto22/Mileage/issues/33))
 - Other players' vehicles shown and hidden correctly, and nametags hidden for traffic and many spawnables ([#35](https://github.com/norto22/Mileage/issues/35), [#69](https://github.com/norto22/Mileage/issues/69))
 - Three or more players at once ([#32](https://github.com/norto22/Mileage/issues/32))
-- Multiplayer chat and session apps in mission, challenge and scenario layouts
-- Local saves: continue on any Mileage server, or take an online save offline and back
-- Mod vehicles the base game supports in career, in traffic and at dealerships
-- Longer vehicle render distance, so players show on the big map
+- Multiplayer chat and session apps in mission, challenge and scenario layouts ([#100](https://github.com/norto22/Mileage/issues/100))
+- Local saves: continue on any Mileage server, or take an online save offline and back ([#100](https://github.com/norto22/Mileage/issues/100))
+- Mod vehicles the base game supports in career, in traffic and at dealerships ([#100](https://github.com/norto22/Mileage/issues/100))
+- Longer vehicle render distance, so players show on the big map ([#100](https://github.com/norto22/Mileage/issues/100))
 
 Known problems are on the [issue tracker](https://github.com/norto22/Mileage/issues?q=is%3Aissue%20state%3Aopen%20label%3Abug). If something misbehaves, check the game console first: `mileage.compat` logs any game API that moved, and `mileage.patches` logs whether its runtime patches installed.
 
@@ -71,10 +71,13 @@ Multiplayer adds load: players with mid-range systems report 5-10% lower perform
 ## Coming from CareerMP
 A server on CareerMP 0.1.0 or 0.2.0 with `server.autoUpdate` on moves to Mileage by itself, over a few restarts:
 
-1. CareerMP's update check installs the last CareerMP plugin, which installs the Mileage plugin and restarts.
-2. On its first start Mileage copies the settings from `Resources/Server/CareerMP/config/config.json`, downloads `Mileage.zip`, removes `Resources/Client/CareerMP.zip` and the CareerMP plugin, and restarts once more.
+1. CareerMP's update check installs the last CareerMP plugin and restarts.
+2. The last CareerMP plugin downloads Mileage, then restarts again. It fetches the client mod first and keeps it in `Resources/Server/Mileage/` until the move is done, so players are never offered both mods. Then it fetches the plugin.
+3. On its first start Mileage copies the settings from `Resources/Server/CareerMP/config/config.json` and checks the copy. Only once the settings and `Mileage.zip` are in place does it remove `Resources/Client/CareerMP.zip` and the CareerMP plugin. Then it restarts once more.
 
-Each step logs what it did in the server console, and each restart needs `server.autoExit` on and a restart script; with `autoExit` off, restart the server yourself when the console asks. If a download fails, the server keeps running CareerMP and tries again on its next start. The old settings stay in `Resources/Server/CareerMP/config/`; delete that folder once you no longer need it.
+Nothing of CareerMP is removed until Mileage is ready, and until then CareerMP keeps serving players. If a download, the settings copy or a removal fails, the console says which step failed and why. The server keeps running CareerMP and tries again on its next start. Each step logs what it did in the server console. Each restart needs `server.autoExit` on and a restart script; with `autoExit` off, restart the server yourself when the console asks. The old settings stay in `Resources/Server/CareerMP/config/`; delete that folder once you no longer need it.
+
+A server still on CareerMP 0.1.0 logs one failed download of `CareerMP.zip` on its way, because the old client mod it asks for is no longer in this repository. The move carries on and succeeds ([#101](https://github.com/norto22/Mileage/issues/101)).
 
 To move by hand, for example with `autoUpdate` off, unpack the Mileage release into the server folder and start the server: Mileage copies the CareerMP settings and removes the old files in the same way. Player saves are not affected. The `CareerMP` console commands still work as another name for `Mileage`.
 
