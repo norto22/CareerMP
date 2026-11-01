@@ -234,6 +234,10 @@ local function onVehicleReady(gameVehicleID)
 	if not veh then return end
 
 	if not MPVehicleGE.isOwn(gameVehicleID) then
+		-- The game's own "not traffic" flag: its traffic checks it before adopting the
+		-- player's car, so spectating this car never hands it to this game's traffic and
+		-- police (gameplay/traffic.lua checkPlayer).
+		veh:setDynDataFieldbyName("ignoreTraffic", 0, "true")
 		-- Ghosting is not queued here: the vehicle side only has setGhost, and it is
 		-- applied in onUpdate against the server's ghost config keys.
 		local vehicles = MPVehicleGE.getVehicles()
@@ -255,10 +259,37 @@ end
 -- not working (the overflow surfaced inside gameplay_walk.toggleWalkingMode).
 local handlingVehicleSwitch = false
 
+-- While the camera sits on another player's car, this game's traffic would follow the
+-- camera once the player's own car stops (gameplay/traffic.lua falls back to the camera
+-- below 5 m/s), respawning around the car being watched. So spectating pins the traffic
+-- focus on the own car the player left, and returning to an own car hands it back.
+local trafficFocusPinned = false
+
+local function updateTrafficFocus(oldGameVehicleID, newGameVehicleID)
+	local newIsOwn = MPVehicleGE.isOwn(newGameVehicleID)
+	local oldIsOwn = oldGameVehicleID ~= nil and oldGameVehicleID ~= -1
+		and be:getObjectByID(oldGameVehicleID) ~= nil and MPVehicleGE.isOwn(oldGameVehicleID)
+	if newIsOwn and not trafficFocusPinned then return end
+	if not newIsOwn and not oldIsOwn then return end
+	local c = compat or extensions.careerMP_compat
+	local setFocus = c and c.pickOrWarn(gameplay_traffic, "gameplay_traffic", "setFocus",
+		"traffic follows the camera while spectating")
+	if not setFocus then return end
+	if newIsOwn then
+		setFocus()
+		trafficFocusPinned = false
+	else
+		setFocus('vehicle', {vehId = oldGameVehicleID, auto = false})
+		trafficFocusPinned = true
+	end
+end
+
 local function handleVehicleSwitch(oldGameVehicleID, newGameVehicleID)
 	local newVeh = be:getObjectByID(newGameVehicleID)
 	local oldVeh = be:getObjectByID(oldGameVehicleID)
 	if not newVeh then return end
+
+	updateTrafficFocus(oldGameVehicleID, newGameVehicleID)
 
 	-- Never let the player end up controlling someone else's prop.
 	if hiddens[newVeh.JBeam] and not MPVehicleGE.isOwn(newGameVehicleID) then
@@ -735,6 +766,7 @@ local function onBeamMPServerLeave()
 	knownStates = {}
 	sentMarks = {}
 	sinceMarks = 0
+	trafficFocusPinned = false
 end
 
 --Access
