@@ -46,6 +46,17 @@ local pending = {
 	painting = nil,
 }
 
+-- The car the player clicked a button for at the garage computer, recorded by the patch on
+-- career_modules_computer.computerButtonCallback before the button runs. Used by the next menu
+-- that opens without naming its car, then dropped, so a menu opened elsewhere later does not
+-- reuse it. A new click, a general button and the computer opening again replace it.
+local clickedInventoryId = nil
+
+function M.setClickedVehicle(inventoryId)
+	clickedInventoryId = inventoryId
+	pending.tuning, pending.partShopping, pending.painting = nil, nil, nil
+end
+
 local function resolveVehId(inventoryId)
 	local inventory = career_modules_inventory
 	if not inventory or not inventoryId then return nil end
@@ -65,6 +76,17 @@ local function resolveInventoryId(recorded)
 		return inventory.getInventoryIdsInClosestGarage(true)
 	end
 	return nil
+end
+
+-- The car a menu that has just opened is about: the one it was opened with, else the one
+-- clicked at the computer, else the guess above. Both are used up here. Parts keeps the
+-- answer for the rest of the session (parts fitted, the purchase) until it is cancelled or
+-- applied.
+local function takeMenuVehicle(kind)
+	local inventoryId = resolveInventoryId(pending[kind] or clickedInventoryId)
+	clickedInventoryId = nil
+	pending[kind] = (kind == "partShopping") and inventoryId or nil
+	return inventoryId
 end
 
 -- Registry of every wrapper this module has installed.
@@ -147,11 +169,13 @@ end
 -- These only remember which vehicle a menu is for. The enriched hook is fired
 -- from the stock-hook handlers below so the timing stays identical to stock.
 
--- The garage computer opens these menus with a nil inventoryId and lets the module
--- work out which vehicle is meant. Each module has its own fallback chain, and the
--- ones that end at getInventoryIdsInClosestGarage are exactly the case that matters
--- here: the player is walking, so there is no "current vehicle" at all. Mirroring
--- the module's own resolution is what lets us name the right vehicle.
+-- The garage computer's buttons pass the clicked car to each module's LOCAL start
+-- function, which never passes through these wrappers, so the computer's button callback
+-- records the click itself (clickedInventoryId, above). These recorders cover the menus opened
+-- through the module table: with a car named, that car; with none, the click; and only then
+-- the module's own fallback chain, mirrored here. The chains that end at
+-- getInventoryIdsInClosestGarage(true) are a guess: the first car that garage lists, which
+-- is not necessarily the one the player picked.
 local function resolveClosestGarageVehicle()
 	local inventory = career_modules_inventory
 	if not inventory or type(inventory.getInventoryIdsInClosestGarage) ~= "function" then return nil end
@@ -161,7 +185,7 @@ end
 -- tuning.start / painting.start:
 --   inventoryId = _inventoryId or getInventoryIdsInClosestGarage(true)
 local function resolveMenuVehicle(passedId)
-	return passedId or resolveClosestGarageVehicle()
+	return passedId or clickedInventoryId or resolveClosestGarageVehicle()
 end
 
 -- partShopping.startShopping:
@@ -169,6 +193,7 @@ end
 --   if not currentVehicle then currentVehicle = getInventoryIdsInClosestGarage(true) end
 local function resolveShoppingVehicle(passedId)
 	if passedId then return passedId end
+	if clickedInventoryId then return clickedInventoryId end
 	local inventory = career_modules_inventory
 	local current = inventory and inventory.getCurrentVehicle and inventory.getCurrentVehicle()
 	if current then return current end
@@ -187,7 +212,7 @@ end
 local pendingSeatedRepair = nil
 --- The garage computer facility the player last opened a menu on.
 ---
---- Recorded because the computer's own copy is a file-local (computer.lua:14) and the
+--- Recorded because the game's computer module keeps its own as a file-local and the
 --- repair screen's originComputerId is another. Needed to refresh the menu after a
 --- deferred repair; see runHeldRepair.
 local lastComputerFacility = nil
@@ -330,10 +355,46 @@ local function makeSeatedRepairGuard(fnName)
 	end
 end
 
---- Remember which computer the player is standing at.
-local function applyComputerRecorder()
-	wrap("career_modules_computer", "openMenu", function(_, args)
-		lastComputerFacility = args[1] or lastComputerFacility
+-- The game's garage computer closes its menu once the player is more than 1 m from its
+-- door, or 4 m from the computer when there is no door. Multiplayer position sync moves
+-- the player that far on its own, which closed the menu mid-use, so the menu's range is
+-- widened to at least this many metres.
+local COMPUTER_MENU_RANGE = 25
+
+-- Runs fn with career_modules_tether's starts widening their range to the computer's,
+-- and always puts the game's starts back. Only tethers started inside fn are affected.
+local function withComputerMenuRange(fn, ...)
+	local tether = career_modules_tether
+	if type(tether) ~= "table" then return fn(...) end
+	local door, sphere = tether.startDoorTether, tether.startSphereTether
+	local function widen(start)
+		if type(start) ~= "function" then return start end
+		return function(target, range, ...)
+			if type(range) == "number" and range < COMPUTER_MENU_RANGE then range = COMPUTER_MENU_RANGE end
+			return start(target, range, ...)
+		end
+	end
+	tether.startDoorTether, tether.startSphereTether = widen(door), widen(sphere)
+	local function finish(ok, ...)
+		tether.startDoorTether, tether.startSphereTether = door, sphere
+		if not ok then error((...), 0) end
+		return ...
+	end
+	return finish(pcall(fn, ...))
+end
+
+--- The game's own garage computer, patched: remember which computer the player is standing
+--- at, forget the last click when it opens, widen its menu's range, and record which car
+--- each button is for.
+local function applyComputerPatches()
+	replace("career_modules_computer", "openMenu", function(original, computerFacility, ...)
+		lastComputerFacility = computerFacility or lastComputerFacility
+		M.setClickedVehicle(nil)
+		return withComputerMenuRange(original, computerFacility, ...)
+	end)
+	replace("career_modules_computer", "computerButtonCallback", function(original, buttonId, inventoryId, ...)
+		M.setClickedVehicle(inventoryId)
+		return original(buttonId, inventoryId, ...)
 	end)
 end
 
@@ -344,6 +405,24 @@ local function applySeatedRepairGuard()
 		makeSeatedRepairGuard("startRepairInGarage"))
 	replace("career_modules_insurance_insurance", "startRepair",
 		makeSeatedRepairGuard("startRepair"))
+end
+
+-- Opening a purchase screen without an insurance choice (the private seller's "See Purchase
+-- Information") throws when no default policy is loaded, so nothing appears. The wrapper
+-- bodies live in careerMP/purchaseInsurance; they are looked up at call time and the game's
+-- own function is called untouched when that extension is not loaded.
+local function applyPurchaseInsuranceGuard()
+	local function guard(fnName)
+		replace("career_modules_vehicleShopping", fnName, function(original, ...)
+			local purchase = extensions and extensions.careerMP_purchaseInsurance
+			if type(purchase) ~= "table" or type(purchase[fnName]) ~= "function" then
+				return original(...)
+			end
+			return purchase[fnName](original, ...)
+		end)
+	end
+	guard("openPurchaseMenu")
+	guard("sendPurchaseDataToUi")
 end
 
 local function applyRecorders()
@@ -561,21 +640,123 @@ local function applyUnicyclePatch()
 	end)
 end
 
+--== garage rebuilds: rebuild the car the game named ===========================
+-- Every garage action that changes a car rebuilds it with
+-- core_vehicles.replaceVehicle(model, options, thatCar): fitting or removing parts
+-- (partShopping.lua:780), cancelling Parts and the quick repair before Parts, Tuning and
+-- Painting (inventory.spawnVehicle with replaceOption 2, inventory.lua:459), and fitting
+-- parts from the parts inventory (partInventory.lua:163).
+--
+-- In multiplayer BeamMP puts its own replaceRequest there (MPVehicleGE.onBeamMPPostJoin),
+-- and that one throws the named car away: it rebuilds whatever getPlayerVehicle(0) is, then
+-- calls the game's rebuild with no car, which picks getPlayerVehicle(0) again. At the garage
+-- computer the player is on foot, or seated in another of their cars, so that car (or the
+-- walking avatar) became a second copy of the one being changed, on top of it, and the two
+-- smashed together. The garage's inventory then pointed at the copy.
+--
+-- Both BeamMP and the game read the global getPlayerVehicle at call time and keep no copy
+-- of it, so for the length of one call naming one of this player's own cars, that global
+-- answers with the named car. BeamMP then takes its normal path for it (marks it rebuilt
+-- and sends the edit to everyone else) and the game rebuilds it in place. The player stays
+-- where they are: the in-place spawn decides whether to re-enter from be:getPlayerVehicleID,
+-- which this does not touch. debug.setupvalue would be the direct way in and the sandbox
+-- refuses it; rawset on _G is what dragSync already does in the shipped game.
+--
+-- Anything else (no car named, another player's car, a car that is gone) goes to the
+-- function underneath untouched.
+
+--- True while a named-car rebuild is running, so a call that reaches us again from inside
+--- it (BeamMP calling an older wrapper of ours underneath it) passes straight through.
+local rebuildingNamedCar = false
+
+local function pack(...) return {n = select("#", ...), ...} end
+
+--- The game vehicle id of `veh` when it is a live car of this player's own, else nil.
+local function ownLocalCarId(veh)
+	if veh == nil then return nil end
+	local alive, id = pcall(function() return veh:getID() end)
+	if not alive or type(id) ~= "number" then return nil end
+	local mp = MPVehicleGE
+	if type(mp) ~= "table" or type(mp.isOwn) ~= "function"
+		or type(mp.getVehicleByGameID) ~= "function" then
+		return nil
+	end
+	if not mp.isOwn(id) then return nil end
+	local entry = mp.getVehicleByGameID(id)
+	if type(entry) ~= "table" or not entry.isLocal then return nil end
+	return id
+end
+
+--- A rebuild that still landed on another car: say so where it will be seen.
+local function reportWrongRebuild(namedId, returned)
+	local returnedId = "?"
+	pcall(function() returnedId = tostring(returned:getID()) end)
+	log("E", "careerMP.patches", string.format(
+		"a garage rebuild of vehicle %d came back as vehicle %s - BeamMP may have changed how it " ..
+		"picks the car; check the garage for a duplicate", namedId, returnedId))
+	if guihooks and type(guihooks.trigger) == "function" then
+		guihooks.trigger("toastrMsg", {
+			type = "error",
+			title = "CareerMP",
+			msg = "Changing this car rebuilt a different one. Check your garage for a duplicate.",
+			config = {timeOut = 8000},
+		})
+	end
+end
+
+local function applyRebuildPatch()
+	replace("core_vehicles", "replaceVehicle", function(original, modelName, opt, otherVeh, ...)
+		if rebuildingNamedCar then return original(modelName, opt, otherVeh, ...) end
+		local namedId = ownLocalCarId(otherVeh)
+		if not namedId then return original(modelName, opt, otherVeh, ...) end
+
+		local previous = rawget(_G, "getPlayerVehicle")
+		local real = previous or getPlayerVehicle
+		rawset(_G, "getPlayerVehicle", function(player, ...)
+			if player == 0 then return otherVeh end
+			return real(player, ...)
+		end)
+		rebuildingNamedCar = true
+		-- The traceback is taken inside the handler, where the failing line is still on the
+		-- stack; the caller still gets the original error, unchanged.
+		local traceback
+		local results = pack(xpcall(original, function(err)
+			traceback = debug.traceback(tostring(err), 2)
+			return err
+		end, modelName, opt, otherVeh, ...))
+		rebuildingNamedCar = false
+		rawset(_G, "getPlayerVehicle", previous)
+
+		if not results[1] then
+			log("E", "careerMP.patches", string.format("garage rebuild of vehicle %d failed: %s",
+				namedId, traceback or tostring(results[2])))
+			error(results[2], 0)
+		end
+
+		local returned = results[2]
+		if returned ~= nil then
+			local sameCar, returnedId = pcall(function() return returned:getID() end)
+			if not sameCar or returnedId ~= namedId then reportWrongRebuild(namedId, returned) end
+		end
+		return unpack(results, 2, results.n)
+	end)
+end
+
 --== stock hook handlers =====================================================
 -- Re-broadcast the stock hooks with the vehicle context attached.
 
 function M.onCareerTuningStarted()
-	local inventoryId = resolveInventoryId(pending.tuning)
+	local inventoryId = takeMenuVehicle("tuning")
 	extensions.hook("onCareerTuningStartedMP", resolveVehId(inventoryId), inventoryId)
 end
 
 function M.onPartShoppingStarted()
-	local inventoryId = resolveInventoryId(pending.partShopping)
+	local inventoryId = takeMenuVehicle("partShopping")
 	extensions.hook("onPartShoppingStartedMP", resolveVehId(inventoryId), inventoryId)
 end
 
 function M.onVehiclePaintingUiOpened()
-	local inventoryId = resolveInventoryId(pending.painting)
+	local inventoryId = takeMenuVehicle("painting")
 	extensions.hook("onVehiclePaintingUiOpenedMP", resolveVehId(inventoryId), inventoryId)
 end
 
@@ -673,9 +854,11 @@ function M.apply()
 	applyRecorders()
 	applyEnrichments()
 	applyUnicyclePatch()
+	applyRebuildPatch()
 	applyWalkGuard()
 	applySeatedRepairGuard()
-	applyComputerRecorder()
+	applyPurchaseInsuranceGuard()
+	applyComputerPatches()
 
 	-- Only count as applied when everything landed. Marking it applied regardless
 	-- would let a call made before the career modules exist stick, and the retry
@@ -721,6 +904,7 @@ function M.revert()
 	originals = {}
 	applied = false
 	pending.tuning, pending.partShopping, pending.painting = nil, nil, nil
+	clickedInventoryId = nil
 end
 
 function M.isApplied() return applied end
@@ -776,11 +960,22 @@ local function onUpdate(dtReal)
 		end
 	end
 
-	if applied then return end
-
 	retryAccumulator = retryAccumulator + (dtReal or 0)
 	if retryAccumulator < RETRY_INTERVAL then return end
 	retryAccumulator = 0
+
+	if applied then
+		-- BeamMP installs its rebuild when the player joins a server, which can be after we
+		-- applied. Its function then sits on top of ours and drops the named car, so wrap it
+		-- again; ours stays underneath it and passes straight through.
+		local vehicles = core_vehicles
+		if type(vehicles) == "table" and type(vehicles.replaceVehicle) == "function"
+			and not isOurs(vehicles.replaceVehicle) then
+			applyRebuildPatch()
+			log("I", "careerMP.patches", "core_vehicles.replaceVehicle was replaced after we applied - wrapped it again")
+		end
+		return
+	end
 
 	-- Cheap guard: only worth trying once the career modules actually exist.
 	if career_modules_partShopping or career_modules_tuning or career_modules_painting then

@@ -5,8 +5,18 @@
 --   2. patches       - installs the runtime wrappers that publish the enriched
 --                      *MP hooks the feature extensions listen for
 --   3. careerPatches - neutralises career activation's vehicle cleanup before
---                      any career can start
---   4. features
+--                      any career can start, and keeps one failing career-start
+--                      handler from skipping the rest
+--   4. traffic       - hands the server's traffic amounts to the game's career
+--                      traffic setup
+--   5. parkingChallenge - holds other players' traffic and parked cars hidden here
+--                      while a parking challenge runs (careerMPEnabler reads it)
+--   6. insuranceRestore - loads the game's insurance records when a join's career
+--                      start leaves them empty
+--   7. purchaseInsurance - gives the purchase screen a safe insurance choice when the
+--                      insurance records are missing (patches wraps the game's purchase
+--                      menu and looks this extension up when it is used)
+--   8. features
 --
 -- 'manual' unload mode keeps these alive across level switches, which career
 -- does constantly.
@@ -20,11 +30,18 @@ end
 loadPersistent('careerMP/compat')
 loadPersistent('careerMP/patches')
 loadPersistent('careerMP/careerPatches')
+loadPersistent('careerMP/traffic')
+loadPersistent('careerMP/parkingChallenge')
+loadPersistent('careerMP/insuranceRestore')
+loadPersistent('careerMP/purchaseInsurance')
 
 -- Core
 loadPersistent('careerMPEnabler')
 
 -- Features
+loadPersistent('careerMP/connectionWatch')
+loadPersistent('careerMP/damageSync')
+loadPersistent('careerMP/positionRate')
 loadPersistent('careerMPUIApps')
 loadPersistent('careerMPPlayerPayments')
 loadPersistent('careerMPPrefabSync')

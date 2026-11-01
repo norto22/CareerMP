@@ -4,12 +4,12 @@
 -- Every call site in CareerMP goes through here instead of calling the game
 -- directly, so a future rename is a one-file fix rather than a hunt.
 --
--- Target: BeamNG.drive 0.39 (build 20859). Each entry also names the 0.38.6 API
--- it replaces.
+-- Target: BeamNG.drive 0.40.4.0. The game APIs used here took their current names in
+-- 0.39; each entry also names the 0.38.6 API it replaces.
 
 local M = {}
 
-M.targetGameVersion = "0.39"
+M.targetGameVersion = "0.40.4.0"
 
 -- Picks the first field that exists on a module, so one call site can serve
 -- several game versions. Returns the function plus the name that matched,
@@ -142,7 +142,7 @@ end
 -- core_gamestate counts loading-screen requests by tag: the screen shows on the first
 -- request and hides once every tag is released. Tags used on a join: 'serverConnection'
 -- and 'worldReadyState' (the map load), 'careerActivate' (career.lua activateCareer)
--- and 'careerVehicles' (career playerDriving's traffic setup).
+-- and 'careerVehicles' (the game's career playerDriving traffic setup).
 
 local function gamestateFunction(name)
 	return pickOrWarn(core_gamestate, "core_gamestate", name, "loading screen not managed")
@@ -167,7 +167,7 @@ function M.requestExitLoadingScreen(tag)
 	return true
 end
 
--- The traffic setup's own ready handler (career playerDriving onTrafficOrParkingReady)
+-- The game's own traffic ready handler (career playerDriving onTrafficOrParkingReady)
 -- releases 'careerVehicles' and, only while that tag is held, switches the special
 -- triggers off. Releasing the tag through it keeps that clean-up when traffic never
 -- reports ready; the bare release is the fallback when the handler is missing.
@@ -293,5 +293,6 @@ function M.report()
 end
 
 M.pick = pick
+M.pickOrWarn = pickOrWarn
 
 return M

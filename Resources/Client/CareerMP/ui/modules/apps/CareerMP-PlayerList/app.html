@@ -1,5 +1,13 @@
 <div ng-controller="PlayerList" id="PlayerList" class="careermpPlayerList" ng-init="init()" ng-style="{'background-color': 'rgba(0, 0, 0, 0)', 'height': '100%'}">
 	<link id="playerlist-style" rel="stylesheet" type="text/css" href="/ui/modules/apps/CareerMP-PlayerList/app.css">
+	<div id="connection-banner" ng-show="connection.lost">
+		<div class="connection-message" ng-bind="connection.message"></div>
+		<div class="connection-save" ng-bind="saveText()"></div>
+		<div class="connection-actions">
+			<button class="buttons" ng-show="connection.saveState == 'failed'" ng-click="retrySave()">Try saving again</button>
+			<button class="buttons" ng-click="returnToMenu()">Return to menu</button>
+		</div>
+	</div>
 	<div id="main-container">
 		<div id="plist-container">
 			<table id="players-table">

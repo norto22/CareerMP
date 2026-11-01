@@ -121,3 +121,32 @@ table#players-table > tbody > tr:nth-child(even) {
     width: 0px;  /* Remove scrollbar space */
     background: transparent;  /* Optional: just make scrollbar invisible */
 }
+.careermpPlayerList {
+    position: relative;
+}
+#connection-banner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    padding: 6px 8px;
+    color: white;
+    background-color: rgba(120, 20, 20, 0.85);
+    border: 2px solid rgba(255, 120, 120, 0.6);
+}
+#connection-banner .connection-message {
+    font-weight: bold;
+}
+#connection-banner .connection-actions {
+    display: flex;
+    margin-top: 4px;
+}
+#connection-banner .connection-actions button {
+    flex: 1;
+    min-height: 27px;
+    margin-left: 4px;
+}
+#connection-banner .connection-actions button:first-child {
+    margin-left: 0;
+}
