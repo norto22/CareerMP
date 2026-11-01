@@ -109,6 +109,11 @@ local loadedPrefabs = {}
 
 local signalTimer = MP.CreateTimer()
 
+-- Every connected player hears rxCareerMPAlive this often, in ticks of one second. A
+-- client that hears nothing for ten seconds tells its player the server is gone.
+local ALIVE_EVERY_TICKS = 2
+local ticksSinceAlive = 0
+
 local ledger = {
 	send = {},
 	receive = {}
@@ -941,11 +946,24 @@ function validateCareerMPActivation()
 	end
 end
 
+local function sendAlive()
+	for id in pairs(MP.GetPlayers()) do
+		if MP.IsPlayerConnected(id) then
+			MP.TriggerClientEvent(id, "rxCareerMPAlive", "")
+		end
+	end
+end
+
 function tick()
 	if willExit then
 		exit()
 	end
 	validateCareerMPActivation()
+	ticksSinceAlive = ticksSinceAlive + 1
+	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
+		ticksSinceAlive = 0
+		sendAlive()
+	end
 end
 
 function onPlayerJoinHandler(player_id)

@@ -31,6 +31,7 @@ loadPersistent('careerMP/insuranceRestore')
 loadPersistent('careerMPEnabler')
 
 -- Features
+loadPersistent('careerMP/connectionWatch')
 loadPersistent('careerMPUIApps')
 loadPersistent('careerMPPlayerPayments')
 loadPersistent('careerMPPrefabSync')

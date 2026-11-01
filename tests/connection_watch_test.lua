@@ -49,7 +49,8 @@ end
 local function triggered(name)
 	local found = {}
 	for _, t in ipairs(triggers) do
-		if t.name == name then table.insert(found, t.data) end
+		-- an event sent without data still counts
+		if t.name == name then table.insert(found, t.data == nil and true or t.data) end
 	end
 	return found
 end

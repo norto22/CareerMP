@@ -319,7 +319,42 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 		}
 	})
 
+	// Lost server connection, from careerMP/connectionWatch. The banner sits outside the
+	// folding list so it shows either way; its text is bound as text, never as markup.
+	$scope.connection = {lost: false, message: "", saved: false};
+
+	$scope.$on('careerMPConnectionLost', function(event, data) {
+		data = data || {};
+		$scope.$evalAsync(function() {
+			$scope.connection = {
+				lost: true,
+				message: String(data.message || "Lost connection to the server"),
+				saved: data.saved === true
+			};
+		});
+		players = [];
+		connected = false;
+		clearPlayerList();
+	})
+
+	$scope.$on('careerMPConnectionRestored', function() {
+		$scope.$evalAsync(function() {
+			$scope.connection = {lost: false, message: "", saved: false};
+		});
+		bngApi.engineLua('if UI and UI.updatePlayersList then UI.updatePlayersList() end');
+	})
+
+	$scope.retrySave = function() {
+		bngApi.engineLua('if careerMP_connectionWatch then careerMP_connectionWatch.retrySave() end');
+	};
+
+	$scope.returnToMenu = function() {
+		bngApi.engineLua('MPCoreNetwork.leaveServer(true)');
+	};
+
 	bngApi.engineLua('UI.updatePlayersList(); UI.sendQueue()'); // instantly populate the playerlist and their queues
+	// A UI reload while the connection is lost must bring the banner back.
+	bngApi.engineLua('if careerMP_connectionWatch then careerMP_connectionWatch.sendState() end');
 }]);
 
 function clearPlayerList() {

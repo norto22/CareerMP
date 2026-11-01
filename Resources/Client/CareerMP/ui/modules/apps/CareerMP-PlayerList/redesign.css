@@ -148,3 +148,37 @@
 			width: 0px;  /* Remove scrollbar space */
 			background: transparent;  /* Optional: just make scrollbar invisible */
 		}
+		.careermpPlayerList {
+			position: relative;
+		}
+		#connection-banner {
+			position: absolute;
+			top: 0;
+			left: 0;
+			right: 0;
+			z-index: 10;
+			padding: 6px 8px;
+			color: white;
+			font-family: 'Segoe UI', Roboto, sans-serif;
+			border-radius: 8px;
+			background-color: rgba(120, 20, 20, 0.75);
+			backdrop-filter: blur(10px);
+			border: 1px solid rgba(255, 120, 120, 0.4);
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+		}
+		#connection-banner .connection-message {
+			font-weight: bold;
+		}
+		#connection-banner .connection-actions {
+			display: flex;
+			margin-top: 4px;
+		}
+		#connection-banner .connection-actions button {
+			flex: 1;
+			min-height: 27px;
+			margin-left: 4px;
+			border-radius: 6px;
+		}
+		#connection-banner .connection-actions button:first-child {
+			margin-left: 0;
+		}
