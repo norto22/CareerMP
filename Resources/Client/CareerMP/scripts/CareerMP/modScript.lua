@@ -9,12 +9,14 @@
 --                      handler from skipping the rest
 --   4. traffic       - hands the server's traffic amounts to the game's career
 --                      traffic setup
---   5. insuranceRestore - loads the game's insurance records when a join's career
+--   5. parkingChallenge - holds other players' traffic and parked cars hidden here
+--                      while a parking challenge runs (careerMPEnabler reads it)
+--   6. insuranceRestore - loads the game's insurance records when a join's career
 --                      start leaves them empty
---   6. purchaseInsurance - gives the purchase screen a safe insurance choice when the
+--   7. purchaseInsurance - gives the purchase screen a safe insurance choice when the
 --                      insurance records are missing (patches wraps the game's purchase
 --                      menu and looks this extension up when it is used)
---   7. features
+--   8. features
 --
 -- 'manual' unload mode keeps these alive across level switches, which career
 -- does constantly.
@@ -29,6 +31,7 @@ loadPersistent('careerMP/compat')
 loadPersistent('careerMP/patches')
 loadPersistent('careerMP/careerPatches')
 loadPersistent('careerMP/traffic')
+loadPersistent('careerMP/parkingChallenge')
 loadPersistent('careerMP/insuranceRestore')
 loadPersistent('careerMP/purchaseInsurance')
 

@@ -83,14 +83,6 @@ local function newWorld()
 	print = realPrint
 end
 
--- The parking challenge extension, when the mod ships it.
-local function loadParking()
-	local file = io.open(PARKING, "r")
-	if not file then return nil end
-	file:close()
-	return dofile(PARKING)
-end
-
 local function addPlayer(id, name)
 	local p = {id = id, name = name, vehicles = {}, objects = {}, trafficData = {}, handlers = {},
 		playerVehicle = -1, serverRequests = {}, files = {}}
@@ -113,7 +105,7 @@ local function addPlayer(id, name)
 	as(p, function()
 		p.enabler = dofile(ENABLER)
 		p.extensions.careerMPEnabler = p.enabler
-		p.parking = loadParking()
+		p.parking = dofile(PARKING)
 		p.extensions.careerMP_parkingChallenge = p.parking
 	end)
 	as(p, function()
@@ -210,7 +202,12 @@ local function count(list, value)
 	return n
 end
 
-local function listRequests(p) return count(p.serverRequests, "careerVehSyncRequested") end
+-- The list requests p's game has sent; a wanted request goes out on its next frame, so
+-- a second of frames runs first.
+local function listRequests(p)
+	frames(p, 1)
+	return count(p.serverRequests, "careerVehSyncRequested")
+end
 
 -- Me (player 0) and my friend (player 1), who drives car 1-0 and has a police car (1-1)
 -- in road traffic and a parked car (1-2). My friend's game has sent its traffic marks.
@@ -222,6 +219,7 @@ local function twoPlayers()
 	spawn(1, 1, {JBeam = "fullsize", isTraffic = "true", ai = true})
 	spawn(1, 2, {JBeam = "covet", isParked = "true"})
 	frames(friend, 1)
+	frames(me, 1)
 	me.serverRequests, friend.serverRequests = {}, {}
 	return me, friend
 end
@@ -240,4 +238,145 @@ test("my friend's parked and police cars are hidden on my game when I start a pa
 	same(active(me, 1, 0), true, "the car my friend drives")
 	same(active(friend, 1, 1), true, "my friend's police car on their own game")
 	same(active(friend, 1, 2), true, "my friend's parked car on their own game")
+end)
+
+--== which missions count ====================================================
+
+local function startMission(p, mission) hook(p, "onAnyMissionChanged", "started", mission, {}) end
+local function stopMission(p, mission) hook(p, "onAnyMissionChanged", "stopped", mission) end
+
+test("a delivery or race hides nothing and logs that it is not a parking challenge", function()
+	local me = twoPlayers()
+	startMission(me, {id = "delivery/004", missionType = "delivery", missionFolder = "/gameplay/missions/delivery/004"})
+	same(active(me, 1, 1), true, "my friend's police car")
+	same(active(me, 1, 2), true, "my friend's parked car")
+	same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=delivery parking=false"), 1, "log lines")
+end)
+
+test("a mission type naming parking in any case counts, and the start is logged", function()
+	local me = twoPlayers()
+	startMission(me, {id = "x", missionType = "ParkingChallenge", missionFolder = "/m/x"})
+	same(active(me, 1, 2), false, "my friend's parked car")
+	same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=ParkingChallenge parking=true"), 1, "log lines")
+end)
+
+test("a mission whose folder ships the parking-lot clutter layout counts", function()
+	for _, file in ipairs({"parkingLotClutter.prefab.json", "parkingLotClutter.prefab"}) do
+		local me = twoPlayers()
+		me.files["/m/challenge/" .. file] = true
+		startMission(me, {id = "challenge", missionType = "timeTrial", missionFolder = "/m/challenge"})
+		same(active(me, 1, 2), false, "my friend's parked car with " .. file)
+	end
+end)
+
+test("a mission start with no mission table changes nothing", function()
+	local me = twoPlayers()
+	hook(me, "onAnyMissionChanged", "started", nil)
+	same(me.parking.isActive(), false, "parking challenge mode")
+	same(active(me, 1, 2), true, "my friend's parked car")
+end)
+
+--== nobody else notices =====================================================
+
+test("my parking challenge asks the server for nothing and changes nothing on my friend's game", function()
+	local me, friend = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	stopMission(me, PARKING_MISSION)
+	same(listRequests(me), 0, "list requests from my game")
+	same(count(me.serverRequests, "careerVehicleActiveHandler"), 0, "hide updates from my game")
+	for vid = 0, 2 do same(active(friend, 1, vid), true, "car 1-" .. vid .. " on my friend's game") end
+end)
+
+test("without the parking challenge extension a parking mission hides nothing", function()
+	local me, friend = twoPlayers()
+	me.extensions.careerMP_parkingChallenge = nil
+	startMission(me, PARKING_MISSION)
+	as(friend, function() friend.objects[gameId(1, 1)]:setActive(0) end)
+	pump()
+	as(friend, function() friend.objects[gameId(1, 1)]:setActive(1) end)
+	pump()
+	same(active(me, 1, 1), true, "my friend's police car")
+	same(active(me, 1, 2), true, "my friend's parked car")
+end)
+
+--== during the challenge ====================================================
+
+test("a car my friend shows again during my challenge stays hidden on my game", function()
+	local me, friend = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	as(friend, function() friend.objects[gameId(1, 2)]:setActive(0) end)
+	pump()
+	as(friend, function() friend.objects[gameId(1, 2)]:setActive(1) end)
+	pump()
+	same(active(me, 1, 2), false, "my friend's parked car")
+	same(listRequests(me), 0, "list requests from my game")
+end)
+
+test("a parked car my friend spawns during my challenge is hidden once its mark arrives", function()
+	local me, friend = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	spawn(1, 3, {JBeam = "vivace", isParked = "true"})
+	frames(friend, 1)
+	same(active(me, 1, 3), false, "my friend's new parked car")
+	same(active(me, 1, 0), true, "the car my friend drives")
+end)
+
+test("a parked car my friend climbs into during my challenge shows on my game", function()
+	local me, friend = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	friend.playerVehicle = gameId(1, 2)
+	frames(friend, 1)
+	same(active(me, 1, 2), true, "the parked car my friend now drives")
+	same(active(me, 1, 1), false, "my friend's police car")
+end)
+
+--== after the challenge =====================================================
+
+for _, ending in ipairs({
+	{"the mission manager reports it stopped", function(p) stopMission(p, PARKING_MISSION) end},
+	{"it is stopped", function(p) hook(p, "onMissionStopped", PARKING_MISSION) end},
+	{"it is abandoned", function(p) hook(p, "onMissionAbandoned", PARKING_MISSION) end},
+}) do
+	test("my friend's cars show again as they have them when " .. ending[1], function()
+		local me, friend = twoPlayers()
+		startMission(me, PARKING_MISSION)
+		as(friend, function() friend.objects[gameId(1, 1)]:setActive(0) end)
+		pump()
+		ending[2](me)
+		same(me.parking.isActive(), false, "parking challenge mode")
+		same(active(me, 1, 2), true, "my friend's parked car")
+		same(active(me, 1, 1), false, "the police car my friend hid")
+		same(active(me, 1, 0), true, "the car my friend drives")
+		same(listRequests(me), 0, "list requests from my game")
+	end)
+end
+
+test("every way out ending the same challenge shows the cars once", function()
+	local me = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	hook(me, "onMissionAbandoned", PARKING_MISSION)
+	stopMission(me, PARKING_MISSION)
+	hook(me, "onMissionStopped", PARKING_MISSION)
+	same(countLines(logs, "showing other players' traffic and parked cars again"), 1, "log lines")
+	same(active(me, 1, 2), true, "my friend's parked car")
+end)
+
+test("a non-parking mission started after a challenge shows the cars again", function()
+	local me = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	startMission(me, {id = "delivery/004", missionType = "delivery", missionFolder = "/m/d"})
+	same(active(me, 1, 2), true, "my friend's parked car")
+end)
+
+test("leaving the server mid-challenge ends it, and my friend's updates apply again", function()
+	local me, friend = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	hook(me, "onBeamMPServerLeave")
+	same(me.parking.isActive(), false, "parking challenge mode")
+	-- Back on the server, my friend's car states reach my game as before.
+	as(friend, function() friend.objects[gameId(1, 2)]:setActive(0) end)
+	pump()
+	as(friend, function() friend.objects[gameId(1, 2)]:setActive(1) end)
+	pump()
+	same(active(me, 1, 2), true, "my friend's parked car")
 end)
