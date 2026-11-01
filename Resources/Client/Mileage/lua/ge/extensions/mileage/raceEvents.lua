@@ -73,7 +73,7 @@ local function startAtGrid(message)
 	local rot = quatFromDir(vec3(pose.dir.x, pose.dir.y, pose.dir.z), vec3(pose.up.x, pose.up.y, pose.up.z))
 	if not c.safeTeleport(veh, vec3(pose.pos.x, pose.pos.y, pose.pos.z), rot) then return end
 	race.startEventRace({id = message.id, finish = message.finish, radius = message.radius,
-		seconds = message.seconds, timeLimit = message.timeLimit})
+		seconds = message.seconds})
 end
 
 local function rxMileageEvent(data)

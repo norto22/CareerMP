@@ -1703,7 +1703,8 @@ local function callOff(race, why)
 end
 
 -- The race ends with a result. winner may be nil (both stakes back); finished: the
--- winner reached the finish (so the win counts and may earn the prize).
+-- winner reached the finish, which the server prize needs (a win by the other racer
+-- leaving still counts on the leaderboard).
 local function finishRace(race, winner, why, finished)
 	local live = liveRaces[race.id] or {reports = {}}
 	endLive(race)
@@ -1720,7 +1721,7 @@ local function finishRace(race, winner, why, finished)
 	race.prize = prize
 	decide(race, winner and ("winner:" .. winner) or "refund")
 	-- Set by the leaderboard section: counts a race win.
-	if winner and finished and Money.leaderboardWin then Money.leaderboardWin(winner) end
+	if winner and Money.leaderboardWin then Money.leaderboardWin(winner) end
 	for _, name in ipairs({race.a, race.b}) do
 		sendRace(name, {race = race.id, phase = "result", winner = winner, why = why, times = live.reports,
 			stake = race.stake, pot = race.pot, prize = prize, you = name, other = otherRacer(race, name),
@@ -3249,6 +3250,8 @@ function Help(arguments)
 	print("Mileage Update                               - Checks for Mileage update")
 	print("Mileage Stats [reset]                        - Shows what each part of Mileage sends, reset starts it again")
 	print("Mileage Transfers                            - Lists money still waiting on a player, and races holding stakes")
+	print("Mileage Leaderboard [reset]                  - Shows the leaderboard, reset clears it")
+	print("Mileage Event <minutes> <prize> <route|random> | cancel | list - Schedules, cancels or lists race events")
 	print("Mileage Help                                 - Displays Commands Usage")
 end
 

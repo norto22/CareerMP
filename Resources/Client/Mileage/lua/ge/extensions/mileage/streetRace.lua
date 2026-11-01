@@ -177,7 +177,6 @@ local function rxMileageRace(data)
 		race.finish = message.finish
 		race.radius = tonumber(message.radius) or 20
 		race.countdownLeft = tonumber(message.seconds) or 3
-		race.timeLimit = tonumber(message.timeLimit)
 		race.stake = message.stake
 		race.other = message.a == MPConfig.getNickname() and message.b or message.a
 		if not race.frozen then setFrozen(true) end
@@ -227,12 +226,11 @@ end
 
 --- A race event's race, after mileage/raceEvents.lua moved this car to the grid: the
 --- same countdown, timing and finish report as a street race, without stakes.
---- info: {id, finish, radius, seconds, timeLimit}
+--- info: {id, finish, radius, seconds}
 function M.startEventRace(info)
 	if type(info) ~= "table" or type(info.id) ~= "string" or not isPoint(info.finish) then return false end
 	race = {id = info.id, phase = "countdown", other = "the race event", stake = 0, event = true,
-		finish = info.finish, radius = tonumber(info.radius) or 20, countdownLeft = tonumber(info.seconds) or 5,
-		timeLimit = tonumber(info.timeLimit)}
+		finish = info.finish, radius = tonumber(info.radius) or 20, countdownLeft = tonumber(info.seconds) or 5}
 	setFrozen(true)
 	ui({phase = "countdown", race = race.id, other = race.other, stake = 0, count = math.ceil(race.countdownLeft)})
 	return true
@@ -247,10 +245,6 @@ end
 function M.sendState()
 	if race then ui({phase = race.phase, race = race.id, other = race.other, stake = race.stake,
 		elapsed = race.elapsed}) end
-end
-
-function M.isRacing()
-	return race ~= nil
 end
 
 function M.onBeamMPServerLeave()

@@ -282,6 +282,9 @@ test("Help lists the Stats command", function()
 	Help({})
 	print = realPrint
 	same(countLines(server.printed, "Mileage Stats"), 1, "Stats in the help")
+	for _, command in ipairs({"Mileage Transfers", "Mileage Leaderboard [reset]", "Mileage Event <minutes>"}) do
+		same(countLines(server.printed, command), 1, command .. " in the help")
+	end
 end)
 
 -- What one console line prints, with BeamMP's local event calling the named handler.

@@ -149,10 +149,6 @@ function M.sendState()
 	for _, offer in pairs(incoming) do guihooks.trigger("MileageOffer", offer) end
 end
 
-function M.getFeatures()
-	return features
-end
-
 --== from the server ===========================================================
 
 local function rxMileageFeatures(data)

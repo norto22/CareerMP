@@ -5,7 +5,7 @@
 # Mileage
 **Co-op career. Cruise together. Race your friends.**
 
-Mileage is a multiplayer career for [BeamNG.drive](https://beamng.com/game/) on a [BeamMP](https://beammp.com/) server. You and your friends share one world: the same roads and traffic, the same signals, and the same props from each other's missions, and you can race each other on the drag strip. Mileage is built on the game's own career, with your progress kept in your own save, and it is growing into a career you play together: co-op jobs with shared pay, races against your friends and, later, crews.
+Mileage is a multiplayer career for [BeamNG.drive](https://beamng.com/game/) on a [BeamMP](https://beammp.com/) server. You and your friends share one world: the same roads and traffic, the same signals, and the same props from each other's missions. You can race each other on the drag strip or across the map for money, pay and ask each other for money, climb the server leaderboard and join race events the server owner runs. Mileage is built on the game's own career, with your progress kept in your own save, and it is growing into a career you play together: co-op jobs with shared pay, races against your friends and, later, crews.
 
 Until v0.3.0 Mileage was called CareerMP. Servers running CareerMP move over to Mileage on their own (see [Coming from CareerMP](#coming-from-careermp)).
 
@@ -25,7 +25,10 @@ These are built and covered by tests, but have not been played through on a serv
 - Mission, challenge and scenario props synced, so you see what others are doing and have to drive around it ([#30](https://github.com/norto22/Mileage/issues/30))
 - Road traffic with police, and parked cars, as in the single-player career. Each player spawns a share of the server's traffic total, and every player sees everyone's traffic. While you run a parking challenge, other players' traffic and parked cars are hidden on your game only, so the spaces are clear ([#99](https://github.com/norto22/Mileage/issues/99))
 - Traffic signals synced for every player, and red-light camera and speed trap announcements for cars that players drive ([#34](https://github.com/norto22/Mileage/issues/34))
-- Paying other players from the player list ([#33](https://github.com/norto22/Mileage/issues/33))
+- Paying any amount you type and asking other players for money, from the player list. Every payment is taken from the payer's career before it is given to the other, each confirmed by a finished save, and kept on the server until both sides have it, so a dropped connection or a server restart never loses or copies money ([#33](https://github.com/norto22/Mileage/issues/33))
+- Street races for money: right-click a player, pick Race and a stake, and the end of your big-map route is the finish. They are moved beside you, you both count down, and the first to the finish takes both stakes, plus a server prize if the owner switches it on ([#105](https://github.com/norto22/Mileage/issues/105))
+- Race events the server owner schedules on a named West Coast route or to a random finish, announced ahead and paid to the winner ([#106](https://github.com/norto22/Mileage/issues/106))
+- A server leaderboard of race wins and each player's best drag times, kept across restarts ([#107](https://github.com/norto22/Mileage/issues/107))
 - Other players' vehicles shown and hidden correctly, and nametags hidden for traffic and many spawnables ([#35](https://github.com/norto22/Mileage/issues/35), [#69](https://github.com/norto22/Mileage/issues/69))
 - Three or more players at once ([#32](https://github.com/norto22/Mileage/issues/32))
 - Multiplayer chat and session apps in mission, challenge and scenario layouts ([#100](https://github.com/norto22/Mileage/issues/100))
@@ -94,6 +97,9 @@ Mileage GetConfig <section> <key>            - Displays Config, or section, or k
 Mileage SetConfig <section*> <key*> <value*> - Sets Config section key to value, * = REQUIRED
 Mileage Update                               - Checks for Mileage update
 Mileage Stats [reset]                        - Shows what each part of Mileage sends, reset starts it again
+Mileage Transfers                            - Lists money still waiting on a player, and races holding stakes
+Mileage Leaderboard [reset]                  - Shows the leaderboard, reset clears it
+Mileage Event <minutes> <prize> <route|random> | cancel | list - Schedules, cancels or lists race events
 Mileage Help                                 - Displays Commands Usage
 ```
 
@@ -111,7 +117,16 @@ To save more, Mileage's game files send the position of a parked car standing st
 Every traffic car counts against BeamMP's `MaxCars`, so set it to at least `roadTrafficAmount + parkedTrafficAmount` plus the player's own cars; 100 leaves plenty of room with the defaults.
 
 ### What the server sends
-`Mileage Stats` in the server console shows where the server's effort goes. For each part of Mileage (`damage`, `carStates`, `trafficMarks`, `trafficShare`, `paint`, `prefabs`, `drag`, `payments`, `alive`, `trafficLights`, `notifications`, `config`) it lists the messages received, the messages sent, how many players they reached and the bytes sent, for the last 60 seconds and since the server started. Below that it lists the players, the cars on the server with how many are traffic or parked and how many of each are shown, the traffic totals and each player's share. A player who was on before the server filled keeps the traffic above their new share, hidden, so the shown traffic is what to compare with the totals. `Mileage Stats reset` starts the since-start counts again, for example before and after a change. The positions of cars are BeamMP's own and are not counted; the number of cars stands in for them.
+`Mileage Stats` in the server console shows where the server's effort goes. For each part of Mileage (`damage`, `carStates`, `trafficMarks`, `trafficShare`, `paint`, `prefabs`, `drag`, `payments`, `transfers`, `offers`, `races`, `leaderboard`, `events`, `alive`, `trafficLights`, `notifications`, `config`) it lists the messages received, the messages sent, how many players they reached and the bytes sent, for the last 60 seconds and since the server started. Below that it lists the players, the cars on the server with how many are traffic or parked and how many of each are shown, the traffic totals and each player's share. A player who was on before the server filled keeps the traffic above their new share, hidden, so the shown traffic is what to compare with the totals. `Mileage Stats reset` starts the since-start counts again, for example before and after a change. The positions of cars are BeamMP's own and are not counted; the number of cars stands in for them.
+
+### Money, races and events
+Money stays in each player's own save. Every movement of money between players (a payment, a race stake, a payout, a prize) is a transfer the server keeps in `Resources/Server/Mileage/data/transfers.json` until both games have confirmed it: the payer's game takes the amount and saves, then the receiver's game gives it and saves. A player who is away gets what they are owed when they next join, however long that takes. `Mileage Transfers` lists every transfer still waiting, with its age and amount, and every race still holding stakes. The console logs a transfer that waits more than a minute and every payment a player could not cover.
+
+A street race takes both stakes before the start and keeps them in `data/races.json` until they are paid out. Leaving or giving up before the countdown returns both stakes; after it, the racer who left loses their stake to the other. Nobody reaching the finish within `raceTimeLimitMinutes` returns both. If the server stops mid-race, both stakes go back on its next start. The server prize is new money, paid only to a winner who reached the finish, and at most once per pair of players within `racePrizeCooldownMinutes`.
+
+`Mileage Event <minutes> <prize> <route|random>` schedules one race event, 1 to 120 minutes ahead with a prize of $0 to $1,000,000. `Mileage Event list` prints the eight shipped routes; name one by its number or its id, such as `Mileage Event 15 25000 service-dragway`. `random` starts at a random route's start and finishes at a road point 1.5 to 4 km away. Players are told 10, 5 and 1 minutes ahead and join from the Mileage prompts app. At the start everyone who joined is lined up behind the start, and the fastest to the finish gets the prize. `Mileage Event cancel` ends it. The schedule is kept in `data/events.json` until the event starts.
+
+The leaderboard in `data/leaderboard.json` counts race wins, from street races and events, and keeps each player's best drag time per strip, reported by their own game. `Mileage Leaderboard` prints it and `Mileage Leaderboard reset` clears it. The `data/` folder holds everything Mileage keeps about players, by their BeamMP name; keep it when you update or move the server.
 
 The `extraTrafficAmount` and `extraTrafficEnabled` settings of earlier versions were never used by the game. The server removes them from the file on its next start and logs that it did; `SetConfig` no longer accepts them.
 
@@ -158,6 +173,16 @@ Used by the server only.
 | `sessionReceiveMax` | `200000` | Most money a player may receive in one server session. |
 | `roadTrafficTotal` | `18` | Road cars across the whole server, 0 to 400, split between players once they would pass it; 0 means no limit (see [Traffic](#traffic)). |
 | `parkedTrafficTotal` | `24` | Parked cars across the whole server, 0 to 400, split the same way; 0 means no limit. |
+| `allowRacing` | `true` | Players may challenge each other to street races from the player list. |
+| `allowMoneyRequests` | `true` | Players may ask each other for money. A request counts against the payer's sending limits above. |
+| `allowEvents` | `true` | The owner may schedule race events with `Mileage Event`. Switching it off cancels a scheduled event. |
+| `raceStakeMax` | `10000` | Largest stake a race challenge may carry, 0 to 1000000; 0 means races carry no stake. |
+| `racePrize` | `0` | Money the server adds for the winner of a street race, 0 to 1000000; 0 is off. |
+| `racePrizeCooldownMinutes` | `10` | The same two players earn the server prize at most once in this many minutes, 0 to 1440. |
+| `raceMinDistance` | `500` | Shortest street race allowed, in metres from start to finish, 0 to 20000. |
+| `raceTimeLimitMinutes` | `15` | A race nobody finishes in this time ends with no winner and the stakes back, 1 to 120. |
+
+A racing or event setting outside its range is read as the nearest value in range.
 
 ## Notes
 Mileage uses the base game's career, so it runs on West Coast, USA only for now.
