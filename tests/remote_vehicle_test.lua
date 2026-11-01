@@ -161,24 +161,41 @@ local function vehSync(enabler, data)
 	end
 end
 
-test("the same vehicle list twice switches another player's car on once", function()
+test("the same vehicle list twice switches another player's hidden car on once", function()
 	local enabler, objects = setup()
-	vehSync(enabler,FULL_MAP)
-	vehSync(enabler,FULL_MAP)
+	objects[9].active, objects[10].active = false, false
+	vehSync(enabler, FULL_MAP)
+	vehSync(enabler, FULL_MAP)
 	same(objects[9].activeCalls, 1, "setActive calls on car 9")
 	same(objects[10].activeCalls, 1, "setActive calls on car 10")
+	same(objects[9].active, true, "car 9 shown")
+end)
+
+test("a list that matches the cars on this screen switches nothing", function()
+	local enabler, objects = setup()
+	vehSync(enabler, FULL_MAP)
+	same(objects[9].activeCalls, 0, "setActive calls on car 9")
+	same(objects[10].activeCalls, 0, "setActive calls on car 10")
 end)
 
 test("a changed state is still applied, and the nametag follows it", function()
 	local enabler, objects, vehicles = setup()
-	vehSync(enabler,FULL_MAP)
-	vehSync(enabler,'{["1-0"] = {active = false}}')
+	vehSync(enabler, FULL_MAP)
+	vehSync(enabler, '{["1-0"] = {active = false}}')
 	same(objects[9].active, false, "car 9 hidden")
-	same(objects[9].activeCalls, 2, "setActive calls")
+	same(objects[9].activeCalls, 1, "setActive calls")
 	same(vehicles["1-0"].hideNametag, true, "nametag hidden")
-	vehSync(enabler,'{["1-0"] = {active = true}}')
+	vehSync(enabler, '{["1-0"] = {active = true}}')
 	same(objects[9].active, true, "car 9 shown")
 	same(vehicles["1-0"].hideNametag, false, "nametag shown")
+end)
+
+test("a car hidden here by other code is shown again by the server's list", function()
+	local enabler, objects = setup()
+	vehSync(enabler, FULL_MAP)
+	objects[9]:setActive(0)
+	vehSync(enabler, FULL_MAP)
+	same(objects[9].active, true, "car 9 shown")
 end)
 
 test("two frames queue another player's ghost setting once", function()
@@ -200,11 +217,26 @@ test("a car that is ready again or reset gets its ghost setting again", function
 	end
 end)
 
-test("leaving the server forgets what was applied, so a rejoin applies every car again", function()
+test("a changed ghost setting from the server is sent once to each car", function()
 	local enabler, objects = startedEnabler()
-	vehSync(enabler,FULL_MAP)
+	enabler.onUpdate(0.016)
+	local i = 1
+	while true do
+		local n, v = debug.getupvalue(enabler.onUpdate, i)
+		if n == nil then error("clientConfig not found") end
+		if n == "clientConfig" then v.remoteVehicleGhost = true; break end
+		i = i + 1
+	end
+	enabler.onUpdate(0.016)
+	enabler.onUpdate(0.016)
+	same(ghostCommands(objects[9]), 2, "setGhost commands on car 9")
+	same(objects[9].queued[2], "careerMPEnabler.setGhost(true)", "the new setting")
+end)
+
+test("leaving the server forgets the ghost settings, so a rejoin sends them again", function()
+	local enabler, objects = startedEnabler()
 	enabler.onUpdate(0.016)
 	enabler.onBeamMPServerLeave()
-	vehSync(enabler,FULL_MAP)
-	same(objects[9].activeCalls, 2, "setActive calls on car 9")
+	enabler.onUpdate(0.016)
+	same(ghostCommands(objects[9]), 2, "setGhost commands on car 9")
 end)

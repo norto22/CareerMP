@@ -125,7 +125,12 @@ local function applyKnownState(serverVehicleID)
 	if not state or not gameVehicleID or gameVehicleID == -1 or MPVehicleGE.isOwn(gameVehicleID) then return false end
 	local veh = be:getObjectByID(gameVehicleID)
 	if not veh then return false end
-	veh:setActive(state.active and 1 or 0)
+	-- Only a change is applied: switching an already active car on again disturbs its
+	-- physics on this screen, and a full list arrives every time a car spawns anywhere.
+	local active = state.active and true or false
+	if veh:getActive() ~= active then
+		veh:setActive(active and 1 or 0)
+	end
 	entry.hideNametag = nametagHidden(entry.jbeam, state)
 	return true
 end
@@ -240,7 +245,17 @@ local function onVehicleSpawned(gameVehicleID)
 	end
 end
 
+-- The ghost setting last queued to each car, by game vehicle id. onUpdate queues it only
+-- when it differs; a car whose vehicle Lua restarted (ready again) or was reset is
+-- forgotten, so it gets the setting again.
+local appliedGhost = {}
+
+local function forgetGhost(gameVehicleID)
+	if gameVehicleID then appliedGhost[gameVehicleID] = nil end
+end
+
 local function onVehicleReady(gameVehicleID)
+	forgetGhost(gameVehicleID)
 	local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
 	if not serverVehicleID then return end
 	local veh = be:getObjectByID(gameVehicleID)
@@ -725,13 +740,18 @@ local function onUpdate(dtReal, dtSim, dtRaw)
 	updateTrafficMarks(dtReal)
 	local vehicles = MPVehicleGE.getVehicles()
 	for serverVehicleID in pairs(vehicles) do
-		local veh = be:getObjectByID(vehicles[serverVehicleID].gameVehicleID)
+		local gameVehicleID = vehicles[serverVehicleID].gameVehicleID
+		local veh = be:getObjectByID(gameVehicleID)
 		if veh then
-			if not MPVehicleGE.isOwn(vehicles[serverVehicleID].gameVehicleID) then
-				local ghost = veh.JBeam == "unicycle" and clientConfig.remoteUnicycleGhost or clientConfig.remoteVehicleGhost
-				veh:queueLuaCommand(string.format('careerMPEnabler.setGhost(%s)', tostring(ghost)))
+			local ghost = nil
+			if not MPVehicleGE.isOwn(gameVehicleID) then
+				ghost = veh.JBeam == "unicycle" and clientConfig.remoteUnicycleGhost or clientConfig.remoteVehicleGhost
 			elseif veh.JBeam == "unicycle" then
-				veh:queueLuaCommand(string.format('careerMPEnabler.setGhost(%s)', tostring(clientConfig.localUnicycleGhost)))
+				ghost = clientConfig.localUnicycleGhost
+			end
+			if ghost ~= nil and appliedGhost[gameVehicleID] ~= ghost then
+				appliedGhost[gameVehicleID] = ghost
+				veh:queueLuaCommand(string.format('careerMPEnabler.setGhost(%s)', tostring(ghost)))
 			end
 		end
 	end
@@ -780,6 +800,7 @@ local function onBeamMPServerLeave()
 	sentMarks = {}
 	sinceMarks = 0
 	trafficFocusPinned = false
+	appliedGhost = {}
 end
 
 --Access
@@ -792,6 +813,8 @@ M.onVehicleActiveChanged = onVehicleActiveChanged
 M.onVehicleSpawned = onVehicleSpawned
 M.onVehicleReady = onVehicleReady
 M.onVehicleSwitched = onVehicleSwitched
+M.onVehicleResetted = forgetGhost
+M.onVehicleDestroyed = forgetGhost
 
 M.onSpeedTrapTriggered = onSpeedTrapTriggered
 M.onRedLightCamTriggered = onRedLightCamTriggered
