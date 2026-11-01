@@ -717,7 +717,12 @@ local relinkSentAt = {}
 --- Seconds of onUpdate time, for spacing the sends below.
 local relinkClock = 0
 --- A refused car is sent again only after this long, if a later rebuild finds it still unlinked.
-local RELINK_INTERVAL = 2 -- seconds
+--- Long enough that a slow server answer does not bring a second send, which would give other
+--- players two copies of the car.
+local RELINK_INTERVAL = 10 -- seconds
+
+--- True while partShopping.cancelShopping runs; see applyBuyGuard.
+local cancellingParts = false
 
 --- True when BeamMP says this is a server session and its car list can be asked.
 local function inServerSession()
@@ -779,11 +784,15 @@ local function refuseRebuild(otherVeh)
 	local alive, id = pcall(function() return otherVeh:getID() end)
 	if not alive or type(id) ~= "number" then
 		log("W", "mileage.patches", "refused a garage rebuild of a car that no longer exists - nothing was rebuilt")
+		-- Not tied to a garage car, so it holds back the open Parts session's car.
+		if pending.partShopping ~= nil then refusedInventoryIds[pending.partShopping] = true end
 		return nil
 	end
 
+	-- A car the garage does not know holds back the open Parts session's car instead.
 	local inventoryId = inventoryIdOfVehicle(id)
-	if inventoryId ~= nil then refusedInventoryIds[inventoryId] = true end
+	local heldBack = inventoryId or pending.partShopping
+	if heldBack ~= nil then refusedInventoryIds[heldBack] = true end
 
 	local listed = MPVehicleGE.getVehicleByGameID(id) ~= nil
 	local msg
@@ -819,6 +828,14 @@ local function applyRebuildPatch()
 		local namedId = ownLocalCarId(otherVeh)
 		if not namedId then
 			if otherVeh ~= nil and inServerSession() then return refuseRebuild(otherVeh) end
+			if otherVeh == nil and cancellingParts and inServerSession() then
+				-- Cancelling Parts rebuilds the session's car by inventory id; with no car named, that
+				-- car is gone from the world (the server refused it), and BeamMP would rebuild the
+				-- avatar or the car the player sits in instead.
+				log("W", "mileage.patches", "refused a rebuild with no car named while Parts was cancelling: " ..
+					"the session's car is no longer in the world - nothing was rebuilt")
+				return nil
+			end
 			return original(modelName, opt, otherVeh, ...)
 		end
 
@@ -882,6 +899,10 @@ local function cancelRefusedPurchase(inventoryId)
 	end
 	local ok, err = pcall(shopping.cancelShopping)
 	if not ok then
+		-- Its hook may have run and cleared the session's car and refusal; the session is still
+		-- open, so put both back or the next Buy would charge.
+		pending.partShopping = inventoryId
+		refusedInventoryIds[inventoryId] = true
 		log("E", "mileage.patches", "could not cancel the Parts session: " .. tostring(err))
 	end
 end
@@ -902,6 +923,16 @@ local function applyBuyGuard()
 			log("E", "mileage.patches", "post-hook for career_modules_partShopping.applyShopping failed: " .. tostring(err))
 		end
 		return unpack(results, 1, results.n)
+	end)
+
+	-- The game's cancel rebuilds the session's car from its saved entry; marks the call so a
+	-- rebuild with no car named inside it is refused rather than handed to BeamMP.
+	replace("career_modules_partShopping", "cancelShopping", function(original, ...)
+		cancellingParts = true
+		local results = pack(pcall(original, ...))
+		cancellingParts = false
+		if not results[1] then error(results[2], 0) end
+		return unpack(results, 2, results.n)
 	end)
 end
 

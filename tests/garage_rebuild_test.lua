@@ -490,7 +490,8 @@ test("a refused unlinked garage car is sent to the server once, and nothing chan
 	expect(string.find(toasts[1].msg, "Mileage is linking it", 1, true), "message: " .. tostring(toasts[1].msg))
 end)
 
-test("a refused car is sent again only after 2 seconds", function()
+-- A slow server answer must not bring a second send, which would give other players two copies.
+test("a refused car is sent again only after 10 seconds", function()
 	setup()
 	installBeamMP()
 	patches.apply()
@@ -498,12 +499,15 @@ test("a refused car is sent again only after 2 seconds", function()
 	core_vehicles.replaceVehicle("pickup", {}, game.carA)
 	core_vehicles.replaceVehicle("pickup", {}, game.carA)
 	same(#game.sentSpawns, 1, "spawns sent by two refusals at once")
+	patches.onUpdate(3)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#game.sentSpawns, 1, "spawns sent after 3 seconds")
+	patches.onUpdate(6.5)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#game.sentSpawns, 1, "spawns sent after 9.5 seconds")
 	patches.onUpdate(1)
 	core_vehicles.replaceVehicle("pickup", {}, game.carA)
-	same(#game.sentSpawns, 1, "spawns sent after 1 second")
-	patches.onUpdate(1.5)
-	core_vehicles.replaceVehicle("pickup", {}, game.carA)
-	same(#game.sentSpawns, 2, "spawns sent after 2.5 seconds")
+	same(#game.sentSpawns, 2, "spawns sent after 10.5 seconds")
 end)
 
 test("after the server accepts, the next rebuild of car A rebuilds car A in place", function()
@@ -1005,3 +1009,146 @@ test("cancelling Parts, and revert, clear car A's refusal", function()
 		same(game.cancelled, 0, "Parts sessions cancelled")
 	end
 end)
+
+--== edges of the refusal, the re-link and the Buy guard ======================
+
+-- Rejects a throttle written with <= : ten seconds is "at least the throttle time".
+test("a refused car is sent again once exactly 10 seconds have passed", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	patches.onUpdate(5)
+	patches.onUpdate(5)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#game.sentSpawns, 2, "spawns sent after exactly 10 seconds")
+end)
+
+-- Rejects one shared "message shown" flag: the message is once per car, not once overall.
+test("refusals of two different cars show one message each", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	unlink(game.carA)
+	unlink(game.carB)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	core_vehicles.replaceVehicle("sedan", {}, game.carB)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#toasts, 2, "messages shown")
+	same(#game.sentSpawns, 2, "spawns sent")
+end)
+
+-- Rejects a Buy guard that asks BeamMP at Buy time: the car on the floor never got the parts
+-- from the refused fitting, so a link arriving afterwards must not let that cart be charged.
+test("Buy after the server accepts but before car A is rebuilt again still cancels", function()
+	partsSessionOn(CAR_A)
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA)
+	serverAnswers("accept")
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 0, "purchases made")
+	same(game.cancelled, 1, "Parts sessions cancelled")
+	same(announced("onPartShoppingTransactionCompleteMP"), nil, "transaction complete announced")
+end)
+
+-- Rejects calling isMPSession unprotected: a BeamMP whose session check raises must not break
+-- every garage rebuild; with no answer it is not treated as a server session.
+test("a session check that raises leaves the rebuild handed on, not broken", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	MPCoreNetwork.isMPSession = function() error("not ready") end
+	unlink(game.carA)
+	local ok, err = pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	expect(ok, "the rebuild call did not raise: " .. tostring(err))
+	same(game.beamMPCalls, 1, "BeamMP's rebuild calls")
+	same(#toasts, 0, "messages shown")
+end)
+
+-- Rejects calling a missing onVehicleSpawned: an older BeamMP without it still gets the refusal.
+test("a BeamMP without onVehicleSpawned still refuses the rebuild and logs why it cannot link", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	MPVehicleGE.onVehicleSpawned = nil
+	unlink(game.carA)
+	local ok, back = pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	expect(ok, "the rebuild call did not raise: " .. tostring(back))
+	same(back, nil, "what the rebuild returned")
+	same(pickups(), 1, "copies of car A")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+	same(countLines(logs, "has no onVehicleSpawned"), 1, "the missing send logged")
+end)
+
+--== cancelling Parts never rebuilds another car ===============================
+
+-- The server refused the linked car, so BeamMP deleted it while the garage kept its old vehicle
+-- id: the game's cancel then rebuilds with no car named, which BeamMP would turn into the avatar.
+test("Buy after the server refused car A cancels without turning the walking avatar into car A", function()
+	partsSessionOn(CAR_A)
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA)
+	serverAnswers("refuse")
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 0, "purchases made")
+	same(game.cancelled, 1, "Parts sessions cancelled")
+	same(game.walker.JBeam, "unicycle", "the walking avatar")
+	same(pickups(), 0, "pickups in the world")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+end)
+
+test("leaving Parts after the server refused car A rebuilds no other car", function()
+	partsSessionOn(CAR_A)
+	game.player = game.carB
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	serverAnswers("refuse")
+	career_modules_partShopping.cancelShopping()
+	same(game.carB.JBeam, "sedan", "car B")
+	same(game.walker.JBeam, "unicycle", "the walking avatar")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+	same(countLines(logs, "W mileage.patches: refused a rebuild with no car named while Parts was cancelling"), 1,
+		"the refused rebuild logged")
+end)
+
+test("outside a server session, cancelling Parts with the car gone is handed on as before", function()
+	partsSessionOn(CAR_A)
+	game.noSession = true
+	game.invToVeh[CAR_A] = 999
+	career_modules_partShopping.cancelShopping()
+	same(game.beamMPCalls, 1, "BeamMP's rebuild calls")
+end)
+
+test("a cancel that fails after its hook keeps the purchase stopped", function()
+	partsSessionOn(CAR_A)
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	career_modules_partShopping.cancelShopping = function()
+		game.cancelled = game.cancelled + 1
+		patches.onPartShoppingCancelled()
+		error("could not put the car back")
+	end
+	patches.revert()
+	patches.apply()
+	clickAt("partShopping", CAR_A)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	career_modules_partShopping.applyShopping()
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 0, "purchases made")
+	same(game.cancelled, 2, "cancels tried")
+	same(countLines(logs, "could not put the car back"), 2, "the failed cancels logged")
+end)
+
+for name, prepare in pairs({
+	["a destroyed car A"] = function() game.carA.destroyed = true return game.carA end,
+	["a car with no garage entry"] = function() return newObj("pickup") end,
+}) do
+	test("Buy after a refused rebuild of " .. name .. " in Parts cancels and charges nothing", function()
+		partsSessionOn(CAR_A)
+		core_vehicles.replaceVehicle("pickup", {}, prepare())
+		career_modules_partShopping.applyShopping()
+		same(game.bought, 0, "purchases made")
+		same(game.cancelled, 1, "Parts sessions cancelled")
+	end)
+end
