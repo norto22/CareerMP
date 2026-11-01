@@ -81,6 +81,8 @@ World.test("race wins are counted by the server and survive a restart", function
 		world:as(bob, function() mileage_offers.answer(offers[#offers].id, true) end)
 		world:pump()
 		world:advance(3)
+		-- Quicker than the straight line at 150 m/s would be an impossible time.
+		world:advance(20)
 		world:drive(ann, 0, 2400)
 		world:advance(7)
 	end

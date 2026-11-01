@@ -137,8 +137,20 @@ function M.race(name, stake)
 end
 
 function M.answer(id, accept)
-	if type(id) ~= "string" or not incoming[id] then return false end
+	local offer = type(id) == "string" and incoming[id]
+	if not offer then return false end
 	incoming[id] = nil
+	-- A challenge is only accepted from one of the player's own cars, outside a mission and
+	-- not in another race; otherwise it is declined here, before any stake is taken.
+	if accept == true and offer.kind == "race" then
+		local race = streetRace()
+		local why = "Racing is not available in this game."
+		if race and type(race.eligibility) == "function" then why = race.eligibility() end
+		if why then
+			toast("error", "Challenge declined", why)
+			accept = false
+		end
+	end
 	TriggerServerEvent("mileageOfferAnswer", jsonEncode({id = id, accept = accept == true}))
 	return true
 end

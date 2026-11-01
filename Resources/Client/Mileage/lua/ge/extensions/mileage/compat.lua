@@ -276,6 +276,16 @@ function M.getNavigationTarget()
 	return nil
 end
 
+-- Shows pos as the route's end on the big map and the navigation, so a player who set no
+-- route of their own is shown where the finish is. Returns true when it ran.
+function M.setNavigationTarget(pos)
+	local fn = pickOrWarn(core_groundMarkers, "core_groundMarkers", "setPath", "the finish is not shown on the map")
+	if not fn or type(pos) ~= "table" then return false end
+	local ok, err = pcall(fn, vec3(pos.x, pos.y, pos.z))
+	if not ok then log("E", "mileage.compat", "setPath failed: " .. tostring(err)) end
+	return ok
+end
+
 -- Moves veh to pos facing rot, clear of anything in the way. Returns true when it ran.
 function M.safeTeleport(veh, pos, rot)
 	local fn = pickOrWarn(spawn, "spawn", "safeTeleport", "a race cannot move a car to the start")

@@ -230,6 +230,21 @@ test("the event result names the winner and this player's place", () => {
 	assert.strictEqual(scope.event, null);
 });
 
+test("a refused join says why, an invitation that began without the player goes, and a stopped race clears", () => {
+	const {scope} = load();
+	scope.emit("MileageEvent", {id: "e1", phase: "refused", why: "Finish your race first, then join."});
+	assert.strictEqual(scope.event.view.title, "Could not join the race event");
+	assert.strictEqual(scope.event.view.note, "Finish your race first, then join.");
+	scope.emit("MileageEvent", {id: "e1", phase: "announce", route: "R", prize: 5, seconds: 60, joined: 0});
+	assert.ok(scope.event, "invitation shown");
+	scope.emit("MileageEvent", {id: "e1", phase: "begun"});
+	assert.strictEqual(scope.event, null, "invitation closed at the start");
+	scope.emit("MileageRace", {phase: "racing", race: "e1", other: "the race event", elapsed: 5});
+	assert.ok(scope.race, "race panel shown");
+	scope.emit("MileageRace", {phase: "clear", race: "e1"});
+	assert.strictEqual(scope.race, null, "race panel cleared");
+});
+
 //== the template ================================================================
 
 test("the template binds every text as text, never as markup", () => {

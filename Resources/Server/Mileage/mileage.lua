@@ -1036,7 +1036,12 @@ end
 -- hears the transfer is settled (rxMileageSettled), so a step it already applied is
 -- answered again without being applied twice.
 --
--- transferData = {seq, transfers = {[id] = transfer}, settled = {[name] = {id, ...}}}
+-- A transfer id is "t<seq>-<server>": a player's save, with the ids it has applied, goes
+-- with them to any Mileage server, so every server keeps a random token of its own in
+-- transfers.json and no id of one server can match another's (and a server whose data
+-- folder is lost starts a new token, so it cannot repeat an id either).
+--
+-- transferData = {server, seq, transfers = {[id] = transfer}, settled = {[name] = {id, ...}}}
 -- transfer = {id, kind, from, to, amount, labels = {take, give}, state, created, race, role}
 -- state: "taking" (waiting for the payer's receipt) or "giving" (for the receiver's).
 
@@ -1049,7 +1054,15 @@ local TRANSFER_SLOW_SECONDS = 60
 local TRANSFER_TAGS = {"gameplay"}
 local TRANSFERS_FILE = "transfers.json"
 
-local transferData = {seq = 0, transfers = {}, settled = {}}
+-- Eight hex digits from the clock, the process clock and a fresh table's address.
+local function newServerToken()
+	local seed = tostring(os.time()) .. tostring(os.clock()) .. tostring({}) .. tostring(math.random())
+	local h = 5381
+	for i = 1, #seed do h = (h * 33 + seed:byte(i)) % 4294967296 end
+	return string.format("%08x", h)
+end
+
+local transferData = {server = newServerToken(), seq = 0, transfers = {}, settled = {}}
 -- Not kept across starts: when each step was last sent, and which waits were logged.
 local transferSentAt = {}
 local transferSlowLogged = {}
@@ -1115,9 +1128,13 @@ local function sendSettled(name, ids)
 	transferData.settled[name] = waiting
 end
 
+-- Tells the transfer's owner (a payment, a race) that a step happened. false means the
+-- owner could not keep that fact (a race record that would not save): the transfer then
+-- stays where it is, and the game's next answer to the resend tries again.
 local function tellOwner(transfer, event)
 	local owner = transferOwners[transfer.race and "race" or transfer.kind]
-	if owner then owner(transfer, event) end
+	if owner then return owner(transfer, event) ~= false end
+	return true
 end
 
 local function describeTransfer(transfer)
@@ -1130,7 +1147,7 @@ end
 local function startTransfer(spec)
 	transferData.seq = transferData.seq + 1
 	local transfer = {
-		id = "t" .. transferData.seq,
+		id = "t" .. transferData.seq .. "-" .. transferData.server,
 		kind = spec.kind,
 		from = spec.from,
 		to = spec.to,
@@ -1146,6 +1163,24 @@ local function startTransfer(spec)
 	return transfer.id
 end
 
+-- Removes a finished transfer from transfers.json, and only once that is on disk tells the
+-- players' games they may forget its id. A game that forgot an id while the server still
+-- held the transfer would apply the resend a second time after a restart. When the
+-- removal cannot be written the transfer stays, nobody is told, and the game's answer to
+-- the next resend tries again.
+local function retire(transfer, parties)
+	transferData.transfers[transfer.id] = nil
+	if not saveTransfers() then
+		transferData.transfers[transfer.id] = transfer
+		return false
+	end
+	for _, name in ipairs(parties) do sendSettled(name, {transfer.id}) end
+	-- Notices kept for players who are away are written too; losing one is harmless, the
+	-- game then keeps an id it no longer needs.
+	saveTransfers()
+	return true
+end
+
 -- The game of the player a transfer waits on answers {id, done = "taken" | "given" |
 -- "refused"}. Only that player's receipt for the step under way counts. The owner hears
 -- of it before the transfer itself moves on, so a restart in between repeats the step
@@ -1157,11 +1192,9 @@ function mileageReceipt(player_id, data)
 	local transfer = transferData.transfers[receipt.id]
 	if not transfer or MP.GetPlayerName(player_id) ~= waitingOn(transfer) then return end
 	if transfer.state == "taking" and receipt.done == "taken" then
-		tellOwner(transfer, "taken")
+		if not tellOwner(transfer, "taken") then return end
 		if transfer.to == SERVER_PARTY then
-			transferData.transfers[transfer.id] = nil
-			sendSettled(transfer.from, {transfer.id})
-			saveTransfers()
+			retire(transfer, {transfer.from})
 			return
 		end
 		transfer.state = "giving"
@@ -1170,16 +1203,13 @@ function mileageReceipt(player_id, data)
 	elseif transfer.state == "taking" and receipt.done == "refused" then
 		print("[Mileage] Transfer " .. describeTransfer(transfer) .. " refused: " .. consoleText(transfer.from)
 			.. " does not have the money")
-		tellOwner(transfer, "refused")
-		transferData.transfers[transfer.id] = nil
-		sendSettled(transfer.from, {transfer.id})
-		saveTransfers()
+		if not tellOwner(transfer, "refused") then return end
+		retire(transfer, {transfer.from})
 	elseif transfer.state == "giving" and receipt.done == "given" then
-		tellOwner(transfer, "given")
-		transferData.transfers[transfer.id] = nil
-		sendSettled(transfer.to, {transfer.id})
-		if transfer.from ~= SERVER_PARTY then sendSettled(transfer.from, {transfer.id}) end
-		saveTransfers()
+		if not tellOwner(transfer, "given") then return end
+		local parties = {transfer.to}
+		if transfer.from ~= SERVER_PARTY then table.insert(parties, transfer.from) end
+		retire(transfer, parties)
 	end
 end
 
@@ -1219,15 +1249,16 @@ end
 
 local function loadTransfers()
 	local stored = readData(TRANSFERS_FILE)
-	transferData = {seq = 0, transfers = {}, settled = {}}
+	transferData = {server = newServerToken(), seq = 0, transfers = {}, settled = {}}
 	transferSentAt, transferSlowLogged = {}, {}
 	if stored then
+		if type(stored.server) == "string" and stored.server:match("^%x+$") then transferData.server = stored.server end
 		transferData.seq = tonumber(stored.seq) or 0
 		transferData.transfers = type(stored.transfers) == "table" and stored.transfers or {}
 		transferData.settled = type(stored.settled) == "table" and stored.settled or {}
 		-- Ids are made from seq; a damaged seq must not hand out an id still in use.
 		for id in pairs(transferData.transfers) do
-			local n = tonumber(tostring(id):match("^t(%d+)$"))
+			local n = tonumber(tostring(id):match("^t(%d+)%-"))
 			if n and n > transferData.seq then transferData.seq = n end
 		end
 	end
@@ -1415,8 +1446,9 @@ end
 -- Money.inRace(name) and Money.startRace(offer) are set by the race section: whether a
 -- player is in a race, and how a race starts from an accepted challenge.
 
--- Why player_id may not make this offer, or nil.
-local function offerProblem(player_id, offer)
+-- Why player_id may not make this offer, or nil. exceptId: an open offer not to count,
+-- the one being accepted when it is checked again.
+local function offerProblem(player_id, offer, exceptId)
 	if offer.kind == "race" then
 		if not serverSwitch("allowRacing") then return "racingOff" end
 	elseif offer.kind == "request" then
@@ -1430,7 +1462,7 @@ local function offerProblem(player_id, offer)
 	if target == player_id then return "self" end
 	if not MP.IsPlayerConnected(target) or not careerStarted(target) then return "absent" end
 	for _, open in pairs(offers) do
-		if open.from == player_id and open.to == target then return "open" end
+		if open.id ~= exceptId and open.from == player_id and open.to == target then return "open" end
 	end
 	if offer.kind == "request" then
 		if not isWhole(offer.amount) or offer.amount <= 0 then return "amount" end
@@ -1441,8 +1473,9 @@ local function offerProblem(player_id, offer)
 	if offer.amount > serverNumber("raceStakeMax", 0, 1000000) then return "stakeMax" end
 	if not isPoint(offer.finish) or not isPoint(offer.start) then return "finish" end
 	if distance(offer.start, offer.finish) < serverNumber("raceMinDistance", 0, 20000) then return "distance" end
-	local inRace = Money.inRace
-	if inRace and (inRace(MP.GetPlayerName(player_id)) or inRace(MP.GetPlayerName(target))) then return "busy" end
+	-- Money.busy is set by the race and event sections: in a street race or a running event.
+	local busy = Money.busy
+	if busy and (busy(MP.GetPlayerName(player_id)) or busy(MP.GetPlayerName(target))) then return "busy" end
 	return nil
 end
 
@@ -1511,9 +1544,11 @@ function mileageOfferAnswer(player_id, data)
 		})
 		return
 	end
+	-- Everything is checked again now: either racer may have joined another race or an
+	-- event since the challenge was made, and a setting may have changed.
 	local why = offerProblem(offer.from, {kind = "race", to = offer.to, amount = offer.amount, finish = offer.finish,
-		start = offer.start})
-	if why and why ~= "open" then
+		start = offer.start}, offer.id)
+	if why then
 		closeOffer(offer, why)
 		return
 	end
@@ -1658,6 +1693,12 @@ end
 -- the race once everything is paid. skip: a transfer being finished right now.
 local function settleRace(race, skip)
 	if race.decision == "none" then return end
+	-- Nothing is paid for a decision that is not on disk: a restart would not know it and
+	-- would return the stakes as well.
+	if race.unsaved then
+		if not saveRaces() then return end
+		race.unsaved = nil
+	end
 	local open = openRaceTransfers(race, skip)
 	local waiting = false
 	for role, payout in pairs(payoutsFor(race)) do
@@ -1684,7 +1725,7 @@ local function decide(race, decision)
 	if race.decision ~= "none" then return end
 	race.decision = decision
 	race.pot = heldTotal(race)
-	saveRaces()
+	race.unsaved = not saveRaces() or nil
 end
 
 local function endLive(race)
@@ -1784,10 +1825,10 @@ function Money.transferOwners.race(transfer, event)
 	if not race then return end
 	if transfer.kind == "stake" then
 		if event == "taken" then
-			if race.held[transfer.from] == nil then
-				race.held[transfer.from] = transfer.amount
-				saveRaces()
-			end
+			-- The stake is kept on disk before the transfer ends; if it cannot be, the
+			-- transfer stays and the game's answer to the next resend tries again.
+			race.held[transfer.from] = race.held[transfer.from] or transfer.amount
+			if not saveRaces() then return false end
 			if race.decision ~= "none" then
 				settleRace(race)
 			else
@@ -1802,10 +1843,33 @@ function Money.transferOwners.race(transfer, event)
 		end
 	elseif event == "given" and transfer.role then
 		race.paid[transfer.role] = true
-		saveRaces()
+		if not saveRaces() then
+			race.paid[transfer.role] = nil
+			return false
+		end
 		settleRace(race, transfer.id)
 	end
 end
+
+-- Each game times its own race, so the server only accepts a time that could have been
+-- driven: not quicker than the straight line to the finish at MAX_SPEED_MPS, and not
+-- longer than the time since green (plus REPORT_SLACK_SECONDS for the delay between the
+-- two games' greens). A game that reports a time before green, or a few hundredths of a
+-- second, is ignored.
+local MAX_SPEED_MPS = 150
+local REPORT_SLACK_SECONDS = 3
+
+local function metresBetween(a, b)
+	return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2)
+end
+
+local function plausibleTime(seconds, metres, sinceGreen)
+	if type(seconds) ~= "number" or seconds ~= seconds or seconds <= 0 then return false end
+	if seconds < math.max(0, metres - FINISH_RADIUS) / MAX_SPEED_MPS then return false end
+	return seconds <= sinceGreen + REPORT_SLACK_SECONDS
+end
+
+Money.plausibleTime, Money.metresBetween = plausibleTime, metresBetween
 
 -- A racer's game reports: {race, pose = {pos, dir, up}} (the challenger, for the start),
 -- {race, ready = true} (the challenged, beside it), {race, failed = why},
@@ -1832,6 +1896,13 @@ function mileageRaceReport(player_id, data)
 	end
 	if live.phase == "pose" and name == race.a and type(report.pose) == "table" and isPoint(report.pose.pos)
 			and isPoint(report.pose.dir) and isPoint(report.pose.up) then
+		-- The challenge was checked from where the car stood then; the car may have been
+		-- driven to the finish line since.
+		live.metres = metresBetween(report.pose.pos, live.finish)
+		if live.metres < serverNumber("raceMinDistance", 0, 20000) then
+			callOff(race, "the start was too close to the finish")
+			return
+		end
 		live.phase = "teleport"
 		live.deadline = signalTimer:GetCurrent() + START_SECONDS
 		sendRace(race.b, {race = race.id, phase = "teleport", pose = report.pose, other = race.a})
@@ -1842,8 +1913,8 @@ function mileageRaceReport(player_id, data)
 		sendBothRace(race, {race = race.id, phase = "countdown", seconds = COUNTDOWN_SECONDS, finish = live.finish,
 			radius = FINISH_RADIUS, stake = race.stake, a = race.a, b = race.b,
 			timeLimit = serverNumber("raceTimeLimitMinutes", 1, 120) * 60})
-	elseif (live.phase == "countdown" or live.phase == "racing") and type(report.finished) == "number"
-			and report.finished > 0 and report.finished == report.finished and not live.reports[name] then
+	elseif (live.phase == "countdown" or live.phase == "racing") and not live.reports[name]
+			and plausibleTime(report.finished, live.metres or 0, signalTimer:GetCurrent() - live.goAt) then
 		live.reports[name] = report.finished
 		live.firstReportAt = live.firstReportAt or signalTimer:GetCurrent()
 		if live.reports[race.a] and live.reports[race.b] then
@@ -1855,6 +1926,9 @@ end
 
 local function racesTick()
 	local now = signalTimer:GetCurrent()
+	for _, race in pairs(racesData.races) do
+		if race.unsaved then settleRace(race) end
+	end
 	for id, live in pairs(liveRaces) do
 		local race = racesData.races[id]
 		if not race then
@@ -2217,13 +2291,22 @@ end
 local function startEventRace()
 	local names = {}
 	for name in pairs(live.joined) do
-		if playerIdByName(name) then table.insert(names, name) end
+		if not playerIdByName(name) then
+			live.joined[name] = nil
+		elseif Money.inRace and Money.inRace(name) then
+			-- A street race that was already under way goes first; the player is told.
+			live.joined[name] = nil
+			sendEvent(name, {id = live.id, phase = "over", why = "You were in a race when the event started."})
+		else
+			table.insert(names, name)
+		end
 	end
 	table.sort(names)
 	if #names == 0 then
 		endEvent("nobody joined")
 		return
 	end
+	live.racers = #names
 	local poses = gridPoses(live.start, live.finish, #names)
 	live.phase = "racing"
 	live.goAt = signalTimer:GetCurrent() + EVENT_COUNTDOWN_SECONDS
@@ -2244,6 +2327,10 @@ local function beginEvent()
 	local route = e.route ~= "random" and findRoute(e.route) or ROUTES[math.random(#ROUTES)]
 	live = {id = e.id, prize = e.prize, joined = e.joined, start = SPOTS[route.from].pos,
 		finish = SPOTS[route.to].pos, routeText = eventRouteText(e), fallback = nil}
+	-- The invitation closes for everyone who did not join.
+	for id, name in pairs(MP.GetPlayers() or {}) do
+		if not e.joined[name] then sendJson("events", id, "rxMileageEvent", {id = e.id, phase = "begun"}) end
+	end
 	if joinedCount(e.joined) == 0 then
 		chatAll("The race event did not start: nobody joined.")
 		live = nil
@@ -2284,7 +2371,7 @@ local function decideEvent()
 	if winner and Money.leaderboardWin then Money.leaderboardWin(winner) end
 	for name in pairs(live.joined) do
 		sendEvent(name, {id = live.id, phase = "result", winner = winner, places = places, prize = live.prize,
-			route = live.routeText, racers = joinedCount(live.joined), you = name})
+			route = live.routeText, racers = live.racers, you = name})
 	end
 	live = nil
 end
@@ -2297,6 +2384,11 @@ Money.answerEvent = function(player_id, answer)
 	end
 	local name = MP.GetPlayerName(player_id)
 	if not name then return true end
+	if answer.accept == true and Money.inRace and Money.inRace(name) then
+		sendJson("events", player_id, "rxMileageEvent", {id = event.id, phase = "refused",
+			why = "Finish your race first, then join."})
+		return true
+	end
 	if answer.accept == true then event.joined[name] = true else event.joined[name] = nil end
 	saveEvent()
 	local message = announcement(event, answer.accept == true and "joined" or "left")
@@ -2318,8 +2410,14 @@ Money.eventRaceReport = function(player_id, report)
 			live.finish = {x = report.finish.x, y = report.finish.y, z = report.finish.z}
 			startEventRace()
 		end
-	elseif live.phase == "racing" and live.joined[name] and type(report.finished) == "number"
-			and report.finished > 0 and not live.reports[name] then
+	elseif live.phase == "racing" and live.joined[name] and report.gaveUp == true and not live.reports[name] then
+		-- The racer is out: told so, and no finish of theirs counts.
+		live.joined[name] = nil
+		sendEvent(name, {id = live.id, phase = "over", why = "You gave up."})
+		if next(live.joined) == nil then live = nil end
+	elseif live.phase == "racing" and live.joined[name] and not live.reports[name]
+			and Money.plausibleTime(report.finished, Money.metresBetween(live.start, live.finish),
+				signalTimer:GetCurrent() - live.goAt) then
 		live.reports[name] = report.finished
 		live.firstReportAt = live.firstReportAt or signalTimer:GetCurrent()
 	end
@@ -2370,6 +2468,14 @@ local function eventsTick()
 			live = nil
 		end
 	end
+end
+
+-- A player whose career just started hears of the event scheduled now.
+local function eventsCareerStarted(player_id)
+	if not event then return end
+	local message = announcement(event, "announce")
+	message.youJoined = event.joined[MP.GetPlayerName(player_id)] == true
+	sendJson("events", player_id, "rxMileageEvent", message)
 end
 
 local function eventsPlayerLeft(name)
@@ -2464,6 +2570,13 @@ function Event(arguments)
 	eventsTick()
 end
 
+Money.eventsCareerStarted = eventsCareerStarted
+-- In a running event race, and so not free for a street race.
+Money.inEvent = function(name) return live ~= nil and live.joined[name] == true end
+-- In a street race or a running event race.
+Money.busy = function(name)
+	return (Money.inRace ~= nil and Money.inRace(name)) or Money.inEvent(name)
+end
 Money.eventsTick = eventsTick
 Money.eventsPlayerLeft = eventsPlayerLeft
 Money.loadEvent = loadEvent
@@ -2897,6 +3010,7 @@ function careerSyncRequested(player_id, data)
 	else
 		entry.careerActive = true
 		Money.transfersCareerStarted(player_id)
+		Money.eventsCareerStarted(player_id)
 	end
 end
 
@@ -2913,6 +3027,7 @@ function careerStartResult(player_id, data)
 		entry.careerActive = true
 		print("[Mileage] " .. describePlayer(player_id) .. " started their career")
 		Money.transfersCareerStarted(player_id)
+		Money.eventsCareerStarted(player_id)
 	elseif result.started == false then
 		dropUnstartedPlayer(player_id, "career start failed: " .. consoleText(result.reason or "no reason given"))
 	end

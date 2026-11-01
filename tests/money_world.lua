@@ -445,7 +445,8 @@ function World:loadGame(p)
 	}
 	p.globals.vec3 = function(x, y, z) return {x = x, y = y, z = z} end
 	p.globals.quatFromDir = function(dir, up) return {dir = dir, up = up} end
-	p.globals.core_groundMarkers = {getTargetPos = function() return p.route end}
+	p.globals.core_groundMarkers = {getTargetPos = function() return p.route end,
+		setPath = function(pos) p.route = pos end}
 	p.globals.gameplay_missions_missionManager = {getForegroundMissionId = function() return p.mission end}
 	p.globals.MPCoreNetwork = {isMPSession = function() return true end}
 	p.globals.gameplay_drag_core = {getData = function() return p.dragData end}

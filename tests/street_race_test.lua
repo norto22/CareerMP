@@ -47,6 +47,7 @@ local function startRace(world, a, b, stake)
 	challenge(world, a, b, stake)
 	accept(world, b)
 	world:advance(3)
+	world.greenAt = world.now
 end
 
 local function races(world)
@@ -64,8 +65,11 @@ local function lastRaceMessage(world, p, phase)
 	return found
 end
 
--- Drives p to the finish; their game reports on its next frame.
+-- Drives p to the finish, 2.4 km away, once they have been racing at least 20 s (the
+-- server does not accept a quicker time); their game reports on its next frame.
 local function arrive(world, p)
+	local wait = 20 - (world.now - (world.greenAt or world.now))
+	if wait > 0 then world:advance(wait) end
 	assert(world:drive(p, KM.x + 5, KM.y), p.name .. "'s car is frozen")
 	world:advance(1)
 end
@@ -251,14 +255,62 @@ World.test("racers who cannot line up in 15 s get their stakes back", function(w
 	same(ann.car.frozen, false, "Ann released")
 end)
 
-World.test("a challenged player who left their car calls the race off", function(world)
+World.test("a challenge accepted from outside a car, or in a mission, is declined and costs nothing", function(world)
 	local ann, bob = pair(world)
+	for _, setup in ipairs({function() bob.inCar = false end, function() bob.inCar, bob.mission = nil, "delivery" end,
+			function() bob.mission, bob.car.JBeam = nil, "unicycle" end}) do
+		bob.inCar, bob.mission, bob.car.JBeam = nil, nil, "pickup"
+		setup()
+		challenge(world, ann, bob, 1000)
+		accept(world, bob)
+		world:advance(2)
+		same(ann.money + bob.money, 20000, "no stake taken")
+		same(races(world), 0, "no race started")
+		local toasts = world:ui(bob, "toastrMsg")
+		same(toasts[#toasts].title, "Challenge declined", "Bob told why")
+		local closed = world:received(ann, "rxMileageOfferClosed")
+		same(closed[#closed].why, "declined", "Ann told it was declined")
+	end
+end)
+
+World.test("a racer who is moved into a mission or out of their car before the start calls the race off",
+		function(world)
+	local ann, bob = pair(world)
+	world.filter = function(m)
+		if m.event == "rxMileageRace" and m.data:find('"teleport"', 1, true) then bob.mission = "delivery" end
+	end
 	challenge(world, ann, bob, 1000)
-	bob.inCar = false
 	accept(world, bob)
 	world:advance(2)
 	expect(lastRaceMessage(world, ann, "calledOff"), "called off")
+	same(#bob.teleports, 0, "Bob's car was not moved")
 	same(ann.money + bob.money, 20000, "stakes back")
+	same(ann.car.frozen, false, "Ann released")
+end)
+
+World.test("an accepted challenge is checked again: a racer who joined another race meanwhile is busy",
+		function(world)
+	local ann, bob = pair(world)
+	local cat = world:join("Cat", 10000)
+	-- Cat and Ann both challenge Bob; Bob accepts Cat's, then Ann's.
+	cat.car.pos = {x = 50, y = 0, z = 0}
+	challenge(world, ann, bob, 1000)
+	challenge(world, cat, bob, 500)
+	local offers = world:ui(bob, "MileageOffer")
+	same(#offers, 2, "two challenges shown")
+	world:as(bob, function() mileage_offers.answer(offers[2].id, true) end)
+	world:pump()
+	-- Bob's game would decline this itself; a game that does not is answered by the server.
+	world:serverOutput(function()
+		mileageOfferAnswer(bob.id, World.encode({id = offers[1].id, accept = true}))
+	end)
+	world:pump()
+	world:advance(2)
+	local n, _ = races(world)
+	same(n, 1, "one race only")
+	local closed = world:received(ann, "rxMileageOfferClosed")
+	same(closed[#closed].why, "busy", "Ann's challenge closed as busy")
+	same(ann.money, 10000, "Ann paid nothing")
 end)
 
 --== the result ================================================================
@@ -286,7 +338,6 @@ end)
 World.test("a game reports its finish once, timed from its own green, and shows the result", function(world)
 	local ann, bob = pair(world)
 	startRace(world, ann, bob, 1000)
-	world:advance(10)
 	arrive(world, ann)
 	world:advance(5)
 	local reports = 0
@@ -296,7 +347,7 @@ World.test("a game reports its finish once, timed from its own green, and shows 
 		end
 	end
 	same(reports, 1, "finish reported once while the car stays at the finish")
-	same(lastRaceMessage(world, ann, "result").times.Ann, 11, "timed from the green")
+	same(lastRaceMessage(world, ann, "result").times.Ann, 21, "timed from the green: 20 s driving, 1 s frame")
 	local shown = world:ui(ann, "MileageRace")
 	same(shown[#shown].phase, "result", "result shown in the prompts app")
 	world:as(ann, function() expect(not mileage_streetRace.giveUp(), "no race left to give up") end)
@@ -306,6 +357,7 @@ World.test("a faster time reported within 5 s of the first wins, and a later one
 	local ann, bob, cat = pair(world)
 	startRace(world, ann, bob, 1000)
 	local _, race = races(world)
+	world:advance(130)
 	world:serverOutput(function() mileageRaceReport(ann.id, World.encode({race = race.id, finished = 130})) end)
 	world:advance(3)
 	world:serverOutput(function() mileageRaceReport(bob.id, World.encode({race = race.id, finished = 128})) end)
@@ -439,6 +491,56 @@ World.test("a player already racing cannot be challenged", function(world)
 	world:pump()
 	local closed = world:received(cat, "rxMileageOfferClosed")
 	same(closed[#closed].why, "busy", "refused")
+end)
+
+--== times a game could not have driven ========================================
+
+World.test("a finish time that could not have been driven is ignored: too quick, or before green", function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	local _, race = races(world)
+	local function report(p, seconds)
+		world:serverOutput(function() mileageRaceReport(p.id, World.encode({race = race.id, finished = seconds})) end)
+	end
+	-- 2.4 km in a few hundredths of a second, in 5 s (480 m/s), or 100 s into a 3-second-old race.
+	report(ann, 0.01)
+	report(ann, 5)
+	report(ann, 100)
+	report(ann, -3)
+	world:advance(8)
+	same(lastRaceMessage(world, ann, "result"), nil, "no result from impossible times")
+	same(ann.money, 9000, "Ann")
+	same(bob.money, 9000, "Bob")
+	-- A time that fits the 8 s since green and the 2.4 km is not one either (2.4 km in 8 s is 300 m/s).
+	report(ann, 8)
+	world:advance(6)
+	same(lastRaceMessage(world, ann, "result"), nil, "300 m/s is too fast")
+	world:advance(12)
+	report(bob, 20)
+	world:advance(6)
+	same(lastRaceMessage(world, ann, "result").winner, "Bob", "a time that could have been driven counts")
+	same(bob.money, 11000, "Bob won the stakes")
+end)
+
+World.test("a challenger who drove to the finish before lining up calls the race off", function(world)
+	local ann, bob = pair(world)
+	world.filter = function(m)
+		if m.event == "rxMileageRace" and m.data:find('"pose"', 1, true) then ann.car.pos = {x = 0, y = 2390, z = 0} end
+	end
+	challenge(world, ann, bob, 1000)
+	accept(world, bob)
+	world:advance(2)
+	expect(lastRaceMessage(world, ann, "calledOff"), "called off")
+	same(#bob.teleports, 0, "Bob not moved")
+	same(ann.money + bob.money, 20000, "stakes back")
+end)
+
+World.test("the challenged player is shown the finish on their map, with no route of their own", function(world)
+	local ann, bob = pair(world)
+	bob.route = nil
+	startRace(world, ann, bob, 0)
+	expect(bob.route, "a route set for Bob")
+	same(bob.route.y, 2400, "to the finish")
 end)
 
 World.test("Mileage Transfers lists races still holding stakes", function(world)

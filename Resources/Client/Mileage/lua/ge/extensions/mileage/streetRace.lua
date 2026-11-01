@@ -71,21 +71,30 @@ local function endRace()
 	race = nil
 end
 
+--- Why this player cannot race now (already racing, in a mission, not driving one of
+--- their own cars), or nil with the car and its id. Checked when a challenge is made, when
+--- it is accepted, and again when the car is about to be moved.
+function M.eligibility()
+	local c = compat()
+	if not c or not c.hasRaceFunctions() then
+		return "Racing needs game functions this version of the game does not have."
+	end
+	if race then return "You are already in a race." end
+	if c.getForegroundMissionId() then return "Finish or leave your mission first." end
+	local veh, id = playerVehicle()
+	if not veh or veh.JBeam == "unicycle" then return "Get in one of your own cars first." end
+	if MPVehicleGE and type(MPVehicleGE.isOwn) == "function" and not MPVehicleGE.isOwn(id) then
+		return "Get in one of your own cars first."
+	end
+	return nil, veh, id
+end
+
 --- Whether this player can start a race now: {why} when not, otherwise {distance,
 --- start, finish} with the car's position and the finish as {x, y, z}.
 function M.checkStart(minDistance)
-	local c = compat()
-	if not c or not c.hasRaceFunctions() then
-		return {why = "Racing needs game functions this version of the game does not have."}
-	end
-	if race then return {why = "You are already in a race."} end
-	if c.getForegroundMissionId() then return {why = "Finish or leave your mission first."} end
-	local veh, id = playerVehicle()
-	if not veh or veh.JBeam == "unicycle" then return {why = "Get in one of your own cars first."} end
-	if MPVehicleGE and type(MPVehicleGE.isOwn) == "function" and not MPVehicleGE.isOwn(id) then
-		return {why = "Get in one of your own cars first."}
-	end
-	local target = c.getNavigationTarget()
+	local why, veh = M.eligibility()
+	if why then return {why = why} end
+	local target = compat().getNavigationTarget()
 	if not target then return {why = "Set a route on the big map first: its end is the finish line."} end
 	local start = point(veh:getPosition())
 	local finish = point(target)
@@ -108,10 +117,24 @@ end
 --== the phases ================================================================
 
 -- The challenger's car: where it stands and which way it faces, for the other car.
-local function sendPose(message)
+-- Whether this car may be moved and held for the race now: not in a mission, in one of
+-- the player's own cars. (The race itself is already under way here.)
+local function carProblem()
+	local c = compat()
+	if c and c.getForegroundMissionId() then return "in a mission" end
 	local veh, id = playerVehicle()
-	if not veh or (MPVehicleGE and type(MPVehicleGE.isOwn) == "function" and not MPVehicleGE.isOwn(id)) then
-		report({race = message.race, failed = "the challenger was not in their car"})
+	if not veh or veh.JBeam == "unicycle" then return "not in a car" end
+	if MPVehicleGE and type(MPVehicleGE.isOwn) == "function" and not MPVehicleGE.isOwn(id) then
+		return "not in their own car"
+	end
+	return nil
+end
+
+local function sendPose(message)
+	local veh = playerVehicle()
+	local problem = carProblem()
+	if problem then
+		report({race = message.race, failed = "the challenger was " .. problem})
 		return
 	end
 	setFrozen(true)
@@ -122,11 +145,12 @@ end
 -- The challenged car goes BESIDE_METRES to the right of the challenger's.
 local function moveBeside(message)
 	local pose = message.pose
-	local veh, id = playerVehicle()
+	local veh = playerVehicle()
 	local c = compat()
 	if type(pose) ~= "table" or not isPoint(pose.pos) or not isPoint(pose.dir) or not isPoint(pose.up) then return end
-	if not veh or not c or (MPVehicleGE and type(MPVehicleGE.isOwn) == "function" and not MPVehicleGE.isOwn(id)) then
-		report({race = message.race, failed = "the challenged player was not in their car"})
+	local problem = carProblem()
+	if problem or not c then
+		report({race = message.race, failed = "the challenged player was " .. (problem or "not ready")})
 		return
 	end
 	local d, u = pose.dir, pose.up
@@ -180,6 +204,9 @@ local function rxMileageRace(data)
 		race.stake = message.stake
 		race.other = message.a == MPConfig.getNickname() and message.b or message.a
 		if not race.frozen then setFrozen(true) end
+		-- The challenged player has set no route: the finish is shown on their map too.
+		local c = compat()
+		if c then c.setNavigationTarget(race.finish) end
 		ui({phase = "countdown", race = race.id, other = race.other, stake = race.stake,
 			count = math.ceil(race.countdownLeft)})
 	end
@@ -232,13 +259,19 @@ function M.startEventRace(info)
 	race = {id = info.id, phase = "countdown", other = "the race event", stake = 0, event = true,
 		finish = info.finish, radius = tonumber(info.radius) or 20, countdownLeft = tonumber(info.seconds) or 5}
 	setFrozen(true)
+	local c = compat()
+	if c then c.setNavigationTarget(race.finish) end
 	ui({phase = "countdown", race = race.id, other = race.other, stake = 0, count = math.ceil(race.countdownLeft)})
 	return true
 end
 
 --- Ends the race with this id here (an event's result came, or it was called off).
 function M.stopRace(id)
-	if race and race.id == id then endRace() end
+	if race and race.id == id then
+		endRace()
+		-- Takes the countdown, race panel or waiting panel off the screen.
+		ui({phase = "clear", race = id})
+	end
 end
 
 --- Sends the race under way to the prompts app, after a UI reload.

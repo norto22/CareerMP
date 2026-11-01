@@ -64,14 +64,20 @@ local function startAtGrid(message)
 	local pose = message.pose
 	local c, race = compat(), streetRace()
 	if type(pose) ~= "table" or not isPoint(pose.pos) or not isPoint(pose.dir) or not isPoint(pose.up) then return end
-	local id = be:getPlayerVehicleID(0)
-	local veh = id and id >= 0 and be:getObjectByID(id) or nil
-	if not veh or not c or not race then
-		log("W", logTag, "not in a car at the event's start; the race runs without this player")
+	local why, veh = nil, nil
+	if race then why, veh = race.eligibility() end
+	if not race or not c or why or not veh then
+		log("W", logTag, "not able to race at the event's start (" .. tostring(why) .. "); leaving the event")
+		guihooks.trigger("toastrMsg", {type = "warning", title = "Race event", msg = why or "Racing is not available.",
+			config = {timeOut = 4000}})
+		report({race = message.id, gaveUp = true})
 		return
 	end
 	local rot = quatFromDir(vec3(pose.dir.x, pose.dir.y, pose.dir.z), vec3(pose.up.x, pose.up.y, pose.up.z))
-	if not c.safeTeleport(veh, vec3(pose.pos.x, pose.pos.y, pose.pos.z), rot) then return end
+	if not c.safeTeleport(veh, vec3(pose.pos.x, pose.pos.y, pose.pos.z), rot) then
+		report({race = message.id, gaveUp = true})
+		return
+	end
 	race.startEventRace({id = message.id, finish = message.finish, radius = message.radius,
 		seconds = message.seconds})
 end

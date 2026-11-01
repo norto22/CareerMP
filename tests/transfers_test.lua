@@ -29,6 +29,12 @@ end
 
 local DATA = "Resources/Server/Mileage/data/"
 
+-- The id of the n-th transfer the server made: "t<n>-<the server's token>". The token is
+-- kept in transfers.json, so there is one once a transfer has been written.
+local function tid(world, n)
+	return "t" .. n .. "-" .. world:dataFile("transfers.json").server
+end
+
 -- A transfer of amount from one player to another, started on the server as payments do.
 local function pay(world, from, to, amount)
 	-- Past the game's own two-second cooldown between payments.
@@ -149,7 +155,7 @@ World.test("a transfer takes from the payer first and gives only after the payer
 	same(#world:received(ann, "rxMileageTake"), 1, "take sent to Ann")
 	same(#world:received(bob, "rxMileageGive"), 0, "nothing given before Ann's receipt")
 	same(waiting(world), 1, "transfer on disk")
-	same(world:dataFile("transfers.json").transfers.t1.state, "taking", "state on disk")
+	same(world:dataFile("transfers.json").transfers[tid(world, 1)].state, "taking", "state on disk")
 	holdReceipts = false
 	world:advance(10)
 	same(ann.money, 700, "Ann's money")
@@ -165,12 +171,12 @@ World.test("a receipt from the wrong player, for the wrong step or an unknown id
 	startTransfer(world, {kind = "payment", from = "Ann", to = "Bob", amount = 300})
 	world.filter = nil
 	world:serverOutput(function()
-		mileageReceipt(bob.id, World.encode({id = "t1", done = "taken"}))
-		mileageReceipt(ann.id, World.encode({id = "t1", done = "given"}))
+		mileageReceipt(bob.id, World.encode({id = tid(world, 1), done = "taken"}))
+		mileageReceipt(ann.id, World.encode({id = tid(world, 1), done = "given"}))
 		mileageReceipt(ann.id, World.encode({id = "t99", done = "taken"}))
 		mileageReceipt(ann.id, "not json")
 	end)
-	same(world:dataFile("transfers.json").transfers.t1.state, "taking", "still taking")
+	same(world:dataFile("transfers.json").transfers[tid(world, 1)].state, "taking", "still taking")
 	same(#world:received(bob, "rxMileageGive"), 0, "nothing given")
 end)
 
@@ -188,7 +194,7 @@ World.test("a step waiting on an absent player goes when their career starts, ev
 	world:leave(bob)
 	startTransfer(world, {kind = "payment", from = "Ann", to = "Bob", amount = 400})
 	same(ann.money, 600, "taken from Ann")
-	same(world:dataFile("transfers.json").transfers.t1.state, "giving", "waiting to give")
+	same(world:dataFile("transfers.json").transfers[tid(world, 1)].state, "giving", "waiting to give")
 	world:advance(30)
 	world:restart()
 	world:advance(30)
@@ -217,7 +223,7 @@ World.test("Mileage Transfers lists what waits, with its age, amount and player"
 	startTransfer(world, {kind = "payment", from = "Ann", to = "Bob", amount = 400})
 	local lines = world:console("Mileage Transfers")
 	same(countLines(lines, "Transfers waiting: 1"), 1, "count line")
-	same(countLines(lines, "t1 (payment, $400 from Ann to Bob)"), 1, "transfer line")
+	same(countLines(lines, tid(world, 1) .. " (payment, $400 from Ann to Bob)"), 1, "transfer line")
 	same(countLines(lines, "waiting to give to Bob"), 1, "who it waits on")
 	expect(countLines(world:console("CareerMP Transfers"), "Transfers waiting: 1") == 1, "old prefix")
 end)
@@ -244,7 +250,7 @@ World.test("a game sends its receipt only after the save holding the change fini
 	same(ann.money, 900, "taken in memory")
 	same(#world:received(bob, "rxMileageGive"), 0, "no give before Ann's save finished")
 	local receipts = World.decode(ann.staged[ann.savePath .. "/career/mileage_receipts.json"])
-	same(receipts.applied.t1, "taken", "id written into the same save")
+	same(receipts.applied[tid(world, 1)], "taken", "id written into the same save")
 	world:finishSaves(ann)
 	same(bob.money, 100, "given once Ann's save finished")
 end)
@@ -288,12 +294,12 @@ World.test("a game reads its receipts back from the save and forgets them only o
 	world:leave(ann)
 	world:rejoin(ann)
 	-- The same take again: the save still holds its id, so it is answered, not applied.
-	world:as(ann, ann.handlers.rxMileageTake, World.encode({id = "t1", amount = 100, label = "x"}))
+	world:as(ann, ann.handlers.rxMileageTake, World.encode({id = tid(world, 1), amount = 100, label = "x"}))
 	same(ann.money, 900, "not taken again")
-	world:as(ann, ann.handlers.rxMileageSettled, World.encode({ids = {"t1"}}))
+	world:as(ann, ann.handlers.rxMileageSettled, World.encode({ids = {tid(world, 1)}}))
 	world:as(ann, function() career_saveSystem.saveCurrent() end)
 	local receipts = World.decode(ann.files[ann.savePath .. "/career/mileage_receipts.json"])
-	same(receipts.applied.t1, nil, "forgotten after settled")
+	same(receipts.applied[tid(world, 1)], nil, "forgotten after settled")
 end)
 
 --== payments =================================================================
@@ -450,11 +456,149 @@ World.test("a receiver away for a long time is paid once when they come back", f
 	expectSettled(world, ann, bob, cat)
 end)
 
+--== ids that cannot meet across servers, and writes that fail ====================
+
+World.test("two servers never make the same transfer id, and a server keeps its token across restarts", function(world)
+	local ann = world:join("Ann", 1000)
+	startTransfer(world, {kind = "prize", from = "server", to = "Ann", amount = 5})
+	local first = world:dataFile("transfers.json").server
+	expect(first:match("^%x+$"), "a hex token")
+	world:restart()
+	startTransfer(world, {kind = "prize", from = "server", to = "Ann", amount = 5})
+	same(world:dataFile("transfers.json").server, first, "same token after a restart")
+	same(world:dataFile("transfers.json").seq, 2, "the count goes on")
+	local other = World.new()
+	other:join("Ann", 1000)
+	startTransfer(other, {kind = "prize", from = "server", to = "Ann", amount = 5})
+	expect(other:dataFile("transfers.json").server ~= first, "another server, another token")
+end)
+
+World.test("an id another server applied, kept in the player's save, does not hide this server's transfer",
+		function(world)
+	local ann, bob = world:join("Ann", 1000), world:join("Bob", 0)
+	-- Ann's save, played on another server first, already holds that server's "t1".
+	ann.files[ann.savePath .. "/career/mileage_receipts.json"] = World.encode({applied = {["t1-0badcafe"] = "taken"}})
+	world:leave(ann)
+	world:rejoin(ann)
+	pay(world, ann, bob, 250)
+	same(ann.money, 750, "Ann's $250 was taken")
+	same(bob.money, 250, "Bob's $250 was given")
+	same(world:savedTotal(), 1000, "total across saves")
+end)
+
+World.test("a transfer whose removal cannot be written is not announced as settled, and is not applied twice",
+		function(world)
+	local ann, bob = world:join("Ann", 1000), world:join("Bob", 0)
+	world.filter = function(m)
+		if m.name == "mileageReceipt" and m.data:find("given", 1, true) then world.failWrites = "transfers.json" end
+	end
+	pay(world, ann, bob, 100)
+	same(bob.money, 100, "given")
+	same(#world:received(bob, "rxMileageSettled"), 0, "Bob not told to forget the id")
+	same(#world:received(ann, "rxMileageSettled"), 0, "Ann not told to forget the id")
+	same(world:dataFile("transfers.json").transfers[tid(world, 1)].state, "giving", "still on disk as giving")
+	world.filter = nil
+	world.failWrites = nil
+	world:restart()
+	world:advance(15)
+	same(bob.money, 100, "applied once, not again after the restart")
+	same(ann.money, 900, "Ann")
+	same(waiting(world), 0, "settled now")
+	same(#world:received(bob, "rxMileageSettled") > 0, true, "told once it is on disk")
+end)
+
+World.test("the same failed write, with no restart, is retried and settled", function(world)
+	local ann, bob = world:join("Ann", 1000), world:join("Bob", 0)
+	world.filter = function(m)
+		if m.name == "mileageReceipt" and m.data:find("given", 1, true) then world.failWrites = "transfers.json" end
+	end
+	pay(world, ann, bob, 100)
+	world.filter = nil
+	world:advance(12)
+	same(waiting(world), 1, "still waiting while writes fail")
+	world.failWrites = nil
+	world:advance(25)
+	same(waiting(world), 0, "settled once it can be written")
+	same(bob.money, 100, "Bob paid once")
+	same(world:savedTotal(), 1000, "total across saves")
+end)
+
+World.test("an unreadable race record keeps stakes on the server instead of losing them", function(world)
+	local ann, bob = world:join("Ann", 10000), world:join("Bob", 10000)
+	ann.car.pos, bob.car.pos = {x = 0, y = 0, z = 0}, {x = 300, y = 900, z = 0}
+	ann.route = {x = 0, y = 2400, z = 0}
+	world:as(ann, function() mileage_offers.race("Bob", 1000) end)
+	world:pump()
+	local offers = world:ui(bob, "MileageOffer")
+	-- The race record cannot be written from the moment the stake receipts arrive.
+	world.filter = function(m)
+		if m.name == "mileageReceipt" then world.failWrites = "races.json" end
+		if m.name == "mileageRaceReport" then return "drop" end
+	end
+	world:as(bob, function() mileage_offers.answer(offers[1].id, true) end)
+	world:pump()
+	same(ann.savedMoney + bob.savedMoney, 18000, "both stakes taken from the games")
+	same(world:dataFile("races.json").races.r1.held.Ann, nil, "no stake recorded as held")
+	world.filter = nil
+	world.failWrites = nil
+	world:restart()
+	world:advance(30)
+	same(ann.money, 10000, "Ann's stake came back")
+	same(bob.money, 10000, "Bob's stake came back")
+	same(world:savedTotal(), 20000, "total across saves")
+	same(next(world:dataFile("races.json").races), nil, "race record gone")
+end)
+
+World.test("a decision that cannot be written is not paid out, and a restart then returns the stakes",
+		function(world)
+	local ann, bob = world:join("Ann", 10000), world:join("Bob", 10000)
+	ann.car.pos, bob.car.pos = {x = 0, y = 0, z = 0}, {x = 300, y = 900, z = 0}
+	ann.route = {x = 0, y = 2400, z = 0}
+	world:as(ann, function() mileage_offers.race("Bob", 1000) end)
+	world:pump()
+	local offers = world:ui(bob, "MileageOffer")
+	world:as(bob, function() mileage_offers.answer(offers[1].id, true) end)
+	world:pump()
+	world:advance(30)
+	world.failWrites = "races.json"
+	world:drive(ann, 0, 2400)
+	world:advance(10)
+	same(ann.money, 9000, "no payout while the decision is not on disk")
+	same(bob.money, 9000, "Bob")
+	world:restart()
+	world.failWrites = nil
+	world:advance(30)
+	same(ann.money, 10000, "after the restart the undecided race returned the stakes")
+	same(bob.money, 10000, "Bob")
+	same(world:savedTotal(), 20000, "total across saves")
+end)
+
+World.test("a decision that fails to write once is paid when it can be written", function(world)
+	local ann, bob = world:join("Ann", 10000), world:join("Bob", 10000)
+	ann.car.pos, bob.car.pos = {x = 0, y = 0, z = 0}, {x = 300, y = 900, z = 0}
+	ann.route = {x = 0, y = 2400, z = 0}
+	world:as(ann, function() mileage_offers.race("Bob", 1000) end)
+	world:pump()
+	local offers = world:ui(bob, "MileageOffer")
+	world:as(bob, function() mileage_offers.answer(offers[1].id, true) end)
+	world:pump()
+	world:advance(30)
+	world.failWrites = "races.json"
+	world:drive(ann, 0, 2400)
+	world:advance(8)
+	same(ann.money, 9000, "not paid yet")
+	world.failWrites = nil
+	world:advance(15)
+	same(ann.money, 11000, "paid once it is on disk")
+	same(bob.money, 9000, "Bob")
+	same(world:savedTotal(), 20000, "total across saves")
+end)
+
 World.test("an unacknowledged transfer resent after 600 newer ones is still applied once", function(world)
 	local ann, bob = world:join("Ann", 100000), world:join("Bob", 0)
 	local holding = true
 	world.filter = function(m)
-		if holding and m.name == "mileageReceipt" and m.data:find('"t1"', 1, true) then return "drop" end
+		if holding and m.name == "mileageReceipt" and m.data:find('"t1-', 1, true) then return "drop" end
 	end
 	startTransfer(world, {kind = "payment", from = "Ann", to = "Bob", amount = 7})
 	for _ = 1, 600 do

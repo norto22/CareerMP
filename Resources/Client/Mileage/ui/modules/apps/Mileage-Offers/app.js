@@ -249,6 +249,8 @@ mileageOffersApp.controller('MileageOffers', ['$scope', function ($scope) {
 					: "did not finish"}]};
 		case "over":
 			return {title: "Race event over", note: String(data.why || ""), close: true};
+		case "refused":
+			return {title: "Could not join the race event", note: String(data.why || ""), close: true};
 		case "cancelled":
 			return {title: "Race event cancelled", close: true};
 		}
