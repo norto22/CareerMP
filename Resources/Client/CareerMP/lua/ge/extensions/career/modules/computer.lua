@@ -18,7 +18,19 @@ local computerId
 local computerFacilityName
 local menuData = {}
 
+-- CareerMP: tell careerMP_patches which car a button is for. The game's buttons start Parts,
+-- Tuning and Painting through each module's local function, and the hooks those fire carry
+-- no car, so without this CareerMP has to guess -- and its guess is whichever car the garage
+-- lists first, which seated the player in the wrong car. nil clears it.
+local function setClickedVehicle(inventoryId)
+  local patches = extensions.careerMP_patches
+  if type(patches) == "table" and type(patches.setClickedVehicle) == "function" then
+    patches.setClickedVehicle(inventoryId)
+  end
+end
+
 local function openMenu(computerFacility, resetActiveVehicleIndex, activityElement)
+  setClickedVehicle(nil)
   computerFunctions = {general = {}, vehicleSpecific = {}}
   computerId = computerFacility.id
   computerFacilityName = computerFacility.name
@@ -65,6 +77,7 @@ local function computerButtonCallback(buttonId, inventoryId)
     functionData = computerFunctions.general[buttonId]
   end
 
+  setClickedVehicle(inventoryId)
   functionData.callback(computerId)
 end
 

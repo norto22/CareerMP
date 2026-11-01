@@ -61,6 +61,10 @@ local function installBeamMP(opts)
 		local vehicle = MPVehicleGE.getVehicleByGameID(gameVehicleID)
 		if currentVehicle and vehicle and vehicle.isLocal then
 			vehicle.jbeam = '-'
+			if opts.decidesByPlayerId then
+				-- ...and hands the car it picked to the game's rebuild.
+				return original_replaceVehicle(model, config or {}, currentVehicle)
+			end
 			return original_replaceVehicle(model, config or {})
 		else
 			return original_spawnNewVehicle(model, config or {})
