@@ -244,3 +244,200 @@ test("a second career start installs once, and a reloaded traffic module gets it
 	missionStart()
 	same(countLines(logs, "mission start: 4 traffic and parked cars hidden"), 2, "hidden on the reloaded module")
 end)
+
+--== two players and the server ==============================================
+-- Each player runs the real enabler on their own stand-in game, the server runs the
+-- real plugin, and messages between them queue until pump() delivers them.
+
+local ENABLER = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
+local SERVER = "Resources/Server/CareerMP/careerMP.lua"
+
+-- Payloads travel as text, like BeamMP's JSON: Lua table syntax read back with load.
+local function encode(v)
+	if type(v) == "table" then
+		local parts = {}
+		for k, val in pairs(v) do table.insert(parts, "[" .. encode(k) .. "]=" .. encode(val)) end
+		table.sort(parts)
+		return "{" .. table.concat(parts, ",") .. "}"
+	elseif type(v) == "string" then
+		return string.format("%q", v)
+	end
+	return tostring(v)
+end
+
+local function decode(text)
+	if type(text) ~= "string" then error("not text") end
+	local chunk = (loadstring or load)("return " .. text)
+	if not chunk then error("does not decode") end
+	return chunk()
+end
+
+local function tryDecode(text)
+	local ok, value = pcall(decode, text)
+	if ok then return value end
+	return nil
+end
+
+local world
+
+-- Runs fn with the globals of player p's game.
+local function as(p, fn, ...)
+	MPVehicleGE, be, gameplay_traffic = p.MPVehicleGE, p.be, p.traffic
+	worldReadyState = 2
+	function TriggerServerEvent(name, data)
+		table.insert(world.toServer, {from = p.id, name = name, data = data})
+	end
+	function AddEventHandler(name, fn) p.handlers[name] = fn end
+	return fn(...)
+end
+
+local function newWorld()
+	world = {players = {}, toServer = {}, toClients = {}, broadcasts = {}}
+	logs = {}
+	function log(level, tag, msg) table.insert(logs, level .. " " .. tag .. ": " .. msg) end
+	function setExtensionUnloadMode() end
+	os.clockhp = function() return 0 end
+	jsonEncode, jsonDecode = encode, tryDecode
+	settings = {getValue = function() return nil end, setValue = function() end}
+	extensions = {
+		careerMP_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
+		core_input_actionFilter = {setGroup = function() end, addAction = function() end},
+	}
+	MPConfig = {getNickname = function() return "player" end}
+	Util = {JsonDecode = decode}
+	MP = {
+		CreateTimer = function() return {GetCurrent = function() return 0 end, Start = function() end} end,
+		GetPlayers = function()
+			local names = {}
+			for id, p in pairs(world.players) do names[id] = p.name end
+			return names
+		end,
+		IsPlayerConnected = function() return true end,
+		GetPlayerName = function(id) return world.players[id] and world.players[id].name end,
+		TriggerClientEventJson = function(target, event, data)
+			local message = {target = target, event = event, data = encode(data), table = data}
+			table.insert(world.toClients, message)
+			if event == "rxCareerVehSync" then table.insert(world.broadcasts, message) end
+		end,
+		TriggerClientEvent = function(target, event, data)
+			table.insert(world.toClients, {target = target, event = event, data = data})
+		end,
+	}
+	local realPrint = print
+	print = function() end
+	dofile(SERVER)
+	print = realPrint
+	return world
+end
+
+local function addPlayer(id, name)
+	local p = {id = id, name = name, vehicles = {}, objects = {}, trafficData = {}, handlers = {},
+		playerVehicle = -1, serverRequests = {}}
+	p.MPVehicleGE = {
+		getVehicles = function() return p.vehicles end,
+		isOwn = function(gid) local o = p.objects[gid]; return o ~= nil and o.owner == id end,
+		getServerVehicleID = function(gid) local o = p.objects[gid]; return o and o.serverVehicleID end,
+	}
+	p.be = {
+		getObjectByID = function(_, gid) return p.objects[gid] end,
+		getPlayerVehicleID = function() return p.playerVehicle end,
+	}
+	p.traffic = {getTrafficData = function() return p.trafficData end}
+	world.players[id] = p
+	as(p, function()
+		p.enabler = dofile(ENABLER)
+		p.enabler.onExtensionLoaded()
+		p.handlers.rxClientConfigUpdate(encode({remoteVehicleGhost = false, remoteUnicycleGhost = true,
+			localUnicycleGhost = false, consoleEnabled = true, worldEditorEnabled = true}))
+	end)
+	return p
+end
+
+-- Delivers queued messages both ways until none are left.
+local function pump()
+	for _ = 1, 200 do
+		if #world.toServer == 0 and #world.toClients == 0 then return end
+		local toServer, toClients = world.toServer, world.toClients
+		world.toServer, world.toClients = {}, {}
+		for _, m in ipairs(toServer) do
+			table.insert(world.players[m.from].serverRequests, m.name)
+			local handler = _G[m.name]
+			if handler then handler(m.from, m.data) end
+		end
+		for _, m in ipairs(toClients) do
+			for id, p in pairs(world.players) do
+				if m.target == -1 or m.target == id then
+					local handler = p.handlers[m.event]
+					if handler then as(p, handler, m.data) end
+				end
+			end
+		end
+	end
+	error("messages never stopped")
+end
+
+-- A vehicle game id: the same number on every game, which keeps the tests readable.
+local function gameId(owner, vid) return owner * 100 + vid + 1 end
+
+-- Spawns owner's vehicle vid on every game, through the server's spawn event and each
+-- game's spawn and ready hooks. fields: JBeam, isTraffic, isParked, ai (traffic data).
+local function spawn(owner, vid, fields)
+	fields = fields or {}
+	local sid = owner .. "-" .. vid
+	local gid = gameId(owner, vid)
+	for id, p in pairs(world.players) do
+		local veh = {owner = owner, serverVehicleID = sid, JBeam = fields.JBeam or "pickup", active = true}
+		if id == owner then
+			veh.isTraffic, veh.isParked = fields.isTraffic, fields.isParked
+			if fields.ai ~= nil then p.trafficData[gid] = {isAi = fields.ai} end
+		end
+		function veh:setActive(on)
+			local now = on == 1
+			if now == self.active then return end
+			self.active = now
+			as(p, p.enabler.onVehicleActiveChanged, gid, now)
+		end
+		function veh:getActive() return self.active end
+		function veh:queueLuaCommand() end
+		function veh:setField() end
+		p.objects[gid] = veh
+		p.vehicles[sid] = {gameVehicleID = gid, jbeam = veh.JBeam, isLocal = id == owner}
+	end
+	onVehicleSpawnHandler(owner, vid, "")
+	for _, p in pairs(world.players) do
+		as(p, p.enabler.onVehicleSpawned, gid)
+		as(p, p.enabler.onVehicleReady, gid)
+	end
+	pump()
+	return gid
+end
+
+-- Runs each player's frame update for the given seconds, in half-second frames.
+local function frames(p, seconds)
+	for _ = 1, math.floor(seconds * 2 + 0.5) do as(p, p.enabler.onUpdate, 0.5, 0.5, 0.5) end
+	pump()
+end
+
+local function nametag(p, sid) return p.vehicles[sid].hideNametag end
+
+-- Me (player 0) and my friend (player 1), who drives car 1-0 and has a police car
+-- (1-1) in road traffic and a parked car (1-2).
+local function twoPlayers()
+	newWorld()
+	local me, friend = addPlayer(0, "Me"), addPlayer(1, "Friend")
+	me.playerVehicle = spawn(0, 0)
+	friend.playerVehicle = spawn(1, 0)
+	spawn(1, 1, {JBeam = "fullsize", isTraffic = "true", ai = true})
+	spawn(1, 2, {JBeam = "covet", isParked = "true"})
+	return me, friend
+end
+
+--== traffic nametags ========================================================
+
+test("my friend's police and parked cars carry no nametag on my game, the car they drive does", function()
+	local me, friend = twoPlayers()
+	frames(friend, 1.5)
+	same(nametag(me, "1-0"), false, "the car my friend drives")
+	same(nametag(me, "1-1"), true, "my friend's police car")
+	same(nametag(me, "1-2"), true, "my friend's parked car")
+end)
