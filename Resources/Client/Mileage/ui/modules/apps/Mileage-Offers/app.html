@@ -1,6 +1,20 @@
 <div ng-controller="MileageOffers" class="mileageOffers">
 	<link rel="stylesheet" type="text/css" href="/ui/modules/apps/Mileage-Offers/app.css">
 
+	<div class="mo-card" ng-if="race">
+		<div class="mo-title" ng-if="race.view.title" ng-bind="race.view.title"></div>
+		<div class="mo-big" ng-if="race.view.big" ng-bind="race.view.big"></div>
+		<div class="mo-row" ng-repeat="row in race.view.rows">
+			<span class="mo-label" ng-bind="row.label"></span>
+			<span class="mo-value" ng-bind="row.value"></span>
+		</div>
+		<div class="mo-note" ng-if="race.view.note" ng-bind="race.view.note"></div>
+		<div class="mo-actions">
+			<button class="mo-danger" ng-if="race.view.giveUp" ng-click="giveUp()" ng-bind="race.view.giveUp"></button>
+			<button ng-if="race.view.close" ng-click="closeRace()">Close</button>
+		</div>
+	</div>
+
 	<div class="mo-card" ng-repeat="offer in offers track by offer.id">
 		<div class="mo-title" ng-bind="offer.view.title"></div>
 		<div class="mo-row" ng-repeat="row in offer.view.rows">

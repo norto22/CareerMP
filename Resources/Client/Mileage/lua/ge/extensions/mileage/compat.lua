@@ -261,6 +261,42 @@ function M.hasMenuManager()
 	return ui_menuManager ~= nil
 end
 
+--== races between players ===================================================
+-- A street race finishes where the challenger's big-map route ends, moves the challenged
+-- car with the game's safe teleport and holds both cars with the vehicle controller's
+-- freeze (as the game's own drag racing does). Each returns nil when the game lacks it,
+-- and the race says so instead of starting.
+
+-- The end of the route set on the big map, as a vec3, or nil when no route is set.
+function M.getNavigationTarget()
+	local fn = pickOrWarn(core_groundMarkers, "core_groundMarkers", "getTargetPos", "races cannot read the map route")
+	if not fn then return nil end
+	local ok, target = pcall(fn)
+	if ok and target then return target end
+	return nil
+end
+
+-- Moves veh to pos facing rot, clear of anything in the way. Returns true when it ran.
+function M.safeTeleport(veh, pos, rot)
+	local fn = pickOrWarn(spawn, "spawn", "safeTeleport", "a race cannot move a car to the start")
+	if not fn then return false end
+	local ok, err = pcall(fn, veh, pos, rot, nil, nil, nil, nil, true)
+	if not ok then log("E", "mileage.compat", "safeTeleport failed: " .. tostring(err)) end
+	return ok
+end
+
+-- The mission running in the foreground, or nil.
+function M.getForegroundMissionId()
+	local manager = gameplay_missions_missionManager
+	local fn = pick(manager, "getForegroundMissionId")
+	if not fn then return nil end
+	return fn()
+end
+
+function M.hasRaceFunctions()
+	return pick(core_groundMarkers, "getTargetPos") ~= nil and pick(spawn, "safeTeleport") ~= nil
+end
+
 --== self check ==============================================================
 -- Logs which mapped APIs resolved and which did not. Called once at load so a
 -- future game update surfaces as a clear list instead of a runtime nil call.
@@ -275,6 +311,8 @@ function M.report()
 		{"core_gamestate.getLoadingStatus",                        core_gamestate,    {"getLoadingStatus"}},
 		{"core_gamestate.requestEnterLoadingScreen",               core_gamestate,    {"requestEnterLoadingScreen"}},
 		{"core_gamestate.requestExitLoadingScreen",                core_gamestate,    {"requestExitLoadingScreen"}},
+		{"core_groundMarkers.getTargetPos",                        core_groundMarkers, {"getTargetPos"}},
+		{"spawn.safeTeleport",                                     spawn,             {"safeTeleport"}},
 	}
 
 	local missing = {}

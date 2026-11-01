@@ -164,7 +164,7 @@ local ledger = {
 
 local STATS_SECONDS = 60
 local STATS_FEATURES = {"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-	"payments", "transfers", "offers", "alive", "trafficLights", "notifications", "config"}
+	"payments", "transfers", "offers", "races", "alive", "trafficLights", "notifications", "config"}
 
 -- totals[feature] and slots[second % STATS_SECONDS].counts[feature]:
 -- {received, sent, recipients, bytes}.
@@ -859,6 +859,7 @@ function onInit()
 	MP.RegisterEvent("mileageReceipt","mileageReceipt")
 	MP.RegisterEvent("mileageOffer","mileageOffer")
 	MP.RegisterEvent("mileageOfferAnswer","mileageOfferAnswer")
+	MP.RegisterEvent("mileageRaceReport","mileageRaceReport")
 
 	MP.RegisterEvent("careerPrefabSync","careerPrefabSync")
 	MP.RegisterEvent("careerSyncRequested","careerSyncRequested")
@@ -1513,9 +1514,390 @@ local function offersPlayerLeft(player_id)
 	end
 end
 
+--== Races ===================================================================
+-- A street race between two players, from an accepted challenge to its payout.
+--
+--   staking    both stakes are taken as transfers to the server; STAKE_SECONDS at most
+--   pose       the challenger's game reports where its car stands
+--   teleport   the challenged game moves its car beside it, frozen, and says it is ready
+--   countdown  both games count down COUNTDOWN_SECONDS and release their car on green,
+--              each timing itself from its own green
+--   racing     each game reports its time once its car reaches the finish; the server
+--              waits DECIDE_SECONDS after the first report for a faster one
+--
+-- data/races.json keeps every race whose stakes are not yet paid out or returned:
+-- race = {id, a, b, stake, held = {[name] = amount}, decision, pot, prize, paid = {[role]
+-- = true}, created}. decision is "none", "refund" or "winner:<name>" and is written
+-- before any payout is made; the payouts (roles "pot", "prize", "refund:<name>") are
+-- transfers carrying the race id and role, so a restart makes only the ones still
+-- missing. A race undecided at a restart is refunded. A stake taken after the race was
+-- called off is refunded too. The record goes once every payout has been given.
+--
+-- Leaving or giving up before the countdown calls the race off (stakes back); from the
+-- countdown on it loses the stake to the other racer, and both leaving returns both.
+
+local RACES_FILE = "races.json"
+local STAKE_SECONDS = 15
+local START_SECONDS = 15
+local COUNTDOWN_SECONDS = 3
+local DECIDE_SECONDS = 5
+local FINISH_RADIUS = 20
+
+local racesData = {seq = 0, races = {}}
+-- The phase and timing of each race under way; not kept across a start.
+local liveRaces = {}
+-- When each pair of players last earned the server prize, by "a|b" in name order.
+local prizeEarnedAt = {}
+
+-- Set by the leaderboard section: counts a race win.
+local leaderboardWin
+
+local function saveRaces()
+	return writeData(RACES_FILE, racesData)
+end
+
+local function pairKey(a, b)
+	if a > b then a, b = b, a end
+	return a .. "|" .. b
+end
+
+local function otherRacer(race, name)
+	if name == race.a then return race.b end
+	if name == race.b then return race.a end
+	return nil
+end
+
+local function sendRace(name, message)
+	local id = playerIdByName(name)
+	if id then sendJson("races", id, "rxMileageRace", message) end
+end
+
+local function sendBothRace(race, message)
+	sendRace(race.a, message)
+	sendRace(race.b, message)
+end
+
+local function heldTotal(race)
+	local total = 0
+	for _, amount in pairs(race.held) do total = total + amount end
+	return total
+end
+
+-- {role = {to, amount, label}} for the race's decision.
+local function payoutsFor(race)
+	local payouts = {}
+	if race.decision == "refund" then
+		for name, amount in pairs(race.held) do
+			payouts["refund:" .. name] = {to = name, amount = amount,
+				label = "Race stake back vs " .. (otherRacer(race, name) or "?")}
+		end
+	else
+		local winner = race.decision:match("^winner:(.+)$")
+		if winner then
+			local loser = otherRacer(race, winner) or "?"
+			if (race.pot or 0) > 0 then
+				payouts.pot = {to = winner, amount = race.pot, label = "Race win vs " .. loser}
+			end
+			if (race.prize or 0) > 0 then
+				payouts.prize = {to = winner, amount = race.prize, label = "Race prize vs " .. loser}
+			end
+		end
+	end
+	return payouts
+end
+
+-- Transfers still open for this race, by role (stakes as "stake:<name>"); skip is a
+-- transfer being finished right now.
+local function openRaceTransfers(race, skip)
+	local open = {}
+	for id, transfer in pairs(transferData.transfers) do
+		if transfer.race == race.id and id ~= skip then open[transfer.role or id] = transfer end
+	end
+	return open
+end
+
+-- Makes the payouts of a decided race that are neither given nor under way, and drops
+-- the race once everything is paid. skip: a transfer being finished right now.
+local function settleRace(race, skip)
+	if race.decision == "none" then return end
+	local open = openRaceTransfers(race, skip)
+	local waiting = false
+	for role, payout in pairs(payoutsFor(race)) do
+		if not race.paid[role] then
+			waiting = true
+			if not open[role] then
+				startTransfer({kind = role == "prize" and "prize" or (role == "pot" and "pot" or "refund"),
+					from = SERVER_PARTY, to = payout.to, amount = payout.amount, giveLabel = payout.label,
+					race = race.id, role = role})
+			end
+		end
+	end
+	for role in pairs(open) do
+		if role:sub(1, 6) == "stake:" then waiting = true end
+	end
+	if not waiting then
+		racesData.races[race.id] = nil
+		saveRaces()
+	end
+end
+
+-- Records a decision before anything is paid for it.
+local function decide(race, decision)
+	if race.decision ~= "none" then return end
+	race.decision = decision
+	race.pot = heldTotal(race)
+	saveRaces()
+end
+
+local function endLive(race)
+	liveRaces[race.id] = nil
+end
+
+-- The race ends before its countdown: both stakes go back.
+local function callOff(race, why)
+	local live = liveRaces[race.id]
+	endLive(race)
+	decide(race, "refund")
+	sendBothRace(race, {race = race.id, phase = "calledOff", why = why, stake = race.stake})
+	settleRace(race)
+	if live then print("[Mileage] Race " .. race.id .. " between " .. consoleText(race.a) .. " and "
+		.. consoleText(race.b) .. " called off: " .. why) end
+end
+
+-- The race ends with a result. winner may be nil (both stakes back); finished: the
+-- winner reached the finish (so the win counts and may earn the prize).
+local function finishRace(race, winner, why, finished)
+	local live = liveRaces[race.id] or {reports = {}}
+	endLive(race)
+	local prize = 0
+	if winner and finished then
+		local key = pairKey(race.a, race.b)
+		local cooldown = serverNumber("racePrizeCooldownMinutes", 0, 1440) * 60
+		local amount = serverNumber("racePrize", 0, 1000000)
+		if amount > 0 and (not prizeEarnedAt[key] or os.time() - prizeEarnedAt[key] >= cooldown) then
+			prize = amount
+			prizeEarnedAt[key] = os.time()
+		end
+	end
+	race.prize = prize
+	decide(race, winner and ("winner:" .. winner) or "refund")
+	if winner and finished and leaderboardWin then leaderboardWin(winner) end
+	for _, name in ipairs({race.a, race.b}) do
+		sendRace(name, {race = race.id, phase = "result", winner = winner, why = why, times = live.reports,
+			stake = race.stake, pot = race.pot, prize = prize, you = name, other = otherRacer(race, name),
+			gaveUp = live.gaveUp})
+	end
+	settleRace(race)
+end
+
+-- Whether name is in a race that has not ended.
+inRace = function(name)
+	for id, live in pairs(liveRaces) do
+		local race = racesData.races[id]
+		if race and (race.a == name or race.b == name) then return true end
+	end
+	return false
+end
+
+local function beginStart(race)
+	local live = liveRaces[race.id]
+	if not live or live.phase ~= "staking" then return end
+	if (race.held[race.a] or 0) < race.stake or (race.held[race.b] or 0) < race.stake then return end
+	live.phase = "pose"
+	live.deadline = signalTimer:GetCurrent() + START_SECONDS
+	sendRace(race.a, {race = race.id, phase = "pose", other = race.b})
+end
+
+startRace = function(offer)
+	racesData.seq = racesData.seq + 1
+	local race = {
+		id = "r" .. racesData.seq,
+		a = offer.fromName,
+		b = offer.toName,
+		stake = offer.amount,
+		held = {},
+		decision = "none",
+		paid = {},
+		created = os.time(),
+	}
+	racesData.races[race.id] = race
+	liveRaces[race.id] = {phase = "staking", finish = offer.finish, reports = {},
+		deadline = signalTimer:GetCurrent() + STAKE_SECONDS}
+	if not saveRaces() then
+		callOff(race, "the server could not keep the race")
+		return
+	end
+	sendBothRace(race, {race = race.id, phase = "staking", stake = race.stake, a = race.a, b = race.b})
+	if race.stake > 0 then
+		for _, name in ipairs({race.a, race.b}) do
+			startTransfer({kind = "stake", from = name, to = SERVER_PARTY, amount = race.stake,
+				takeLabel = "Race stake vs " .. otherRacer(race, name), race = race.id, role = "stake:" .. name})
+		end
+	else
+		beginStart(race)
+	end
+end
+
+-- Stakes and payouts of a race report here, before the transfer itself moves on.
+function transferOwners.race(transfer, event)
+	local race = racesData.races[transfer.race]
+	if not race then return end
+	if transfer.kind == "stake" then
+		if event == "taken" then
+			if race.held[transfer.from] == nil then
+				race.held[transfer.from] = transfer.amount
+				saveRaces()
+			end
+			if race.decision ~= "none" then
+				settleRace(race)
+			else
+				beginStart(race)
+			end
+		elseif event == "refused" then
+			if race.decision == "none" then
+				callOff(race, consoleText(transfer.from) .. " did not have the stake")
+			else
+				settleRace(race, transfer.id)
+			end
+		end
+	elseif event == "given" and transfer.role then
+		race.paid[transfer.role] = true
+		saveRaces()
+		settleRace(race, transfer.id)
+	end
+end
+
+-- Set by the events section: reports about an event's race.
+local eventRaceReport
+
+-- A racer's game reports: {race, pose = {pos, dir, up}} (the challenger, for the start),
+-- {race, ready = true} (the challenged, beside it), {race, failed = why},
+-- {race, finished = seconds} or {race, gaveUp = true}.
+function mileageRaceReport(player_id, data)
+	received("races")
+	local report = decodeTable(data)
+	if not report or type(report.race) ~= "string" then return end
+	if eventRaceReport and eventRaceReport(player_id, report) then return end
+	local race = racesData.races[report.race]
+	local live = liveRaces[report.race]
+	local name = MP.GetPlayerName(player_id)
+	if not race or not live or not otherRacer(race, name) then return end
+	local before = live.phase == "staking" or live.phase == "pose" or live.phase == "teleport"
+	if report.gaveUp == true or report.failed then
+		if before then
+			callOff(race, report.failed and consoleText(report.failed) or (consoleText(name) .. " gave up"))
+		elseif race.decision == "none" and not live.reports[name] then
+			live.gaveUp = name
+			finishRace(race, otherRacer(race, name), "gaveUp", false)
+		end
+		return
+	end
+	if live.phase == "pose" and name == race.a and type(report.pose) == "table" and isPoint(report.pose.pos)
+			and isPoint(report.pose.dir) and isPoint(report.pose.up) then
+		live.phase = "teleport"
+		live.deadline = signalTimer:GetCurrent() + START_SECONDS
+		sendRace(race.b, {race = race.id, phase = "teleport", pose = report.pose, other = race.a})
+	elseif live.phase == "teleport" and name == race.b and report.ready == true then
+		live.phase = "countdown"
+		live.goAt = signalTimer:GetCurrent() + COUNTDOWN_SECONDS
+		live.deadline = live.goAt + serverNumber("raceTimeLimitMinutes", 1, 120) * 60
+		sendBothRace(race, {race = race.id, phase = "countdown", seconds = COUNTDOWN_SECONDS, finish = live.finish,
+			radius = FINISH_RADIUS, stake = race.stake, a = race.a, b = race.b,
+			timeLimit = serverNumber("raceTimeLimitMinutes", 1, 120) * 60})
+	elseif (live.phase == "countdown" or live.phase == "racing") and type(report.finished) == "number"
+			and report.finished > 0 and report.finished == report.finished and not live.reports[name] then
+		live.reports[name] = report.finished
+		live.firstReportAt = live.firstReportAt or signalTimer:GetCurrent()
+		if live.reports[race.a] and live.reports[race.b] then
+			local winner = live.reports[race.a] <= live.reports[race.b] and race.a or race.b
+			finishRace(race, winner, "finished", true)
+		end
+	end
+end
+
+local function racesTick()
+	local now = signalTimer:GetCurrent()
+	for id, live in pairs(liveRaces) do
+		local race = racesData.races[id]
+		if not race then
+			liveRaces[id] = nil
+		elseif live.phase == "countdown" and now >= live.goAt then
+			live.phase = "racing"
+		end
+		if race and liveRaces[id] then
+			if live.firstReportAt and now - live.firstReportAt >= DECIDE_SECONDS then
+				local winner, best = nil, nil
+				for name, seconds in pairs(live.reports) do
+					if not best or seconds < best then winner, best = name, seconds end
+				end
+				finishRace(race, winner, "finished", true)
+			elseif now >= live.deadline then
+				if live.phase == "staking" or live.phase == "pose" or live.phase == "teleport" then
+					callOff(race, live.phase == "staking" and "the stakes did not arrive in time"
+						or "the racers could not line up in time")
+				else
+					finishRace(race, nil, "timeout", false)
+				end
+			end
+		end
+	end
+end
+
+local function racesPlayerLeft(name)
+	for id, live in pairs(liveRaces) do
+		local race = racesData.races[id]
+		local other = race and otherRacer(race, name)
+		if other then
+			if live.phase == "staking" or live.phase == "pose" or live.phase == "teleport" then
+				callOff(race, consoleText(name) .. " left")
+			elseif playerIdByName(other) then
+				live.gaveUp = name
+				finishRace(race, other, "left", false)
+			else
+				finishRace(race, nil, "bothLeft", false)
+			end
+		end
+	end
+end
+
+local function loadRaces()
+	local stored = readData(RACES_FILE)
+	racesData = {seq = 0, races = {}}
+	liveRaces = {}
+	if stored then
+		racesData.seq = tonumber(stored.seq) or 0
+		racesData.races = type(stored.races) == "table" and stored.races or {}
+	end
+	for id, race in pairs(racesData.races) do
+		local n = tonumber(tostring(id):match("^r(%d+)$"))
+		if n and n > racesData.seq then racesData.seq = n end
+		race.held = type(race.held) == "table" and race.held or {}
+		race.paid = type(race.paid) == "table" and race.paid or {}
+		if race.decision == nil or race.decision == "none" then
+			print("[Mileage] ---------- Race " .. id .. " was under way when the server stopped; its stakes go back")
+			decide(race, "refund")
+		end
+	end
+	for _, race in pairs(racesData.races) do settleRace(race) end
+end
+
+printRaces = function()
+	local ids = {}
+	for id in pairs(racesData.races) do table.insert(ids, id) end
+	table.sort(ids)
+	print(string.format("[Mileage] Races holding stakes: %d", #ids))
+	for _, id in ipairs(ids) do
+		local race = racesData.races[id]
+		print(string.format("  %s: %s vs %s, $%d stake, $%d held, %s, %s ago", id, consoleText(race.a),
+			consoleText(race.b), race.stake or 0, heldTotal(race), race.decision,
+			ageText(os.time() - (race.created or os.time()))))
+	end
+end
+
 startMoneyFeatures = function()
 	loadTransfers()
 	offers = {}
+	loadRaces()
 end
 
 --== Drag racing relay =======================================================
@@ -2132,6 +2514,7 @@ function tick()
 	sendChangedShares()
 	transfersTick()
 	offersTick()
+	racesTick()
 	ticksSinceAlive = ticksSinceAlive + 1
 	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
 		ticksSinceAlive = 0
@@ -2143,7 +2526,10 @@ function onPlayerJoinHandler(player_id)
 	loadedPrefabs[player_id] = {}
 	pendingActivation[player_id] = {
 		joinTimestamp = signalTimer:GetCurrent(),
-		careerActive = false
+		careerActive = false,
+		-- BeamMP may drop a leaving player from its list before the plugin hears of the
+		-- leave, so the name their races and transfers know them by is kept here.
+		name = MP.GetPlayerName(player_id),
 	}
 end
 
@@ -2174,6 +2560,9 @@ function onPlayerDisconnectHandler(player_id)
 	-- there has to inherit it or an in-progress race loses its authority.
 	releaseDragPresence(player_id)
 	offersPlayerLeft(player_id)
+	local entry = pendingActivation[player_id]
+	local name = entry and entry.name or MP.GetPlayerName(player_id)
+	if name then racesPlayerLeft(name) end
 	loadedPrefabs[player_id] = nil
 	ledger.send[player_id] = nil
 	ledger.receive[player_id] = nil

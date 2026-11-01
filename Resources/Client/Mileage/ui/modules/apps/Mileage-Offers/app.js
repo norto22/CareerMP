@@ -84,6 +84,93 @@ mileageOffersApp.controller('MileageOffers', ['$scope', function ($scope) {
 			(accept ? 'true' : 'false') + ') end');
 	};
 
+	//== a street race: countdown, race panel, result ============================
+
+	$scope.race = null;
+
+	function raceView(data) {
+		var other = String(data.other || "");
+		var stake = Number(data.stake) || 0;
+		var stakeText = stake > 0 ? moDollars(stake) + " stake" : "no stake";
+		switch (data.phase) {
+		case "staking":
+			return {title: "Race vs " + other, note: stake > 0 ? "Taking both stakes..." : "Getting ready..."};
+		case "lining up":
+			return {title: "Race vs " + other, note: "Lining up beside each other..."};
+		case "countdown":
+			return {big: String(data.count), note: "vs " + other + " · " + stakeText};
+		case "go":
+			return {big: "GO", note: "vs " + other + " · " + stakeText};
+		case "racing":
+			return {
+				title: "Racing " + other,
+				big: moTime(data.elapsed),
+				note: (typeof data.distance === "number" ? "Finish " + moKm(data.distance) + " · " : "") +
+					"follow your map route",
+				giveUp: stake > 0 ? "Give up (lose " + moDollars(stake) + ")" : "Give up",
+			};
+		case "finished":
+			return {title: "Finished in " + moTime(data.elapsed), note: "Waiting for " + other + "..."};
+		case "calledOff":
+			return {title: "Race called off", note: String(data.why || "") +
+				(stake > 0 ? ". Your " + moDollars(stake) + " stake is back." : "."), close: true};
+		case "result":
+			return resultView(data);
+		}
+		return null;
+	}
+
+	function resultView(data) {
+		var you = String(data.you || ""), other = String(data.other || "");
+		var times = data.times || {};
+		var stake = Number(data.stake) || 0, pot = Number(data.pot) || 0, prize = Number(data.prize) || 0;
+		var rows = [];
+		var mine = times[you], theirs = times[other];
+		if (typeof mine === "number") {
+			rows.push({label: "Your time", value: moTime(mine)});
+		} else if (data.gaveUp === you) {
+			rows.push({label: "Your time", value: data.why === "left" ? "did not finish: you left the race"
+				: "did not finish: you gave up"});
+		}
+		if (typeof theirs === "number") {
+			var gap = typeof mine === "number" ? " (" + (theirs >= mine ? "+" : "-") +
+				Math.abs(theirs - mine).toFixed(1) + " s)" : "";
+			rows.push({label: other, value: moTime(theirs) + gap});
+		} else if (data.gaveUp === other) {
+			rows.push({label: other, value: data.why === "left" ? "left the race" : "gave up"});
+		}
+		if (!data.winner) {
+			return {title: "No winner", rows: rows, close: true,
+				note: (data.why === "timeout" ? "Nobody reached the finish in time." : "The race ended without a winner.") +
+					(stake > 0 ? " Your " + moDollars(stake) + " stake is back." : "")};
+		}
+		if (data.winner === you) {
+			var parts = [];
+			if (pot > 0) parts.push(moDollars(pot) + " stakes");
+			if (prize > 0) parts.push(moDollars(prize) + " prize");
+			if (parts.length > 0) rows.push({label: "You get", value: parts.join(" + ")});
+			return {title: "You won", rows: rows, close: true};
+		}
+		if (stake > 0) rows.push({label: "You lost", value: "your " + moDollars(stake) + " stake"});
+		return {title: String(data.winner) + " won", rows: rows, close: true};
+	}
+
+	$scope.$on('MileageRace', function (event, data) {
+		if (!data) return;
+		$scope.$evalAsync(function () {
+			var shown = raceView(data);
+			$scope.race = shown ? {id: data.race, phase: data.phase, view: shown} : null;
+		});
+	});
+
+	$scope.giveUp = function () {
+		bngApi.engineLua('if mileage_streetRace then mileage_streetRace.giveUp() end');
+	};
+
+	$scope.closeRace = function () {
+		$scope.race = null;
+	};
+
 	// Redraws the time bars.
 	var ticker = setInterval(function () {
 		if ($scope.offers.length > 0) $scope.$evalAsync(function () {});
@@ -91,7 +178,17 @@ mileageOffersApp.controller('MileageOffers', ['$scope', function ($scope) {
 	$scope.$on('$destroy', function () { clearInterval(ticker); });
 
 	bngApi.engineLua('if mileage_offers then mileage_offers.sendState() end');
+	bngApi.engineLua('if mileage_streetRace then mileage_streetRace.sendState() end');
 }]);
+
+// Seconds as m:ss.s.
+function moTime(seconds) {
+	var s = Number(seconds);
+	if (!isFinite(s) || s < 0) return "-";
+	var minutes = Math.floor(s / 60);
+	var rest = s - minutes * 60;
+	return minutes + ":" + (rest < 10 ? "0" : "") + rest.toFixed(1);
+}
 
 function moDollars(n) {
 	return "$" + Number(n || 0).toLocaleString("en-US");

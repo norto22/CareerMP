@@ -376,6 +376,33 @@ local function fileExists(path)
 	return false
 end
 
+-- p's car, standing at the origin facing north unless placed: its position, direction and
+-- up vectors, and whether the vehicle controller holds it frozen.
+function World:giveCar(p)
+	if p.car then return p.car end
+	local car = {id = 1000 + p.id, JBeam = "pickup", pos = {x = p.id * 50, y = 0, z = 0}, dir = {x = 0, y = 1, z = 0},
+		up = {x = 0, y = 0, z = 1}, frozen = false, freezes = 0}
+	function car:getPosition() return self.pos end
+	function car:getDirectionVector() return self.dir end
+	function car:getDirectionVectorUp() return self.up end
+	function car:queueLuaCommand(cmd)
+		local on = cmd:match("^controller%.setFreeze%((%d)%)$")
+		if on then
+			self.frozen = on == "1"
+			if self.frozen then self.freezes = self.freezes + 1 end
+		end
+	end
+	p.car = car
+	return car
+end
+
+-- Moves p's car to x, y (z 0); a frozen car does not move.
+function World:drive(p, x, y)
+	if p.car.frozen then return false end
+	p.car.pos = {x = x, y = y, z = 0}
+	return true
+end
+
 -- Loads p's game from its save: money is the saved money, extensions start fresh.
 function World:loadGame(p)
 	p.money = p.savedMoney
@@ -404,7 +431,23 @@ function World:loadGame(p)
 			end
 			return list
 		end,
+		isOwn = function(gid) return p.car ~= nil and p.car.id == gid and p.car.own ~= false end,
 	}
+	self:giveCar(p)
+	p.teleports = p.teleports or {}
+	p.be = {
+		getPlayerVehicleID = function() return p.inCar ~= false and p.car and p.car.id or -1 end,
+		getObjectByID = function(_, gid) return p.car and p.car.id == gid and p.car or nil end,
+	}
+	p.globals.vec3 = function(x, y, z) return {x = x, y = y, z = z} end
+	p.globals.quatFromDir = function(dir, up) return {dir = dir, up = up} end
+	p.globals.core_groundMarkers = {getTargetPos = function() return p.route end}
+	p.globals.gameplay_missions_missionManager = {getForegroundMissionId = function() return p.mission end}
+	p.globals.spawn = {safeTeleport = function(veh, pos, rot)
+		table.insert(p.teleports, {pos = copy(pos), rot = copy(rot)})
+		veh.pos = {x = pos.x, y = pos.y, z = pos.z}
+		veh.dir, veh.up = copy(rot.dir), copy(rot.up)
+	end}
 	self:as(p, function()
 		for _, entry in ipairs(World.CLIENT_FILES) do
 			if fileExists(entry[2]) then

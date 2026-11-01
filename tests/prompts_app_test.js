@@ -115,6 +115,58 @@ test("the app asks the game for open offers when it loads", () => {
 	assert.ok(lua.includes("if mileage_offers then mileage_offers.sendState() end"));
 });
 
+//== a street race ================================================================
+
+const rows = (view) => [...(view.rows || [])].map((r) => r.label + ": " + r.value);
+
+test("the countdown shows big, then GO, then the race panel with Give up", () => {
+	const {scope, lua} = load();
+	scope.emit("MileageRace", {phase: "countdown", race: "r1", other: "Alex_Rivera", stake: 1000, count: 2});
+	assert.strictEqual(scope.race.view.big, "2");
+	assert.strictEqual(scope.race.view.note, "vs Alex_Rivera · $1,000 stake");
+	scope.emit("MileageRace", {phase: "go", race: "r1", other: "Alex_Rivera", stake: 1000});
+	assert.strictEqual(scope.race.view.big, "GO");
+	scope.emit("MileageRace", {phase: "racing", race: "r1", other: "Alex_Rivera", stake: 1000, elapsed: 72.43,
+		distance: 900});
+	assert.strictEqual(scope.race.view.title, "Racing Alex_Rivera");
+	assert.strictEqual(scope.race.view.big, "1:12.4");
+	assert.strictEqual(scope.race.view.note, "Finish 0.9 km · follow your map route");
+	assert.strictEqual(scope.race.view.giveUp, "Give up (lose $1,000)");
+	scope.giveUp();
+	assert.ok(lua.includes("if mileage_streetRace then mileage_streetRace.giveUp() end"));
+});
+
+test("the winner sees both times, the gap and the money", () => {
+	const {scope} = load();
+	scope.emit("MileageRace", {phase: "result", race: "r1", you: "norto22", other: "Alex_Rivera", winner: "norto22",
+		why: "finished", times: {norto22: 123.8, Alex_Rivera: 126.1}, stake: 1000, pot: 2000, prize: 500});
+	assert.strictEqual(scope.race.view.title, "You won");
+	assert.deepStrictEqual(rows(scope.race.view), ["Your time: 2:03.8", "Alex_Rivera: 2:06.1 (+2.3 s)",
+		"You get: $2,000 stakes + $500 prize"]);
+	scope.closeRace();
+	assert.strictEqual(scope.race, null, "closed");
+});
+
+test("the loser sees who won and the stake lost; a leaver is told they did not finish", () => {
+	const {scope} = load();
+	scope.emit("MileageRace", {phase: "result", race: "r1", you: "norto22", other: "Alex_Rivera",
+		winner: "Alex_Rivera", why: "left", gaveUp: "norto22", times: {}, stake: 1000, pot: 2000, prize: 0});
+	assert.strictEqual(scope.race.view.title, "Alex_Rivera won");
+	assert.deepStrictEqual(rows(scope.race.view), ["Your time: did not finish: you left the race",
+		"You lost: your $1,000 stake"]);
+});
+
+test("nobody finishing in time says the stake is back; a called-off race says why", () => {
+	const {scope} = load();
+	scope.emit("MileageRace", {phase: "result", race: "r1", you: "a", other: "b", why: "timeout", times: {}, stake: 1000});
+	assert.strictEqual(scope.race.view.title, "No winner");
+	assert.strictEqual(scope.race.view.note, "Nobody reached the finish in time. Your $1,000 stake is back.");
+	scope.emit("MileageRace", {phase: "calledOff", race: "r2", why: "b did not have the stake", stake: 500});
+	assert.strictEqual(scope.race.view.title, "Race called off");
+	assert.strictEqual(scope.race.view.note, "b did not have the stake. Your $500 stake is back.");
+	assert.strictEqual(scope.race.view.close, true, "can be closed");
+});
+
 //== the template ================================================================
 
 test("the template binds every text as text, never as markup", () => {
