@@ -167,7 +167,12 @@ local function addCar(game, owner, vid, opts)
 		end
 	end
 	for cid = 0, beamCount - 1 do
-		beams[cid] = {cid = cid, id1 = cid % nodeCount, id2 = (cid + 1) % nodeCount}
+		-- opts.separate gives every beam two points of its own.
+		if opts.separate then
+			beams[cid] = {cid = cid, id1 = (2 * cid) % nodeCount, id2 = (2 * cid + 1) % nodeCount}
+		else
+			beams[cid] = {cid = cid, id1 = cid % nodeCount, id2 = (cid + 1) % nodeCount}
+		end
 		car.restLen[cid] = 1
 	end
 	car.v = {data = {beams = beams, nodes = nodes, refNodes = {[0] = {ref = 0}}}}
@@ -310,4 +315,188 @@ test("a dent on the owner's car reaches the other player's copy", function()
 	dent(owner, 7, 0.8)
 	step(1.5)
 	same(copy.restLen[7], 0.8, "the copy's beam 7")
+end)
+
+--== the vehicle side on its own ============================================
+
+-- A car on a game with no game-engine module: what its vehicle Lua queues stays in
+-- game.geQueue.
+local function soloCar(opts)
+	newWorld()
+	local game = {id = 0, cars = {}, objects = {}, vehicles = {}, geQueue = {}}
+	world.games[0] = game
+	return addCar(game, 0, 0, opts), game
+end
+
+-- The damage messages a car's vehicle Lua queued for the game-engine Lua, decoded.
+local function takeMessages(car)
+	local messages = {}
+	local queue = car.game.geQueue
+	car.game.geQueue = {}
+	for _, cmd in ipairs(queue) do
+		careerMP_damageSync = {onLocalDamage = function(id, json)
+			same(id, car.gid, "vehicle id in the command")
+			table.insert(messages, jsonToLua(json))
+		end}
+		assert(compile(cmd))()
+	end
+	return messages
+end
+
+local function tick(car, seconds)
+	for _ = 1, math.floor((seconds or 0.5) / 0.25 + 0.5) do inVehicle(car, car.ext.updateGFX, 0.25) end
+end
+
+local function beamIds(message)
+	local ids = {}
+	for i = 1, #message.b, 4 do table.insert(ids, message.b[i]) end
+	return ids
+end
+
+local function ownerCar(opts)
+	local car = soloCar(opts)
+	inVehicle(car, car.ext.setRole, "owner")
+	return car
+end
+
+local function copyCar(opts)
+	local car = soloCar(opts)
+	inVehicle(car, car.ext.setRole, "copy")
+	return car
+end
+
+test("an owner whose damage total does not move sends nothing", function()
+	local car = ownerCar()
+	tick(car, 2)
+	same(#takeMessages(car), 0, "messages")
+end)
+
+test("each message carries only the beams changed since the one before", function()
+	local car = ownerCar()
+	dent(car, 7, 0.8)
+	dent(car, 9, 0.9)
+	tick(car)
+	local first = takeMessages(car)
+	same(#first, 1, "first messages")
+	same(table.concat(beamIds(first[1]), ","), "7,9", "beams in the first message")
+	same(first[1].b[2], 0.8, "beam 7 rest length")
+	same(first[1].b[3], 0, "beam 7 not broken")
+	same(first[1].b[4], 0.3, "beam 7 deformation")
+	same(first[1].c, 0, "not cleared")
+	dent(car, 12, 0.7)
+	tick(car)
+	local second = takeMessages(car)
+	same(table.concat(beamIds(second[1]), ","), "12", "beams in the second message")
+end)
+
+test("a broken beam is sent as broken", function()
+	local car = ownerCar()
+	car.broken[5] = true
+	car.beamstate.damage = 50
+	tick(car)
+	local m = takeMessages(car)[1]
+	same(table.concat(beamIds(m), ","), "5", "beams")
+	same(m.b[3], 1, "broken")
+end)
+
+test("a car with no role, or a copy, never sends its damage", function()
+	for _, role in ipairs({"none", "copy"}) do
+		local car = soloCar()
+		inVehicle(car, car.ext.setRole, role)
+		dent(car, 7, 0.8)
+		tick(car, 2)
+		same(#takeMessages(car), 0, role .. ": messages")
+	end
+end)
+
+test("a wreck of 1000 beams goes out as 400, 400 and 200 over three ticks", function()
+	local car = ownerCar({beams = 1000})
+	car.beamstate.damage = 1000
+	for cid = 0, 999 do car.restLen[cid] = 0.9 end
+	local counts = {}
+	for _ = 1, 4 do
+		tick(car)
+		for _, m in ipairs(takeMessages(car)) do table.insert(counts, math.floor(#m.b / 4)) end
+	end
+	same(table.concat(counts, ","), "400,400,200", "beams per message")
+end)
+
+test("a message holds at most 500 points", function()
+	local car = ownerCar({beams = 300, nodes = 600, separate = true})
+	car.beamstate.damage = 1000
+	for cid = 0, 299 do car.restLen[cid] = 0.9 end
+	tick(car)
+	local m = takeMessages(car)[1]
+	same(math.floor(#m.n / 4), 500, "points in the message")
+	same(math.floor(#m.b / 4), 250, "beams, cut short by the point limit")
+	tick(car)
+	same(math.floor(#takeMessages(car)[1].b / 4), 50, "beams in the next message")
+end)
+
+test("a dent applied to a copy facing another way lands in the same place on the car", function()
+	local owner = ownerCar()
+	dent(owner, 7, 0.8, {0.05, -0.12, 0.03})
+	tick(owner)
+	local m = takeMessages(owner)[1]
+	local copy = copyCar({fwd = {x = 1, y = 0, z = 0}})
+	inVehicle(copy, copy.ext.applyDamage, 0, m.b, m.n)
+	local node = owner.v.data.beams[7].id1
+	local ox, oy, oz = toCarFrame(owner, owner.nodePos[node])
+	local cx, cy, cz = toCarFrame(copy, copy.nodePos[node])
+	expect(math.abs(ox - cx) < 0.002 and math.abs(oy - cy) < 0.002 and math.abs(oz - cz) < 0.002,
+		string.format("point %d: owner (%.3f, %.3f, %.3f), copy (%.3f, %.3f, %.3f)", node, ox, oy, oz, cx, cy, cz))
+	expect(math.abs(copy.nodePos[node].x - owner.nodePos[node].x) > 0.1, "the copy's frame was used")
+	same(copy.restLen[7], 0.8, "rest length")
+	same(copy.beamstate.deformedBeams[7], 0.3, "deformation recorded")
+end)
+
+test("a copy refuses unknown beams and points and values out of range, and applies the rest", function()
+	local copy = copyCar()
+	local before = vec3(copy.nodePos[3])
+	inVehicle(copy, copy.ext.applyDamage, 0,
+		{7, 0.8, 0, 0.2,      -- applied
+		 999, 0.8, 0, 0.2,    -- unknown beam
+		 8, 150, 0, 0.2,      -- rest length out of range
+		 9, -1, 0, 0.2,       -- negative rest length
+		 10, 0.9, 2, 0.2,     -- broken flag not 0 or 1
+		 11, 0.9, 0, 50,      -- deformation out of range
+		 12, 0.5, 1, 1},      -- applied, broken
+		{3, 25, 0, 0,         -- offset out of range
+		 999, 0, 0, 0,        -- unknown point
+		 4, 0.1, 0.2, 0.3})   -- applied
+	same(copy.restLen[7], 0.8, "beam 7")
+	same(copy.restLen[8], 1, "beam 8")
+	same(copy.restLen[9], 1, "beam 9")
+	same(copy.restLen[10], 1, "beam 10")
+	same(copy.restLen[11], 1, "beam 11")
+	same(copy.restLen[12], 0.5, "beam 12")
+	same(copy.broken[12], true, "beam 12 broken")
+	same(copy.nodePos[3].x, before.x, "point 3 left alone")
+	local x, y, z = toCarFrame(copy, copy.nodePos[4])
+	expect(math.abs(x - 0.1) < 1e-6 and math.abs(y - 0.2) < 1e-6 and math.abs(z - 0.3) < 1e-6, "point 4 placed")
+	same(countLines(logs, "refused part of another player's damage message"), 1, "logged once")
+end)
+
+test("a copy refuses text where numbers belong", function()
+	local copy = copyCar()
+	inVehicle(copy, copy.ext.applyDamage, 0, {"7", 0.8, 0, 0.2, 8, "0.8", 0, 0.2}, {"3", 0, 0, 0})
+	same(copy.restLen[7], 1, "beam 7")
+	same(copy.restLen[8], 1, "beam 8")
+end)
+
+test("a beam already deformed or broken on the copy is not deformed or broken again", function()
+	local copy = copyCar()
+	inVehicle(copy, copy.ext.applyDamage, 0, {7, 0.8, 1, 0.3}, {})
+	inVehicle(copy, copy.ext.applyDamage, 0, {7, 0.8, 1, 0.3}, {})
+	same(copy.breakCalls, 1, "breakBeam calls")
+	inVehicle(copy, copy.ext.applyDamage, 0, {9, 0.8, 0, 0.3}, {})
+	inVehicle(copy, copy.ext.applyDamage, 0, {9, 0.7, 0, 0.4}, {})
+	same(copy.deformCalls, 1, "onBeamDeformed calls")
+	same(copy.restLen[9], 0.7, "the newer rest length")
+end)
+
+test("an owner car ignores damage messages meant for copies", function()
+	local car = ownerCar()
+	inVehicle(car, car.ext.applyDamage, 0, {7, 0.5, 0, 0.3}, {})
+	same(car.restLen[7], 1, "beam 7")
 end)
