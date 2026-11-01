@@ -42,6 +42,16 @@ function M.getCurrentProfile()
 	return callPick(career_saveSystem, {"getCurrentProfile", "getCurrentSaveSlot"})
 end
 
+-- The folder of the save the career runs on, or nil. getCurrentProfile above keeps only
+-- the profile name, the first of the two values the game returns.
+function M.getSavePath()
+	local fn = pick(career_saveSystem, "getCurrentProfile", "getCurrentSaveSlot")
+	if not fn then return nil end
+	local _, path = fn()
+	if type(path) ~= "string" or path == "" then return nil end
+	return path
+end
+
 -- 0.39 getAllProfiles / 0.38 getAllSaveSlots
 function M.getAllProfiles()
 	return callPick(career_saveSystem, {"getAllProfiles", "getAllSaveSlots"}) or {}

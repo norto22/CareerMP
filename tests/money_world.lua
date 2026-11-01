@@ -1,0 +1,617 @@
+-- A Mileage server and several players' games, for the money, offer, race and event
+-- tests. The server runs the real plugin from onInit; each game runs the real client
+-- files Mileage loads for these features, on a stand-in career: money and its history,
+-- a save system that calls the game's save hooks, and the player's own save folder.
+-- The server's disk is in memory and outlives the plugin, so restart() reloads the
+-- plugin over the same data files, as a server restart does.
+--
+--   local World = dofile("tests/money_world.lua")
+--   local world = World.new()
+--   local ann = world:join("Ann", 5000)
+--   world:pump()
+--
+-- Messages queue both ways until pump() delivers them. world.filter(message) may return
+-- "drop" or "twice" to lose or repeat one; message.way is "toServer" or "toClient".
+
+local SERVER = "Resources/Server/Mileage/mileage.lua"
+local CLIENT = "Resources/Client/Mileage/lua/ge/extensions/"
+
+local World = {}
+World.__index = World
+
+--== JSON =====================================================================
+
+local function isArray(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	if n == 0 then return false end
+	for i = 1, n do if t[i] == nil then return false end end
+	return true
+end
+
+local function encode(value)
+	local t = type(value)
+	if t == "table" then
+		if isArray(value) then
+			local parts = {}
+			for i = 1, #value do parts[i] = encode(value[i]) end
+			return "[" .. table.concat(parts, ",") .. "]"
+		end
+		local keys = {}
+		for k in pairs(value) do table.insert(keys, tostring(k)) end
+		table.sort(keys)
+		local parts = {}
+		for _, k in ipairs(keys) do
+			local v = value[k]
+			if v == nil then v = value[tonumber(k)] end
+			table.insert(parts, encode(k) .. ":" .. encode(v))
+		end
+		return "{" .. table.concat(parts, ",") .. "}"
+	elseif t == "string" then
+		return '"' .. value:gsub('[%c"\\]', function(c) return string.format("\\u%04x", c:byte()) end) .. '"'
+	elseif t == "number" then
+		if value == math.floor(value) and math.abs(value) < 1e15 then return string.format("%d", value) end
+		return string.format("%.6f", value)
+	elseif value == nil then
+		return "null"
+	end
+	return tostring(value)
+end
+
+local function decode(text)
+	if type(text) ~= "string" then error("not text") end
+	local pos = 1
+	local function space() pos = text:find("[^ \t\r\n]", pos) or #text + 1 end
+	local value
+	local function str()
+		local out, i = {}, pos + 1
+		while true do
+			local c = text:sub(i, i)
+			if c == "" then error("open string") end
+			if c == '"' then pos = i + 1; return table.concat(out) end
+			if c == "\\" then
+				local e = text:sub(i + 1, i + 1)
+				if e == "u" then
+					table.insert(out, string.char(tonumber(text:sub(i + 2, i + 5), 16) % 256))
+					i = i + 6
+				else
+					table.insert(out, ({n = "\n", t = "\t", r = "\r"})[e] or e)
+					i = i + 2
+				end
+			else
+				table.insert(out, c)
+				i = i + 1
+			end
+		end
+	end
+	function value()
+		space()
+		local c = text:sub(pos, pos)
+		if c == "{" then
+			local obj = {}
+			pos = pos + 1
+			space()
+			if text:sub(pos, pos) == "}" then pos = pos + 1; return obj end
+			while true do
+				space()
+				if text:sub(pos, pos) ~= '"' then error("key expected") end
+				local k = str()
+				space()
+				if text:sub(pos, pos) ~= ":" then error("colon expected") end
+				pos = pos + 1
+				obj[k] = value()
+				space()
+				local d = text:sub(pos, pos)
+				pos = pos + 1
+				if d == "}" then return obj end
+				if d ~= "," then error("comma expected") end
+			end
+		elseif c == "[" then
+			local arr = {}
+			pos = pos + 1
+			space()
+			if text:sub(pos, pos) == "]" then pos = pos + 1; return arr end
+			while true do
+				table.insert(arr, value())
+				space()
+				local d = text:sub(pos, pos)
+				pos = pos + 1
+				if d == "]" then return arr end
+				if d ~= "," then error("comma expected") end
+			end
+		elseif c == '"' then
+			return str()
+		elseif text:sub(pos, pos + 3) == "true" then
+			pos = pos + 4; return true
+		elseif text:sub(pos, pos + 4) == "false" then
+			pos = pos + 5; return false
+		elseif text:sub(pos, pos + 3) == "null" then
+			pos = pos + 4; return nil
+		end
+		local num = text:match("^-?%d+%.?%d*[eE]?[-+]?%d*", pos)
+		if not num or num == "" then error("unexpected text at " .. pos) end
+		pos = pos + #num
+		return tonumber(num)
+	end
+	local result = value()
+	space()
+	if pos <= #text then error("text after the value") end
+	return result
+end
+
+local function tryDecode(text)
+	local ok, value = pcall(decode, text)
+	if ok then return value end
+	return nil
+end
+
+World.encode, World.decode = encode, decode
+
+local function copy(v)
+	if type(v) ~= "table" then return v end
+	local r = {}
+	for k, x in pairs(v) do r[k] = copy(x) end
+	return r
+end
+World.copy = copy
+
+--== the server's disk ========================================================
+
+-- io.open, os.rename, os.remove and FS on an in-memory disk of path -> text.
+local function installDisk(world)
+	local disk = world.disk
+	io.open = function(path, mode)
+		mode = mode or "r"
+		if world.failWrites and mode:sub(1, 1) == "w" and path:find(world.failWrites, 1, true) then
+			return nil, "write refused"
+		end
+		if mode:sub(1, 1) == "r" then
+			local text = disk[path]
+			if text == nil then return nil, path .. ": No such file or directory" end
+			local file = {}
+			function file:read() return text end
+			function file:close() end
+			function file:seek() return #text end
+			return file
+		end
+		local parts = {}
+		local file = {}
+		function file:write(data) table.insert(parts, tostring(data)); return self end
+		function file:close() disk[path] = table.concat(parts) end
+		disk[path] = ""
+		return file
+	end
+	os.rename = function(from, to)
+		if disk[from] == nil then return nil, "no such file" end
+		if world.renameFailsOverExisting and disk[to] ~= nil then return nil, "file exists" end
+		disk[to] = disk[from]
+		disk[from] = nil
+		return true
+	end
+	os.remove = function(path)
+		if disk[path] == nil then return nil, "no such file" end
+		disk[path] = nil
+		return true
+	end
+	FS = {
+		Exists = function(path)
+			if disk[path] ~= nil then return true end
+			local prefix = path:gsub("/$", "") .. "/"
+			for p in pairs(disk) do
+				if p:sub(1, #prefix) == prefix then return true end
+			end
+			return world.dirs[path:gsub("/$", "")] == true
+		end,
+		IsDirectory = function(path) return world.dirs[path:gsub("/$", "")] == true end,
+		CreateDirectory = function(path) world.dirs[path:gsub("/$", "")] = true end,
+	}
+end
+
+--== the server ===============================================================
+
+function World:serverOutput(fn)
+	local lines = {}
+	local realPrint = print
+	print = function(...)
+		local parts = {}
+		for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+		table.insert(lines, table.concat(parts, " "))
+	end
+	local ok, err = pcall(fn)
+	print = realPrint
+	if not ok then error(err, 0) end
+	for _, line in ipairs(lines) do table.insert(self.printed, line) end
+	return lines
+end
+
+-- Loads the plugin and runs onInit, as BeamMP does on a start.
+function World:startServer()
+	local world = self
+	self.events, self.timers = {}, {}
+	Util = {JsonEncode = encode, JsonDecode = decode, JsonPrettify = function(text) return text end}
+	MP = {
+		CreateTimer = function() return {GetCurrent = function() return world.now end, Start = function() end} end,
+		GetPlayers = function()
+			local names = {}
+			for id, p in pairs(world.players) do if p.connected then names[id] = p.name end end
+			return names
+		end,
+		IsPlayerConnected = function(id) local p = world.players[id]; return p ~= nil and p.connected end,
+		GetPlayerName = function(id) local p = world.players[id]; return p and p.name end,
+		GetOSName = function() return "Linux" end,
+		TriggerClientEvent = function(target, event, data)
+			world:queue({way = "toClient", target = target, event = event, data = data})
+		end,
+		SendNotification = function(target, text)
+			table.insert(world.notifications, {target = target, text = text})
+		end,
+		DropPlayer = function(id, why) world.dropped[id] = why end,
+		RegisterEvent = function(event, handler) world.events[event] = handler end,
+		CreateEventTimer = function(event, ms) world.timers[event] = ms end,
+		TriggerLocalEvent = function(command, arguments)
+			local handler = world.events[command]
+			if handler and _G[handler] then _G[handler](arguments) end
+		end,
+	}
+	exit = function() world.exited = true end
+	self:serverOutput(function()
+		dofile(SERVER)
+		onInit()
+	end)
+end
+
+function World:restart()
+	self.toServer = {}
+	self:startServer()
+	-- BeamMP drops everyone with the server: each game comes back from its last save.
+	for id, p in pairs(self.players) do
+		if p.connected then
+			self:loadGame(p)
+			self:serverOutput(function() onPlayerJoinHandler(id) end)
+			self:startCareer(p)
+		end
+	end
+	self:pump()
+end
+
+-- A console line, as the owner types it. Returns the lines printed.
+function World:console(line)
+	return self:serverOutput(function() onConsoleInputHandler(line) end)
+end
+
+function World:setConfig(section, key, value)
+	return self:console("Mileage SetConfig " .. section .. " " .. key .. " " .. tostring(value))
+end
+
+--== a player's game ==========================================================
+
+-- Runs fn with the globals of p's game.
+function World:as(p, fn, ...)
+	local world = self
+	worldReadyState = 2
+	extensions = p.extensions
+	career_modules_playerAttributes = p.attributes
+	career_saveSystem = p.saveSystem
+	MPConfig = {getNickname = function() return p.name end}
+	MPVehicleGE = p.MPVehicleGE
+	be = p.be
+	guihooks = {trigger = function(name, data) table.insert(p.ui, {name = name, data = copy(data)}) end}
+	jsonEncode, jsonDecode = encode, tryDecode
+	jsonReadFile = function(path)
+		local text = p.files[path]
+		return text and tryDecode(text) or nil
+	end
+	FS = p.fs
+	function TriggerServerEvent(name, data)
+		world:queue({way = "toServer", from = p.id, name = name, data = data})
+	end
+	function AddEventHandler(name, handler) p.handlers[name] = handler end
+	-- Each game's own extensions answer to their global names.
+	for name, ext in pairs(p.extensions) do _G[name] = ext end
+	for name, value in pairs(p.globals) do _G[name] = value end
+	local results = {fn(...)}
+	FS = world.serverFS
+	return (table.unpack or unpack)(results)
+end
+
+-- The game's save: every extension's onSaveCurrentProfile writes into the save folder,
+-- then onSaveFinished fires for a finished save. p.saveMode "fail" writes nothing and
+-- never finishes; "later" holds onSaveFinished until finishSaves.
+local function newSaveSystem(world, p)
+	local saveSystem = {}
+	function saveSystem.getCurrentProfile() return "profile", p.savePath end
+	function saveSystem.jsonWriteFileSafe(path, value)
+		if p.saveMode == "fail" then return false end
+		p.staged[path] = encode(value)
+		return true
+	end
+	function saveSystem.saveCurrent()
+		p.saves = p.saves + 1
+		p.staged = {}
+		p.stagedMoney = p.money
+		for _, name in ipairs(p.extensionOrder) do
+			local ext = p.extensions[name]
+			if type(ext) == "table" and type(ext.onSaveCurrentProfile) == "function" then
+				ext.onSaveCurrentProfile(p.savePath)
+			end
+		end
+		if p.saveMode == "fail" then return end
+		local function finish()
+			for path, text in pairs(p.staged) do p.files[path] = text end
+			p.savedMoney = p.stagedMoney
+			for _, name in ipairs(p.extensionOrder) do
+				local ext = p.extensions[name]
+				if type(ext) == "table" and type(ext.onSaveFinished) == "function" then ext.onSaveFinished() end
+			end
+		end
+		if p.saveMode == "later" then table.insert(p.heldSaves, finish) else finish() end
+	end
+	return saveSystem
+end
+
+function World:finishSaves(p)
+	local held = p.heldSaves
+	p.heldSaves = {}
+	for _, finish in ipairs(held) do self:as(p, finish) end
+	self:pump()
+end
+
+-- The client files each game loads, in modScript's order, as extension name -> file.
+World.CLIENT_FILES = {
+	{"mileage_compat", CLIENT .. "mileage/compat.lua"},
+	{"mileage_transfers", CLIENT .. "mileage/transfers.lua"},
+	{"mileagePlayerPayments", CLIENT .. "mileagePlayerPayments.lua"},
+	{"mileage_offers", CLIENT .. "mileage/offers.lua"},
+	{"mileage_streetRace", CLIENT .. "mileage/streetRace.lua"},
+	{"mileage_leaderboard", CLIENT .. "mileage/leaderboard.lua"},
+	{"mileage_raceEvents", CLIENT .. "mileage/raceEvents.lua"},
+}
+
+local function fileExists(path)
+	local realOpen = World.realOpen
+	local f = realOpen(path, "r")
+	if f then f:close(); return true end
+	return false
+end
+
+-- Loads p's game from its save: money is the saved money, extensions start fresh.
+function World:loadGame(p)
+	p.money = p.savedMoney
+	p.handlers, p.ui, p.extensions, p.extensionOrder = {}, {}, {}, {}
+	p.heldSaves = {}
+	p.careerActive = false
+	local world = self
+	p.attributes = {
+		getAttribute = function(name)
+			if name == "money" then return {value = p.money} end
+			return nil
+		end,
+		addAttributes = function(change, reason)
+			if change.money then
+				p.money = p.money + change.money
+				table.insert(p.history, {amount = change.money, label = reason and reason.label})
+			end
+		end,
+	}
+	p.saveSystem = newSaveSystem(world, p)
+	p.MPVehicleGE = {
+		getPlayers = function()
+			local list = {}
+			for id, other in pairs(world.players) do
+				if other.connected then list[id] = {name = other.name, playerID = id} end
+			end
+			return list
+		end,
+	}
+	self:as(p, function()
+		for _, entry in ipairs(World.CLIENT_FILES) do
+			if fileExists(entry[2]) then
+				local loaded = dofile(entry[2])
+				p.extensions[entry[1]] = loaded
+				_G[entry[1]] = loaded
+				table.insert(p.extensionOrder, entry[1])
+			end
+		end
+		for _, name in ipairs(p.extensionOrder) do
+			local ext = p.extensions[name]
+			if type(ext.onExtensionLoaded) == "function" then ext.onExtensionLoaded() end
+		end
+	end)
+end
+
+-- Fires a game hook on every extension of p's game.
+function World:hook(p, name, ...)
+	local args = {...}
+	self:as(p, function()
+		for _, ext in ipairs(p.extensionOrder) do
+			local e = p.extensions[ext]
+			if type(e[name]) == "function" then e[name]((table.unpack or unpack)(args)) end
+		end
+	end)
+end
+
+-- What the client and server do for a career start on a server.
+function World:startCareer(p)
+	p.careerActive = true
+	self:hook(p, "onCareerActive", true)
+	self:serverOutput(function()
+		careerSyncRequested(p.id, encode({confirmsStart = true}))
+		careerStartResult(p.id, encode({started = true}))
+	end)
+end
+
+-- A player joins with money in their save, and starts their career.
+function World:join(name, money, id)
+	id = id or self.nextPlayerId
+	self.nextPlayerId = math.max(self.nextPlayerId, id + 1)
+	local p = self.players[id]
+	if not p then
+		p = {id = id, name = name, savedMoney = money or 0, history = {}, files = {}, saves = 0,
+			savePath = "/saves/" .. name .. "/autosave1", globals = {}, staged = {}}
+		p.fs = {}
+		self.players[id] = p
+	end
+	p.connected = true
+	self:loadGame(p)
+	self:serverOutput(function() onPlayerJoinHandler(id) end)
+	self:startCareer(p)
+	self:pump()
+	return p
+end
+
+-- A player leaves (or their game drops). opts.crash loses what their game has not saved.
+function World:leave(p, opts)
+	opts = opts or {}
+	p.connected = false
+	if opts.crash then p.money = p.savedMoney end
+	self:serverOutput(function() onPlayerDisconnectHandler(p.id) end)
+	self:pump()
+end
+
+-- The player's game comes back from its save and joins again.
+function World:rejoin(p)
+	return self:join(p.name, p.savedMoney, p.id)
+end
+
+--== messages =================================================================
+
+function World:queue(message)
+	local verdict = self.filter and self.filter(message)
+	if verdict == "drop" then table.insert(self.dropped, message); return end
+	local list = message.way == "toServer" and self.toServer or self.toClients
+	table.insert(list, message)
+	if verdict == "twice" then table.insert(list, copy(message)) end
+end
+
+-- Delivers queued messages both ways until none are left.
+function World:pump()
+	for _ = 1, 1000 do
+		if #self.toServer == 0 and #self.toClients == 0 then return end
+		local toServer, toClients = self.toServer, self.toClients
+		self.toServer, self.toClients = {}, {}
+		for _, m in ipairs(toServer) do
+			local p = self.players[m.from]
+			if p and p.connected then
+				table.insert(self.serverLog, m)
+				local registered = self.events[m.name]
+				local handler = registered and _G[registered]
+				if handler then self:serverOutput(function() handler(m.from, m.data) end) end
+			end
+		end
+		for _, m in ipairs(toClients) do
+			table.insert(self.clientLog, m)
+			for id, p in pairs(self.players) do
+				if p.connected and (m.target == -1 or m.target == id) then
+					local handler = p.handlers[m.event]
+					if handler then self:as(p, handler, m.data) end
+				end
+			end
+		end
+	end
+	error("messages never stopped")
+end
+
+-- Moves the clock on in one-second ticks, delivering messages and running each game's
+-- frame update.
+function World:advance(seconds)
+	for _ = 1, math.floor(seconds + 0.5) do
+		self.now = self.now + 1
+		self:serverOutput(function() if _G.tick then tick() end end)
+		self:pump()
+		for _, p in pairs(self.players) do
+			if p.connected then
+				self:as(p, function()
+					for _, name in ipairs(p.extensionOrder) do
+						local ext = p.extensions[name]
+						if type(ext.onUpdate) == "function" then ext.onUpdate(1, 1, 1) end
+					end
+				end)
+			end
+		end
+		self:pump()
+	end
+end
+
+--== reading the results ======================================================
+
+-- Messages the server sent to p (or to everyone) with this event name, decoded.
+function World:received(p, event)
+	local found = {}
+	for _, m in ipairs(self.clientLog) do
+		if m.event == event and (m.target == -1 or m.target == p.id) then
+			table.insert(found, tryDecode(m.data) or m.data)
+		end
+	end
+	return found
+end
+
+-- guihooks p's game triggered with this name.
+function World:ui(p, name)
+	local found = {}
+	for _, entry in ipairs(p.ui) do
+		if entry.name == name then table.insert(found, entry.data) end
+	end
+	return found
+end
+
+function World:dataFile(name)
+	local text = self.disk["Resources/Server/Mileage/data/" .. name]
+	return text and decode(text) or nil
+end
+
+-- Money in every player's last save.
+function World:savedTotal()
+	local total = 0
+	for _, p in pairs(self.players) do total = total + p.savedMoney end
+	return total
+end
+
+function World:printedMatching(text)
+	local n = 0
+	for _, line in ipairs(self.printed) do
+		if line:find(text, 1, true) then n = n + 1 end
+	end
+	return n
+end
+
+--== a new world ==============================================================
+
+-- The real functions, kept once however many test files load this one.
+REAL_IO = REAL_IO or {open = io.open, rename = os.rename, remove = os.remove}
+World.realOpen = REAL_IO.open
+
+-- opts.config: server settings to start with (merged into a config with autoUpdate off).
+function World.new(opts)
+	opts = opts or {}
+	local self = setmetatable({players = {}, toServer = {}, toClients = {}, serverLog = {}, clientLog = {},
+		dropped = {}, notifications = {}, printed = {}, disk = {}, dirs = {}, now = 0, nextPlayerId = 0}, World)
+	-- Every test starts from the real io and os functions.
+	World.restoreIo()
+	function log() end
+	function setExtensionUnloadMode() end
+	settings = {getValue = function() return nil end, setValue = function() end}
+	installDisk(self)
+	self.serverFS = FS
+	local server = {autoUpdate = false, autoExit = false}
+	for k, v in pairs(opts.server or {}) do server[k] = v end
+	self.disk["Resources/Server/Mileage/config/config.json"] = encode({server = server, client = opts.client or {}})
+	self:startServer()
+	return self
+end
+
+-- Puts io and os back for the next test.
+function World.restoreIo()
+	io.open, os.rename, os.remove = REAL_IO.open, REAL_IO.rename, REAL_IO.remove
+end
+
+-- test(name, fn) with a new world, putting io and os back however fn ends.
+function World.test(name, fn, opts)
+	test(name, function()
+		local world = World.new(opts)
+		local ok, err = pcall(fn, world)
+		World.restoreIo()
+		if not ok then error(err, 0) end
+	end)
+end
+
+return World

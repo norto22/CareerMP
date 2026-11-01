@@ -32,8 +32,30 @@ end
 
 local server
 
+-- The plugin's data files (Resources/Server/Mileage/data/) are kept in memory; every
+-- other path is the real file system.
+local realOpen, realRename = io.open, os.rename
+local function isData(path) return type(path) == "string" and path:find("/data/", 1, true) ~= nil end
+io.open = function(path, mode)
+	if not isData(path) then return realOpen(path, mode) end
+	if (mode or "r"):sub(1, 1) == "r" then
+		local text = server.files[path]
+		if not text then return nil end
+		return {read = function() return text end, close = function() end}
+	end
+	local parts = {}
+	return {write = function(self, data) table.insert(parts, data); return self end,
+		close = function() server.files[path] = table.concat(parts) end}
+end
+os.rename = function(from, to)
+	if not isData(from) then return realRename(from, to) end
+	server.files[to], server.files[from] = server.files[from], nil
+	return true
+end
+
 local function newServer(playerIds)
-	server = {now = 0, sent = {}, notes = {}, printed = {}, players = {}}
+	server = {now = 0, sent = {}, notes = {}, printed = {}, players = {}, files = {}}
+	FS = {Exists = function() return true end, CreateDirectory = function() end}
 	for _, id in ipairs(playerIds or {0, 1, 2}) do server.players[id] = "player" .. id end
 	Util = {JsonEncode = encode, JsonDecode = decode}
 	MP = {
@@ -133,6 +155,7 @@ end)
 
 test("a payment, a traffic light tick, an alive message and notifications land in their own rows", function()
 	newServer({0, 1})
+	careerSyncRequested(0, "")
 	payPlayer(0, encode({money = 10, target_player_id = 1}))
 	trafficLightTimer()
 	tick()
@@ -141,7 +164,8 @@ test("a payment, a traffic light tick, an alive message and notifications land i
 		licensePlate = "ABC"}))
 	local lines = statsLines()
 	same(row(lines, "payments").window.received, 1, "payments received")
-	same(row(lines, "payments").window.sent, 2, "payment and confirmation sent")
+	same(row(lines, "payments").window.sent, 0, "nothing sent for the payment itself")
+	same(row(lines, "transfers").window.sent, 1, "the payer asked to take it")
 	same(row(lines, "trafficLights").window.sent, 2, "traffic light messages, one per player")
 	same(row(lines, "alive").window.sent, 2, "alive messages, one per player")
 	same(row(lines, "notifications").window.received, 1, "speed traps received")
@@ -153,7 +177,7 @@ test("every feature of the readout has a row, even with nothing sent", function(
 	newServer({0})
 	local lines = statsLines()
 	for _, feature in ipairs({"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-			"payments", "alive", "trafficLights", "notifications", "config"}) do
+			"payments", "transfers", "alive", "trafficLights", "notifications", "config"}) do
 		local r = row(lines, feature)
 		expect(r, "no row for " .. feature)
 		same(r.total.sent, 0, feature .. " messages")

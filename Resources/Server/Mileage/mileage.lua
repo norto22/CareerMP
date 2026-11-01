@@ -149,7 +149,7 @@ local ledger = {
 
 local STATS_SECONDS = 60
 local STATS_FEATURES = {"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-	"payments", "alive", "trafficLights", "notifications", "config"}
+	"payments", "transfers", "alive", "trafficLights", "notifications", "config"}
 
 -- totals[feature] and slots[second % STATS_SECONDS].counts[feature]:
 -- {received, sent, recipients, bytes}.
@@ -229,6 +229,11 @@ local function decodeTable(data)
 	local ok, decoded = pcall(Util.JsonDecode, data)
 	if ok and type(decoded) == "table" then return decoded end
 	return nil
+end
+
+-- Console-safe text from a client: control characters removed, length capped.
+local function consoleText(text)
+	return (tostring(text):gsub("%c", " "):sub(1, START_REASON_MAX_LENGTH))
 end
 
 -- true for a car its owner's game marked as traffic or parked. Such a car never answers
@@ -716,6 +721,85 @@ local function prepareConfig()
 	print("[Mileage] ---------- Mileage Config Loaded!")
 end
 
+--== Data files ==============================================================
+-- What Mileage keeps about players between server starts: unfinished money transfers,
+-- races holding stakes, the leaderboard and a scheduled event. Each file is written to
+-- <name>.tmp and renamed over <name>, so a crash mid-write never leaves a half-written
+-- file in place. A file that does not read is moved aside and never overwritten.
+
+local DATA_PATH = SERVER_PATH .. "data/"
+
+-- Names whose file could not be read nor moved aside: never written, so it is kept.
+local unwritableData = {}
+
+local function dataLog(text)
+	print("[Mileage] ---------- Data: " .. text)
+end
+
+-- The decoded table in data/<name>, or nil when there is none (or it did not read).
+local function readData(name)
+	local path = DATA_PATH .. name
+	local from = path
+	local text = readFile(path)
+	if text == nil then
+		-- An interrupted write on a system where the rename needed the old file removed.
+		from = path .. ".tmp"
+		text = readFile(from)
+		if text == nil then return nil end
+	end
+	local ok, value = pcall(Util.JsonDecode, text)
+	if ok and type(value) == "table" then return value end
+	local aside = path .. ".unreadable-" .. tostring(os.time())
+	if os.rename(from, aside) then
+		dataLog(from .. " could not be read; it is kept as " .. aside .. " and Mileage starts without it")
+	else
+		unwritableData[name] = true
+		dataLog(from .. " could not be read nor moved aside; Mileage will not write " .. name
+			.. " until it is fixed or removed")
+	end
+	return nil
+end
+
+-- Writes value to data/<name>. Returns true once the new file is in place.
+local function writeData(name, value)
+	if unwritableData[name] then return false end
+	if not FS.Exists(DATA_PATH) then
+		FS.CreateDirectory(DATA_PATH)
+	end
+	local ok, encoded = pcall(Util.JsonEncode, value)
+	if not ok or type(encoded) ~= "string" then
+		dataLog("could not encode " .. name)
+		return false
+	end
+	local path = DATA_PATH .. name
+	local tempPath = path .. ".tmp"
+	local file = io.open(tempPath, "w")
+	if not file then
+		dataLog("could not write " .. tempPath)
+		return false
+	end
+	local written = file:write(encoded)
+	file:close()
+	if not written then
+		os.remove(tempPath)
+		dataLog("could not write " .. tempPath)
+		return false
+	end
+	if not os.rename(tempPath, path) then
+		-- Windows does not rename over an existing file. Until the rename below, the new
+		-- contents are in the .tmp file, which readData falls back to.
+		os.remove(path)
+		if not os.rename(tempPath, path) then
+			dataLog("could not rename " .. tempPath .. " to " .. path)
+			return false
+		end
+	end
+	return true
+end
+
+-- Set by the sections below the handlers: each loads its data file and its state.
+local startMoneyFeatures
+
 function onInit()
 
 	print("[Mileage] ---------- Mileage Loading...")
@@ -745,6 +829,7 @@ function onInit()
 	MP.RegisterEvent("requestPartPaints","requestPartPaintsHandler")
 
 	MP.RegisterEvent("payPlayer","payPlayer")
+	MP.RegisterEvent("mileageReceipt","mileageReceipt")
 
 	MP.RegisterEvent("careerPrefabSync","careerPrefabSync")
 	MP.RegisterEvent("careerSyncRequested","careerSyncRequested")
@@ -779,11 +864,13 @@ function onInit()
 	MP.RegisterEvent("Update","Update")
 	MP.RegisterEvent("Help","Help")
 	MP.RegisterEvent("Stats","Stats")
+	MP.RegisterEvent("Transfers","Transfers")
 
 	MP.RegisterEvent("tick","tick")
 	MP.CreateEventTimer("tick", 1000)
 
 	prepareConfig()
+	startMoneyFeatures()
 
 	if Config.server.autoUpdate then
 		checkForUpdates()
@@ -892,25 +979,296 @@ local function isValidPayment(sender_id, paymentData)
 	return type(target) == "number" and target ~= sender_id and MP.IsPlayerConnected(target) == true
 end
 
+--== Transfers ===============================================================
+-- Every movement of money between players' careers (a payment, a race stake, its
+-- refund, a race pot, a server prize) is one transfer. The server first asks the
+-- payer's game to take the amount; that game takes it, records the transfer's id in the
+-- same save as its money, and answers with a receipt once the save has finished. Only
+-- then does the server ask the receiver's game to give it, the same way. A transfer from
+-- the server starts at the giving step; one to the server (a stake) ends after taking.
+--
+-- data/transfers.json holds every unfinished transfer and is written before each step
+-- is sent, so a server restart carries on where it stopped. A step goes to its player
+-- only while their career runs: at once, again every TRANSFER_RESEND_SECONDS without a
+-- receipt, and again as soon as their career starts on a later join. Nothing expires;
+-- `Mileage Transfers` lists what is waiting. A game keeps the ids it applied until it
+-- hears the transfer is settled (rxMileageSettled), so a step it already applied is
+-- answered again without being applied twice.
+--
+-- transferData = {seq, transfers = {[id] = transfer}, settled = {[name] = {id, ...}}}
+-- transfer = {id, kind, from, to, amount, labels = {take, give}, state, created, race, role}
+-- state: "taking" (waiting for the payer's receipt) or "giving" (for the receiver's).
+
+local SERVER_PARTY = "server"
+local TRANSFER_RESEND_SECONDS = 10
+local TRANSFER_SLOW_SECONDS = 60
+local TRANSFER_TAGS = {"gameplay"}
+local TRANSFERS_FILE = "transfers.json"
+
+local transferData = {seq = 0, transfers = {}, settled = {}}
+-- Not kept across starts: when each step was last sent, and which waits were logged.
+local transferSentAt = {}
+local transferSlowLogged = {}
+-- True when the transfers changed but could not be written yet; nothing is sent until
+-- they are.
+local transfersUnsaved = false
+
+-- Who is told when a transfer of theirs is taken, given or refused; set by the payment
+-- and race sections below. transferOwners.payment(transfer, event), and so on.
+local transferOwners = {}
+
+local function saveTransfers()
+	transfersUnsaved = not writeData(TRANSFERS_FILE, transferData)
+	return not transfersUnsaved
+end
+
+local function playerIdByName(name)
+	for id, playerName in pairs(MP.GetPlayers() or {}) do
+		if playerName == name and MP.IsPlayerConnected(id) then return id end
+	end
+	return nil
+end
+
+local function careerStarted(player_id)
+	local entry = pendingActivation[player_id]
+	return entry ~= nil and entry.careerActive == true and not entry.dropped
+end
+
+-- The player the transfer waits on: the payer while taking, the receiver while giving.
+local function waitingOn(transfer)
+	if transfer.state == "taking" then return transfer.from end
+	return transfer.to
+end
+
+local function sendStep(transfer)
+	if transfersUnsaved then return false end
+	local id = playerIdByName(waitingOn(transfer))
+	if not id or not careerStarted(id) then return false end
+	transferSentAt[transfer.id] = signalTimer:GetCurrent()
+	local taking = transfer.state == "taking"
+	sendJson("transfers", id, taking and "rxMileageTake" or "rxMileageGive", {
+		id = transfer.id,
+		kind = transfer.kind,
+		amount = transfer.amount,
+		label = taking and transfer.labels.take or transfer.labels.give,
+		tags = TRANSFER_TAGS,
+		from = transfer.from,
+		to = transfer.to,
+	})
+	return true
+end
+
+-- Tells a player's game it may forget these ids; kept for a later join when it is away.
+local function sendSettled(name, ids)
+	if name == SERVER_PARTY or #ids == 0 then return end
+	local id = playerIdByName(name)
+	if id and careerStarted(id) then
+		sendJson("transfers", id, "rxMileageSettled", {ids = ids})
+		return
+	end
+	local waiting = transferData.settled[name] or {}
+	for _, transferId in ipairs(ids) do table.insert(waiting, transferId) end
+	transferData.settled[name] = waiting
+end
+
+local function tellOwner(transfer, event)
+	local owner = transferOwners[transfer.race and "race" or transfer.kind]
+	if owner then owner(transfer, event) end
+end
+
+local function describeTransfer(transfer)
+	return string.format("%s (%s, $%d from %s to %s)", transfer.id, transfer.kind, transfer.amount,
+		consoleText(transfer.from), consoleText(transfer.to))
+end
+
+-- Starts a transfer and sends its first step. spec: {kind, from, to, amount, takeLabel,
+-- giveLabel, race, role}; from or to may be SERVER_PARTY. Returns its id.
+local function startTransfer(spec)
+	transferData.seq = transferData.seq + 1
+	local transfer = {
+		id = "t" .. transferData.seq,
+		kind = spec.kind,
+		from = spec.from,
+		to = spec.to,
+		amount = spec.amount,
+		labels = {take = spec.takeLabel or "", give = spec.giveLabel or ""},
+		state = spec.from == SERVER_PARTY and "giving" or "taking",
+		created = os.time(),
+		race = spec.race,
+		role = spec.role,
+	}
+	transferData.transfers[transfer.id] = transfer
+	if saveTransfers() then sendStep(transfer) end
+	return transfer.id
+end
+
+-- The game of the player a transfer waits on answers {id, done = "taken" | "given" |
+-- "refused"}. Only that player's receipt for the step under way counts. The owner hears
+-- of it before the transfer itself moves on, so a restart in between repeats the step
+-- (which the game answers again without applying it) rather than lose it.
+function mileageReceipt(player_id, data)
+	received("transfers")
+	local receipt = decodeTable(data)
+	if not receipt or type(receipt.id) ~= "string" then return end
+	local transfer = transferData.transfers[receipt.id]
+	if not transfer or MP.GetPlayerName(player_id) ~= waitingOn(transfer) then return end
+	if transfer.state == "taking" and receipt.done == "taken" then
+		tellOwner(transfer, "taken")
+		if transfer.to == SERVER_PARTY then
+			transferData.transfers[transfer.id] = nil
+			sendSettled(transfer.from, {transfer.id})
+			saveTransfers()
+			return
+		end
+		transfer.state = "giving"
+		transferSentAt[transfer.id] = nil
+		if saveTransfers() then sendStep(transfer) end
+	elseif transfer.state == "taking" and receipt.done == "refused" then
+		print("[Mileage] Transfer " .. describeTransfer(transfer) .. " refused: " .. consoleText(transfer.from)
+			.. " does not have the money")
+		tellOwner(transfer, "refused")
+		transferData.transfers[transfer.id] = nil
+		sendSettled(transfer.from, {transfer.id})
+		saveTransfers()
+	elseif transfer.state == "giving" and receipt.done == "given" then
+		tellOwner(transfer, "given")
+		transferData.transfers[transfer.id] = nil
+		sendSettled(transfer.to, {transfer.id})
+		if transfer.from ~= SERVER_PARTY then sendSettled(transfer.from, {transfer.id}) end
+		saveTransfers()
+	end
+end
+
+-- A player's career started: the ids settled while they were away, then every step
+-- waiting on them at once.
+local function transfersCareerStarted(player_id)
+	local name = MP.GetPlayerName(player_id)
+	if not name then return end
+	local settled = transferData.settled[name]
+	if settled then
+		transferData.settled[name] = nil
+		sendSettled(name, settled)
+		saveTransfers()
+	end
+	for _, transfer in pairs(transferData.transfers) do
+		if waitingOn(transfer) == name then
+			transferSentAt[transfer.id] = nil
+			sendStep(transfer)
+		end
+	end
+end
+
+local function transfersTick()
+	if transfersUnsaved and not saveTransfers() then return end
+	local now = signalTimer:GetCurrent()
+	for id, transfer in pairs(transferData.transfers) do
+		if now - (transferSentAt[id] or -math.huge) >= TRANSFER_RESEND_SECONDS then
+			sendStep(transfer)
+		end
+		if not transferSlowLogged[id] and os.time() - (transfer.created or 0) > TRANSFER_SLOW_SECONDS then
+			transferSlowLogged[id] = true
+			print("[Mileage] Transfer " .. describeTransfer(transfer) .. " has waited more than a minute for "
+				.. consoleText(waitingOn(transfer)))
+		end
+	end
+end
+
+local function loadTransfers()
+	local stored = readData(TRANSFERS_FILE)
+	transferData = {seq = 0, transfers = {}, settled = {}}
+	transferSentAt, transferSlowLogged = {}, {}
+	if stored then
+		transferData.seq = tonumber(stored.seq) or 0
+		transferData.transfers = type(stored.transfers) == "table" and stored.transfers or {}
+		transferData.settled = type(stored.settled) == "table" and stored.settled or {}
+		-- Ids are made from seq; a damaged seq must not hand out an id still in use.
+		for id in pairs(transferData.transfers) do
+			local n = tonumber(tostring(id):match("^t(%d+)$"))
+			if n and n > transferData.seq then transferData.seq = n end
+		end
+	end
+	local waiting = 0
+	for _ in pairs(transferData.transfers) do waiting = waiting + 1 end
+	if waiting > 0 then
+		print("[Mileage] ---------- " .. waiting .. " money transfer(s) waiting for players, see Mileage Transfers")
+	end
+end
+
+local function ageText(seconds)
+	seconds = math.max(0, math.floor(seconds))
+	if seconds < 120 then return seconds .. " s" end
+	if seconds < 7200 then return math.floor(seconds / 60) .. " min" end
+	if seconds < 172800 then return math.floor(seconds / 3600) .. " h" end
+	return math.floor(seconds / 86400) .. " days"
+end
+
+-- Set by the race section: prints the races still holding stakes.
+local printRaces
+
+function Transfers(arguments)
+	local ids = {}
+	for id in pairs(transferData.transfers) do table.insert(ids, id) end
+	table.sort(ids, function(a, b)
+		return (tonumber(a:match("%d+")) or 0) < (tonumber(b:match("%d+")) or 0)
+	end)
+	print(string.format("[Mileage] Transfers waiting: %d", #ids))
+	for _, id in ipairs(ids) do
+		local transfer = transferData.transfers[id]
+		print(string.format("  %s, %s ago: %s %s", describeTransfer(transfer),
+			ageText(os.time() - (transfer.created or os.time())),
+			transfer.state == "taking" and "waiting to take from" or "waiting to give to",
+			consoleText(waitingOn(transfer))))
+	end
+	if printRaces then printRaces() end
+end
+
+--== Payments ================================================================
+-- A player pays another from the player list. The server checks the amount, the target
+-- and the sender's limits, then pays it as a transfer. A payment the server turns down
+-- bounces (rxBounce) or is denied (rxDeny) before any money moves.
+
+-- The sender's game shows why a payment did not go: why is "limit" (the default), or
+-- "money" when the sender's game refused to take it.
+local function bounce(player_id, paymentData, why)
+	paymentData.why = why or "limit"
+	sendJson("payments", player_id, "rxBounce", paymentData)
+end
+
 function payPlayer(player_id, data)
 	received("payments")
-	local paymentData = Util.JsonDecode(data)
-	if type(paymentData) ~= "table" then return end
+	local paymentData = decodeTable(data)
+	if not paymentData then return end
 	paymentData.sender = MP.GetPlayerName(player_id)
-	if Config.server.allowTransactions then
-		if isValidPayment(player_id, paymentData) then
-			if attemptTransaction(player_id, paymentData.target_player_id, paymentData.money, signalTimer:GetCurrent()) then
-				sendJson("payments", paymentData.target_player_id, "rxPayment", paymentData)
-				sendJson("payments", player_id, "rxConfirmation", paymentData)
-			else
-				sendJson("payments", player_id, "rxBounce", paymentData)
-			end
-		else
-			sendJson("payments", player_id, "rxBounce", paymentData)
-		end
-	else
+	if not Config.server.allowTransactions then
 		sendJson("payments", player_id, "rxDeny", paymentData)
+		return
 	end
+	if not isValidPayment(player_id, paymentData)
+			or not attemptTransaction(player_id, paymentData.target_player_id, paymentData.money, signalTimer:GetCurrent()) then
+		bounce(player_id, paymentData)
+		return
+	end
+	local from, to = paymentData.sender, MP.GetPlayerName(paymentData.target_player_id)
+	startTransfer({
+		kind = "payment",
+		from = from,
+		to = to,
+		amount = paymentData.money,
+		takeLabel = "Paid player: " .. to,
+		giveLabel = "Payment from player: " .. from,
+	})
+end
+
+function transferOwners.payment(transfer, event)
+	if event ~= "refused" then return end
+	local id = playerIdByName(transfer.from)
+	if id then
+		bounce(id, {money = transfer.amount, target_player_name = transfer.to}, "money")
+	end
+end
+
+startMoneyFeatures = function()
+	loadTransfers()
 end
 
 --== Drag racing relay =======================================================
@@ -1204,11 +1562,6 @@ local function sendVehicleState(serverVehicleID)
 	sendJson("carStates", -1, "rxCareerVehSync", {[serverVehicleID] = vehicleStates[serverVehicleID]})
 end
 
--- Console-safe text from a client: control characters removed, length capped.
-local function consoleText(text)
-	return (tostring(text):gsub("%c", " "):sub(1, START_REASON_MAX_LENGTH))
-end
-
 local function describePlayer(player_id)
 	return string.format("%s (%s)", consoleText(MP.GetPlayerName(player_id) or "?"), tostring(player_id))
 end
@@ -1335,6 +1688,7 @@ function careerSyncRequested(player_id, data)
 		entry.settingsRequestedAt = signalTimer:GetCurrent()
 	else
 		entry.careerActive = true
+		transfersCareerStarted(player_id)
 	end
 end
 
@@ -1350,6 +1704,7 @@ function careerStartResult(player_id, data)
 	if result.started == true then
 		entry.careerActive = true
 		print("[Mileage] " .. describePlayer(player_id) .. " started their career")
+		transfersCareerStarted(player_id)
 	elseif result.started == false then
 		dropUnstartedPlayer(player_id, "career start failed: " .. consoleText(result.reason or "no reason given"))
 	end
@@ -1527,6 +1882,7 @@ function tick()
 	validateMileageActivation()
 	sendWantedVehicleLists()
 	sendChangedShares()
+	transfersTick()
 	ticksSinceAlive = ticksSinceAlive + 1
 	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
 		ticksSinceAlive = 0
@@ -1670,6 +2026,7 @@ function Help(arguments)
 	print("Mileage SetConfig <section*> <key*> <value*> - Sets Config section key to value, * = REQUIRED")
 	print("Mileage Update                               - Checks for Mileage update")
 	print("Mileage Stats [reset]                        - Shows what each part of Mileage sends, reset starts it again")
+	print("Mileage Transfers                            - Lists money still waiting on a player, and races holding stakes")
 	print("Mileage Help                                 - Displays Commands Usage")
 end
 
