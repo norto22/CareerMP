@@ -58,6 +58,7 @@ local moreToSend = false
 local fullWanted = nil
 local fullQueue, fullNext, fullAnswer = nil, 1, false
 local answerAfter = false
+local answerChunkLast = false    -- the last tick sent a chunk of an answer
 local clearedPending = false
 
 -- Copy: the owner's last reported state of each beam ({len, broken}), and whether the
@@ -218,12 +219,17 @@ local function ownerTick()
 			return
 		end
 	end
-	if fullQueue then
+	-- An answer reaches only the players who asked, so while one is being sent, changes
+	-- for everyone go out every other tick instead of waiting for it to end.
+	local changesWaiting = damage ~= lastDamage or moreToSend
+	if fullQueue and not (fullAnswer and changesWaiting and answerChunkLast) then
 		local message, nextIndex = packMessage(fullQueue, fullNext, fullAnswer)
 		if message then send(message) end
 		fullNext = nextIndex
+		answerChunkLast = fullAnswer
 		if fullNext > #fullQueue then
 			fullQueue = nil
+			answerChunkLast = false
 			-- Beams sent early in the transfer may have changed since, and an answer's
 			-- beams reached only who asked: compare again.
 			moreToSend = true
@@ -232,9 +238,11 @@ local function ownerTick()
 				fullWanted = "answer"
 			end
 		end
-		lastDamage = damage
+		-- A full send for everyone carries the changes; an answer does not.
+		if not fullAnswer then lastDamage = damage end
 		return
 	end
+	answerChunkLast = false
 
 	if damage == lastDamage and not moreToSend then return end
 	lastDamage = damage
@@ -374,7 +382,7 @@ local function setRole(newRole)
 	role = newRole
 	forgetSent()
 	lastDamage, sinceSend, fullWanted, clearedPending = nil, 0, nil, false
-	fullAnswer, answerAfter = false, false
+	fullAnswer, answerAfter, answerChunkLast = false, false, false
 	reported, heard, sinceCheck, checksOver, sinceResync = {}, false, 0, 0, huge
 	checkedDamage, lastCount, reportsChanged = nil, 0, false
 	if role and next(baseline) == nil then captureBaseline() end

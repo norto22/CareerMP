@@ -1219,8 +1219,8 @@ end
 -- from the car's owner, under DAMAGE_MAX_BYTES and at most DAMAGE_PER_SECOND a second per
 -- player. A game that builds a copy of someone's car asks for its full damage
 -- ({"v": ...}), which goes to the owner alone. The owner's answer is flagged ("f":1 right
--- after the car id) and goes only to the players who asked for that car in the last
--- FULL_WANTED_SECONDS; with nobody waiting it goes to everyone. The games check every
+-- after the car id) and goes only to the players who asked for that car, until no chunk
+-- of it has come for FULL_WANTED_SECONDS; with nobody waiting it goes to everyone. The games check every
 -- value themselves.
 --
 -- The server reads the car id from the message's fixed start instead of decoding it, and
@@ -1276,7 +1276,14 @@ function careerDamage(player_id, data)
 	if not withinDamageRate("send", player_id) then return end
 	local serverVehicleID, answer = readDamageMessage(data)
 	if not serverVehicleID or not ownsVehicle(player_id, serverVehicleID) then return end
-	local targets = answer and playersWaitingFor(serverVehicleID) or MP.GetPlayers()
+	local askers = answer and playersWaitingFor(serverVehicleID)
+	if askers then
+		-- An answer under way keeps its players: one asked later restarts it, and the
+		-- first must still get the chunks it has not had yet.
+		local now = signalTimer:GetCurrent()
+		for id in pairs(askers) do askers[id] = now end
+	end
+	local targets = askers or MP.GetPlayers()
 	for id in pairs(targets) do
 		if id ~= player_id then
 			send("damage", id, "rxCareerDamage", data)
@@ -1505,30 +1512,38 @@ local function printStats()
 	end
 
 	local players, cars = {}, {}
+	local function newCarCounts() return {all = 0, shown = 0, traffic = 0, trafficShown = 0} end
 	for id in pairs(MP.GetPlayers() or {}) do
 		table.insert(players, id)
-		cars[id] = {all = 0, traffic = 0}
+		cars[id] = newCarCounts()
 	end
 	table.sort(players)
-	local carCount, trafficCount = 0, 0
+	-- Hidden cars are counted apart: a player who joined before the server filled keeps
+	-- the traffic above its new share, hidden, so the shown count is what the total holds.
+	local server = newCarCounts()
 	for serverVehicleID, state in pairs(vehicleStates) do
 		local owner = tonumber(serverVehicleID:match("^(%d+)%-"))
-		carCount = carCount + 1
-		if state.traffic == true then trafficCount = trafficCount + 1 end
-		if owner and cars[owner] then
-			cars[owner].all = cars[owner].all + 1
-			if state.traffic == true then cars[owner].traffic = cars[owner].traffic + 1 end
+		for _, counts in ipairs({server, owner and cars[owner] or nil}) do
+			counts.all = counts.all + 1
+			if state.active ~= false then counts.shown = counts.shown + 1 end
+			if state.traffic == true then
+				counts.traffic = counts.traffic + 1
+				if state.active ~= false then counts.trafficShown = counts.trafficShown + 1 end
+			end
 		end
 	end
 	print(string.format("Players: %d", #players))
-	print(string.format("Cars: %d, %d of them traffic or parked", carCount, trafficCount))
+	print(string.format("Cars: %d (%d shown), %d of them traffic or parked (%d shown)", server.all, server.shown,
+		server.traffic, server.trafficShown))
 	local function total(key)
 		local n = wholeIn(Config.server[key], TOTAL_MAX)
 		return n > 0 and tostring(n) or "no limit"
 	end
 	print(string.format("Traffic total: %s driving, %s parked", total("roadTrafficTotal"), total("parkedTrafficTotal")))
 	for _, id in ipairs(players) do
-		local line = string.format("  %s: %d cars, %d traffic or parked", describePlayer(id), cars[id].all, cars[id].traffic)
+		local c = cars[id]
+		local line = string.format("  %s: %d cars (%d shown), %d traffic or parked (%d shown)", describePlayer(id), c.all,
+			c.shown, c.traffic, c.trafficShown)
 		local share = sharesSent[id]
 		if share then line = line .. string.format(", share %d driving %d parked", share.road, share.parked) end
 		print(line)

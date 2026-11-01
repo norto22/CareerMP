@@ -5,8 +5,9 @@ local runSession = dofile("tests/load_session.lua")
 
 -- `luajit tests/load_session.lua <checkout of 483daa5>`: CareerMP before the pass. The
 -- damage bytes follow the order LuaJIT walks the game's tables in, which changes from run
--- to run; `bytes` is the lowest of 11 runs (3,484,015 to 3,639,890). Positions and traffic
--- do not change.
+-- to run; `bytes` is the lowest of the first 11 runs (3,484,015 to 3,639,890), and later
+-- runs have sent a little less. The new code sends about a sixth of either, far inside
+-- the half. Positions and traffic do not change.
 local BEFORE = {commit = "483daa5", positions = 494925, bytes = 3484015, road = 48, parked = 64}
 local TOTAL = {road = 18, parked = 24}
 

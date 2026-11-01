@@ -89,7 +89,8 @@ local function classify()
 			kind = "hidden"
 		elseif veh.isParked == "true" and isStill(veh) then
 			kind = "parked"
-		elseif isTraffic(gameVehicleID, veh) and farFromAll(veh:getPosition(), others) then
+		elseif veh.isParked ~= "true" and isTraffic(gameVehicleID, veh) and farFromAll(veh:getPosition(), others) then
+			-- Driving traffic only: a parked car that moves was pushed or hit.
 			kind = "far"
 		end
 		if kind then

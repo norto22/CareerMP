@@ -821,6 +821,24 @@ test("the server drops a damage message that names a car twice or holds an escap
 	same(#serverSends("rxCareerDamage"), 0, "messages sent")
 end)
 
+test("an answer still under way keeps reaching a player who asked more than 5 seconds ago", function()
+	threeGames()
+	world.now = 0
+	careerDamageRequest(1, '{"v":"0-3"}')
+	for t = 1, 8 do
+		world.now = t
+		if t == 4 then careerDamageRequest(2, '{"v":"0-3"}') end
+		world.serverSent = {}
+		careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+		same(targetsOf(serverSends("rxCareerDamage")), t < 4 and "1" or "1,2", "a flagged chunk at " .. t .. " s")
+	end
+	-- Once the answer stops for 5 seconds, the asks are over.
+	world.now = 14
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1,2", "a flagged chunk after the answer stopped")
+end)
+
 test("a leaving player's asks are forgotten", function()
 	local games = threeGames()
 	careerDamageRequest(2, '{"v":"0-3"}')
@@ -887,6 +905,29 @@ test("a full send for everyone replaces a flagged answer still being sent", func
 	end
 	same(cleared, 1, "cleared notices")
 	same(flagged, 1, "flagged chunks: only the one sent before the full send for everyone")
+end)
+
+test("a dent made while an answer is being sent goes to everyone within a second, before the answer ends", function()
+	local car = soloCar({beams = 1700, nodes = 50})
+	for cid = 0, 1599 do dent(car, cid, 0.8) end
+	inVehicle(car, car.ext.setRole, "owner")
+	tick(car, 3)
+	rawMessages(car)
+	inVehicle(car, car.ext.answerFull)
+	tick(car, 0.5)
+	same(#rawMessages(car), 1, "answer chunks in the first half second")
+	dent(car, 1650, 0.7)
+	tick(car, 1)
+	local ordinary, flagged = nil, 0
+	for _, m in ipairs(rawMessages(car)) do
+		if m:sub(1, 7) == '{"f":1,' then
+			flagged = flagged + 1
+		elseif m:find('"b":%[1650,') then
+			ordinary = m
+		end
+	end
+	expect(ordinary ~= nil, "an ordinary message with the new dent within a second")
+	expect(flagged >= 1, "the answer goes on beside it")
 end)
 
 test("a dent made while a full answer goes to one player still reaches every other player", function()
@@ -1531,4 +1572,12 @@ test("an owner's repair after a light scrape shows on the copy", function()
 	owner.beamstate.damage = 0
 	step(2)
 	same(copy.restLen[3], 1, "the copy's beam 3 after the owner's repair")
+end)
+
+test("a flag that does not follow the car id at once is no answer, and goes to every other player", function()
+	threeGames()
+	careerDamageRequest(2, '{"v":"0-3"}')
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","c":0,"f":1,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1,2", "a message with the flag further on")
 end)

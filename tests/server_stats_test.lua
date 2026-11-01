@@ -206,8 +206,20 @@ test("Stats lists the players and their cars, traffic and parked counted", funct
 	end
 	same(tonumber(players), 2, "players line")
 	same(tonumber(cars), 3, "cars line")
-	same(countLines(lines, "player0 (0): 2 cars, 1 traffic or parked"), 1, "player 0's line")
-	same(countLines(lines, "player1 (1): 1 cars, 0 traffic or parked"), 1, "player 1's line")
+	same(countLines(lines, "player0 (0): 2 cars (2 shown), 1 traffic or parked (1 shown)"), 1, "player 0's line")
+	same(countLines(lines, "player1 (1): 1 cars (1 shown), 0 traffic or parked (0 shown)"), 1, "player 1's line")
+end)
+
+-- Players who were on before the server filled keep their extra traffic, hidden; the
+-- shown count is what the total holds.
+test("Stats counts hidden cars apart from shown ones", function()
+	newServer({0})
+	for vid = 0, 2 do onVehicleSpawnHandler(0, vid, "") end
+	careerVehicleTrafficMarks(0, encode({["0-1"] = true, ["0-2"] = true}))
+	careerVehicleActiveHandler(0, encode({serverVehicleID = "0-2", active = false}))
+	local lines = statsLines()
+	same(countLines(lines, "Cars: 3 (2 shown), 2 of them traffic or parked (1 shown)"), 1, "cars line")
+	same(countLines(lines, "player0 (0): 3 cars (2 shown), 2 traffic or parked (1 shown)"), 1, "player 0's line")
 end)
 
 test("Stats reset starts the since-start counts again", function()

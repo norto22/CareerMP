@@ -253,6 +253,19 @@ test("Stats shows the totals and each player's share", function()
 	Stats({})
 	print = realPrint
 	same(countLines(printed, "Traffic total: 18 driving, 24 parked"), 1, "totals line")
-	same(countLines(printed, "player3 (3): 0 cars, 0 traffic or parked, share 4 driving 6 parked"), 1,
+	same(countLines(printed, "player3 (3): 0 cars (0 shown), 0 traffic or parked (0 shown), share 4 driving 6 parked"), 1,
 		"player 3's line")
+end)
+
+test("the spare cars of a split go to the lowest player numbers, two-digit ids counted as numbers", function()
+	newServer({roadTotal = 10, parkedTotal = 10})
+	join(11)
+	join(5)
+	join(2)
+	wait(5)
+	same(shareOf(2).road, 4, "road share of player 2")
+	same(shareOf(5).road, 3, "road share of player 5")
+	same(shareOf(11).road, 3, "road share of player 11")
+	same(shareOf(2).parked, 4, "parked share of player 2")
+	same(shareOf(11).parked, 3, "parked share of player 11")
 end)
