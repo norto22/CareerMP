@@ -10,7 +10,6 @@ Mileage is a multiplayer career for [BeamNG.drive](https://beamng.com/game/) on 
 Mileage was called CareerMP until v0.3.0. CareerMP servers switch to Mileage on their own when they update.
 
 ## What works
-Played on a live server:
 - Joining a server and starting a career (BeamNG.drive 0.40.4.0)
 - Buying a car, customising parts and parcel deliveries
 - Drag racing another player on one tree
@@ -23,16 +22,14 @@ Played on a live server:
 - Chat
 - Local saves: continue on any Mileage server, or offline
 
-Built, waiting for a live test:
-- Mission and challenge props everyone sees ([#30](https://github.com/norto22/Mileage/issues/30))
-- Paying and asking other players for money ([#33](https://github.com/norto22/Mileage/issues/33))
-- Street races for money ([#105](https://github.com/norto22/Mileage/issues/105))
-- Race events run by the server owner ([#106](https://github.com/norto22/Mileage/issues/106))
-- A server leaderboard ([#107](https://github.com/norto22/Mileage/issues/107))
-- Three or more players at once ([#32](https://github.com/norto22/Mileage/issues/32))
-- Mod vehicles and longer render distance ([#100](https://github.com/norto22/Mileage/issues/100))
-
 ## Planned
+- Mission and challenge props everyone sees (in progress, [#30](https://github.com/norto22/Mileage/issues/30))
+- Paying and asking other players for money (in progress, [#33](https://github.com/norto22/Mileage/issues/33))
+- Street races for money (in progress, [#105](https://github.com/norto22/Mileage/issues/105))
+- Race events run by the server owner (in progress, [#106](https://github.com/norto22/Mileage/issues/106))
+- A server leaderboard (in progress, [#107](https://github.com/norto22/Mileage/issues/107))
+- Three or more players at once (in progress, [#32](https://github.com/norto22/Mileage/issues/32))
+- Mod vehicles and longer render distance (in progress, [#100](https://github.com/norto22/Mileage/issues/100))
 - Co-op jobs with split pay ([#89](https://github.com/norto22/Mileage/issues/89))
 - Paying a player to tow or repair your car ([#91](https://github.com/norto22/Mileage/issues/91))
 - Loans between players ([#88](https://github.com/norto22/Mileage/issues/88))
