@@ -104,32 +104,101 @@ local hiddens = {
 
 --Vehicles and part paints
 
+-- The last state the server sent for each vehicle, by server vehicle id:
+-- {active = <boolean>, traffic = <boolean or nil>}.
+local knownStates = {}
+
+-- BeamMP draws a player's nametag over every vehicle their game owns, so it is hidden on
+-- a hidden car, a prop or trailer, and a car the owner's game marks as traffic or parked.
+local function nametagHidden(jbeam, state)
+	if hiddens[jbeam] then return true end
+	if type(state) ~= "table" then return false end
+	return state.active == false or state.traffic == true
+end
+
 -- Career constantly hides/shows vehicles (garage, shopping, missions). A vehicle
 -- hidden locally must be hidden for everyone, so the server keeps the
--- authoritative active-state map and we apply it to everything we do not own.
+-- authoritative active-state map and we apply it to everything we do not own. The
+-- server sends the whole map on request and one entry per change otherwise.
 local function rxCareerVehSync(data)
 	if data == "null" then return end
 	local vehicleStates = jsonDecode(data)
-	if not vehicleStates then return end
+	if type(vehicleStates) ~= "table" then return end
 	local vehicles = MPVehicleGE.getVehicles()
 	for serverVehicleID, state in pairs(vehicleStates) do
-		local entry = vehicles[serverVehicleID]
-		if entry then
-			local gameVehicleID = entry.gameVehicleID
+		if type(state) == "table" then
+			knownStates[serverVehicleID] = state
+			local entry = vehicles[serverVehicleID]
+			local gameVehicleID = entry and entry.gameVehicleID
 			if gameVehicleID and gameVehicleID ~= -1 and not MPVehicleGE.isOwn(gameVehicleID) then
 				local veh = be:getObjectByID(gameVehicleID)
 				if veh then
-					if not state.active then
-						veh:setActive(0)
-						entry.hideNametag = true
-					else
-						veh:setActive(1)
-						entry.hideNametag = hiddens[entry.jbeam] and true or false
-					end
+					veh:setActive(state.active and 1 or 0)
+					entry.hideNametag = nametagHidden(entry.jbeam, state)
 				end
 			end
 		end
 	end
+end
+
+--Traffic marks
+--
+-- Only the owner's game knows which of its cars are traffic or parked: the game flags
+-- them (AI in the traffic data, isTraffic, isParked), and the models are ordinary cars.
+-- Once a second the owner's game sends the marks that changed; the server stores them
+-- with each car's state and passes them on.
+
+local MARKS_EVERY_SECONDS = 1
+local sinceMarks = 0
+
+-- The mark last sent for each own vehicle: {gameVehicleID, mark}. The game id tells a
+-- car apart from a new one BeamMP gave the same server id.
+local sentMarks = {}
+
+local function isAiTraffic(gameVehicleID)
+	if not gameplay_traffic or type(gameplay_traffic.getTrafficData) ~= "function" then return false end
+	local entry = (gameplay_traffic.getTrafficData() or {})[gameVehicleID]
+	return type(entry) == "table" and entry.isAi == true
+end
+
+-- The car the player is in is theirs to drive, even one taken from traffic.
+local function isTrafficCar(gameVehicleID, veh)
+	if gameVehicleID == be:getPlayerVehicleID(0) then return false end
+	if veh.isTraffic == "true" or veh.isParked == "true" then return true end
+	return isAiTraffic(gameVehicleID)
+end
+
+local function sendTrafficMarks()
+	local changed, seen = nil, {}
+	for serverVehicleID, entry in pairs(MPVehicleGE.getVehicles()) do
+		local gameVehicleID = entry.gameVehicleID
+		if gameVehicleID and gameVehicleID ~= -1 and MPVehicleGE.isOwn(gameVehicleID) then
+			local veh = be:getObjectByID(gameVehicleID)
+			if veh then
+				seen[serverVehicleID] = true
+				local mark = isTrafficCar(gameVehicleID, veh)
+				local sent = sentMarks[serverVehicleID]
+				local previous = sent and sent.gameVehicleID == gameVehicleID and sent.mark or false
+				if mark ~= previous then
+					changed = changed or {}
+					changed[serverVehicleID] = mark
+				end
+				sentMarks[serverVehicleID] = {gameVehicleID = gameVehicleID, mark = mark}
+			end
+		end
+	end
+	for serverVehicleID in pairs(sentMarks) do
+		if not seen[serverVehicleID] then sentMarks[serverVehicleID] = nil end
+	end
+	if changed then TriggerServerEvent("careerVehicleTrafficMarks", jsonEncode(changed)) end
+end
+
+local function updateTrafficMarks(dtReal)
+	local dt = tonumber(dtReal)
+	if dt and dt > 0 then sinceMarks = sinceMarks + dt end
+	if sinceMarks < MARKS_EVERY_SECONDS then return end
+	sinceMarks = 0
+	sendTrafficMarks()
 end
 
 local function onVehicleActiveChanged(gameVehicleID, active)
@@ -169,7 +238,7 @@ local function onVehicleReady(gameVehicleID)
 		-- applied in onUpdate against the server's ghost config keys.
 		local vehicles = MPVehicleGE.getVehicles()
 		if vehicles[serverVehicleID] then
-			vehicles[serverVehicleID].hideNametag = hiddens[veh.JBeam] and true or false
+			vehicles[serverVehicleID].hideNametag = nametagHidden(veh.JBeam, knownStates[serverVehicleID])
 		end
 	end
 	-- Raised so other players stay visible at big-map distances.
@@ -221,12 +290,8 @@ end
 --Traffic Signals and Cameras
 
 -- A player's AI traffic counts as that player's own vehicles in multiplayer, so a
--- traffic car caught by a camera would be announced under the player's name.
-local function isAiTraffic(gameVehicleID)
-	if not gameplay_traffic or type(gameplay_traffic.getTrafficData) ~= "function" then return false end
-	local entry = (gameplay_traffic.getTrafficData() or {})[gameVehicleID]
-	return type(entry) == "table" and entry.isAi == true
-end
+-- traffic car caught by a camera would be announced under the player's name
+-- (isAiTraffic, above).
 
 local function onSpeedTrapTriggered(speedTrapData, playerSpeed, overSpeed)
 	if not MPVehicleGE.isOwn(speedTrapData.subjectID) then return end
@@ -613,6 +678,7 @@ local function onUpdate(dtReal, dtSim, dtRaw)
 	updateCareerStart()
 	updateJoinHold()
 	if worldReadyState ~= 2 or not clientConfig then return end
+	updateTrafficMarks(dtReal)
 	local vehicles = MPVehicleGE.getVehicles()
 	for serverVehicleID in pairs(vehicles) do
 		local veh = be:getObjectByID(vehicles[serverVehicleID].gameVehicleID)
@@ -666,6 +732,9 @@ local function onBeamMPServerLeave()
 	join = newJoin()
 	careerMPActive = false
 	syncRequested = false
+	knownStates = {}
+	sentMarks = {}
+	sinceMarks = 0
 end
 
 --Access

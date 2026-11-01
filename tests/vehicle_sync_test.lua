@@ -441,3 +441,125 @@ test("my friend's police and parked cars carry no nametag on my game, the car th
 	same(nametag(me, "1-1"), true, "my friend's police car")
 	same(nametag(me, "1-2"), true, "my friend's parked car")
 end)
+
+local function count(list, value)
+	local n = 0
+	for _, v in ipairs(list) do if v == value then n = n + 1 end end
+	return n
+end
+
+local function marksSent(p) return count(p.serverRequests, "careerVehicleTrafficMarks") end
+
+test("a parked car my friend climbs into gets their nametag within a second, and loses it when they leave", function()
+	local me, friend = twoPlayers()
+	frames(friend, 1)
+	friend.playerVehicle = gameId(1, 2)
+	frames(friend, 1)
+	same(nametag(me, "1-2"), false, "the parked car my friend drives")
+	same(nametag(me, "1-0"), false, "my friend's own car, which is not traffic")
+	friend.playerVehicle = gameId(1, 0)
+	frames(friend, 1)
+	same(nametag(me, "1-2"), true, "the parked car once my friend is out")
+end)
+
+test("marks go out at most once a second, only when they change, and only for the sender's cars", function()
+	local me, friend = twoPlayers()
+	frames(friend, 0.5)
+	same(marksSent(friend), 0, "marks within the first second")
+	frames(friend, 0.5)
+	same(marksSent(friend), 1, "marks after a second")
+	frames(me, 2)
+	same(marksSent(me), 0, "marks from a game with no traffic")
+	frames(friend, 3)
+	same(marksSent(friend), 1, "marks while nothing changed")
+	world.broadcasts = {}
+	friend.playerVehicle = gameId(1, 1)
+	frames(friend, 1)
+	same(#world.broadcasts, 1, "updates for one changed mark")
+	local update = world.broadcasts[1].table
+	same(update["1-1"].traffic, false, "the changed car's mark")
+	same(update["1-2"], nil, "an unchanged car")
+end)
+
+test("my game's own marks never hide the nametag on my cars for me", function()
+	local me = twoPlayers()
+	frames(me, 1)
+	same(me.vehicles["0-0"].hideNametag, nil, "my car on my game")
+end)
+
+test("the server ignores marks for another player's car, malformed ids, non-booleans and bad payloads", function()
+	local me, friend = twoPlayers()
+	frames(friend, 1)
+	world.broadcasts = {}
+	careerVehicleTrafficMarks(0, encode({["1-1"] = false, ["1-2"] = false}))
+	careerVehicleTrafficMarks(1, encode({["1-1x"] = false, ["01-"] = false, [1] = false}))
+	careerVehicleTrafficMarks(1, encode({["1-1"] = "no", ["1-2"] = 0}))
+	careerVehicleTrafficMarks(1, encode({["1-9"] = true}))
+	careerVehicleTrafficMarks(1, "{not a table")
+	careerVehicleTrafficMarks(1, "")
+	careerVehicleTrafficMarks(1, nil)
+	pump()
+	same(#world.broadcasts, 0, "updates sent")
+	same(nametag(me, "1-1"), true, "my friend's police car")
+	same(nametag(me, "1-2"), true, "my friend's parked car")
+end)
+
+test("a player who joins later gets the marks with the vehicle list", function()
+	local _, friend = twoPlayers()
+	frames(friend, 1)
+	local late = addPlayer(2, "Late")
+	for vid, model in pairs({[0] = "pickup", [1] = "fullsize", [2] = "covet"}) do
+		local gid = gameId(1, vid)
+		local veh = {owner = 1, serverVehicleID = "1-" .. vid, JBeam = model, active = true}
+		function veh:setActive(on) self.active = on == 1 end
+		function veh:getActive() return self.active end
+		function veh:queueLuaCommand() end
+		function veh:setField() end
+		late.objects[gid] = veh
+		late.vehicles["1-" .. vid] = {gameVehicleID = gid, jbeam = model, isLocal = false}
+	end
+	careerVehSyncRequested(2, "")
+	pump()
+	same(nametag(late, "1-0"), false, "the car my friend drives")
+	same(nametag(late, "1-1"), true, "my friend's police car")
+	same(nametag(late, "1-2"), true, "my friend's parked car")
+end)
+
+test("a remote car that is hidden or on the props list has no nametag; a remote car that is ready keeps its mark", function()
+	local me, friend = twoPlayers()
+	spawn(1, 3, {JBeam = "cones"})
+	spawn(1, 4, {JBeam = "bastion"})
+	frames(friend, 1)
+	same(nametag(me, "1-3"), true, "a prop")
+	same(nametag(me, "1-4"), false, "another car of my friend's")
+	as(friend, function() friend.objects[gameId(1, 4)]:setActive(0) end)
+	pump()
+	same(nametag(me, "1-4"), true, "a car my friend hid")
+	as(me, me.enabler.onVehicleReady, gameId(1, 1))
+	same(nametag(me, "1-1"), true, "the police car once it is ready again")
+end)
+
+test("leaving the server forgets the sent marks, so a rejoin sends them again", function()
+	local _, friend = twoPlayers()
+	frames(friend, 1)
+	same(marksSent(friend), 1, "marks before leaving")
+	as(friend, friend.enabler.onBeamMPServerLeave)
+	frames(friend, 1)
+	same(marksSent(friend), 2, "marks after rejoining")
+end)
+
+test("a car BeamMP gives a used server id is marked afresh", function()
+	local me, friend = twoPlayers()
+	frames(friend, 1)
+	-- 1-2 is deleted and a new parked car takes its server id under a new game id.
+	friend.objects[gameId(1, 2)] = nil
+	local veh = {owner = 1, serverVehicleID = "1-2", JBeam = "vivace", isParked = "true", active = true}
+	function veh:getActive() return true end
+	friend.objects[999] = veh
+	friend.vehicles["1-2"].gameVehicleID = 999
+	onVehicleSpawnHandler(1, 2, "")
+	pump()
+	same(nametag(me, "1-2"), false, "before the new car's mark")
+	frames(friend, 1)
+	same(nametag(me, "1-2"), true, "the new parked car")
+end)

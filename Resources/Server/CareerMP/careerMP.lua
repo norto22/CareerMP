@@ -462,6 +462,7 @@ function onInit()
 	MP.RegisterEvent("prefabSyncRequested","prefabSyncRequested")
 	MP.RegisterEvent("careerVehSyncRequested","careerVehSyncRequested")
 	MP.RegisterEvent("careerVehicleActiveHandler","careerVehicleActiveHandler")
+	MP.RegisterEvent("careerVehicleTrafficMarks","careerVehicleTrafficMarks")
 
 	-- Drag racing. One enveloped relay carries BeamNG 0.39's own multiplayer drag
 	-- protocol; the server routes and elects the host but never interprets a message.
@@ -927,6 +928,32 @@ function careerVehicleActiveHandler(player_id, data)
 		vehicleStates[vehicleData.serverVehicleID].active = vehicleData.active
 	end
 	MP.TriggerClientEventJson(-1, "rxCareerVehSync", vehicleStates)
+end
+
+-- true when serverVehicleID ("<player_id>-<vehicle_id>") names one of player_id's own
+-- vehicles. A player's game may only change its own cars.
+local function ownsVehicle(player_id, serverVehicleID)
+	if type(serverVehicleID) ~= "string" then return false end
+	local owner = serverVehicleID:match("^(%d+)%-%d+$")
+	return owner ~= nil and tonumber(owner) == tonumber(player_id)
+end
+
+-- The owner's game marks which of its cars are traffic or parked:
+-- {"<player_id>-<vehicle_id>": true | false, ...}. Other games hide the nametag on a
+-- marked car. Marks for another player's car, an unknown car or a non-boolean are ignored.
+function careerVehicleTrafficMarks(player_id, data)
+	local marks = decodeTable(data)
+	if not marks then return end
+	local changed, any = {}, false
+	for serverVehicleID, mark in pairs(marks) do
+		local state = vehicleStates[serverVehicleID]
+		if type(mark) == "boolean" and state and ownsVehicle(player_id, serverVehicleID) then
+			state.traffic = mark
+			changed[serverVehicleID] = state
+			any = true
+		end
+	end
+	if any then MP.TriggerClientEventJson(-1, "rxCareerVehSync", changed) end
 end
 
 function validateCareerMPActivation()
