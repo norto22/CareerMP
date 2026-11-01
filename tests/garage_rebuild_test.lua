@@ -2,14 +2,16 @@
 -- at the garage computer must rebuild that car and nothing else, and the computer must seat
 -- the player in the car they clicked.
 --
--- Loads the real careerMP/patches.lua and CareerMP's garage computer. BeamMP's rebuild is a
+-- Loads the real careerMP/patches.lua and a stand-in for the game's own garage computer
+-- (tests/game_computer.lua), which CareerMP patches at runtime. BeamMP's rebuild is a
 -- stand-in that follows MPVehicleGE.replaceRequest line for line: it decides the car from the
 -- global getPlayerVehicle(0), ignores the car the caller named, marks that entry as edited and
 -- calls the game's rebuild without a car. The game's rebuild (core/vehicles.lua) rebuilds the
 -- car it is given, or getPlayerVehicle(0) when given none, in place.
 
 local PATCHES = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/patches.lua"
-local COMPUTER = "Resources/Client/CareerMP/lua/ge/extensions/career/modules/computer.lua"
+local COMPUTER = "tests/game_computer.lua"
+local COMPUTER_COPY = "Resources/Client/CareerMP/lua/ge/extensions/career/modules/computer.lua"
 
 local CAR_A, CAR_B = 1, 2 -- inventory ids: A is the car the player picks, B their other car
 
@@ -145,7 +147,19 @@ local function setup()
 		startRepairInGarage = function() end,
 	}
 	career_career = {hasBoughtStarterVehicle = function() return true end, closeAllMenus = function() end}
-	career_modules_tether = {startDoorTether = function() return {} end, startSphereTether = function() return {} end}
+	-- tether.lua: each start is recorded with its range; a door tether fails when asked to.
+	game.tethers = {}
+	career_modules_tether = {
+		startDoorTether = function(door, range)
+			table.insert(game.tethers, {kind = "door", range = range})
+			if game.doorTetherFails then return nil end
+			return {}
+		end,
+		startSphereTether = function(pos, range)
+			table.insert(game.tethers, {kind = "sphere", range = range})
+			return {}
+		end,
+	}
 	career_modules_partShopping = {startShopping = function() end, installPart = function() end,
 		applyShopping = function() end}
 	career_modules_tuning = {start = function() end}
@@ -626,14 +640,65 @@ end)
 
 --== the garage computer, edges ===============================================
 
-test("the garage computer still runs its buttons when CareerMP's patches are not loaded", function()
+test("CareerMP ships no copy of the game's garage computer module", function()
+	same(loadfile(COMPUTER_COPY), nil, "a loadable " .. COMPUTER_COPY)
+end)
+
+test("the garage computer's menu stays open within 25 m of its door, or of the computer without one", function()
 	setup()
-	extensions.careerMP_patches = nil
-	local ok, err = pcall(function()
-		career_modules_computer.openMenu(COMPUTER_FACILITY)
-		career_modules_computer.computerButtonCallback("repair", CAR_A)
-	end)
-	expect(ok, "the computer raised: " .. tostring(err))
+	patches.apply()
+	career_modules_computer.openMenu(COMPUTER_FACILITY)
+	same(#game.tethers, 1, "tethers started")
+	same(game.tethers[1].kind, "door", "first tether")
+	same(game.tethers[1].range, 25, "door range")
+	game.tethers, game.doorTetherFails = {}, true
+	career_modules_computer.openMenu(COMPUTER_FACILITY)
+	same(game.tethers[2] and game.tethers[2].kind, "sphere", "fallback tether")
+	same(game.tethers[2].range, 25, "fallback range")
+	career_modules_computer.openMenu({id = "noDoor", name = "Garage", doors = {}})
+	same(game.tethers[3] and game.tethers[3].range, 25, "range with no door")
+end)
+
+test("a tether started anywhere but the garage computer keeps the game's range", function()
+	setup()
+	patches.apply()
+	career_modules_computer.openMenu(COMPUTER_FACILITY)
+	career_modules_tether.startDoorTether({}, 1)
+	career_modules_tether.startSphereTether({}, 4)
+	same(game.tethers[2].range, 1, "door range")
+	same(game.tethers[3].range, 4, "sphere range")
+end)
+
+test("the game's tether starts are put back even when the computer fails to open", function()
+	setup()
+	local door, sphere = career_modules_tether.startDoorTether, career_modules_tether.startSphereTether
+	patches.apply()
+	career_modules_inventory.getInventoryIdsInClosestGarage = function() error("no garage") end
+	local ok = pcall(career_modules_computer.openMenu, COMPUTER_FACILITY)
+	same(ok, false, "openMenu succeeded")
+	same(career_modules_tether.startDoorTether, door, "startDoorTether")
+	same(career_modules_tether.startSphereTether, sphere, "startSphereTether")
+end)
+
+test("revert puts the game's garage computer functions back", function()
+	setup()
+	local open, button = career_modules_computer.openMenu, career_modules_computer.computerButtonCallback
+	patches.apply()
+	expect(career_modules_computer.computerButtonCallback ~= button, "computerButtonCallback was patched")
+	patches.revert()
+	same(career_modules_computer.openMenu, open, "openMenu")
+	same(career_modules_computer.computerButtonCallback, button, "computerButtonCallback")
+end)
+
+test("a game without computerButtonCallback is reported and the patches are tried again", function()
+	setup()
+	career_modules_computer.computerButtonCallback = nil
+	same(patches.apply(), false, "applied")
+	local named = false
+	for _, name in ipairs(patches.getFailures()) do
+		if name == "career_modules_computer.computerButtonCallback" then named = true end
+	end
+	expect(named, "the missing function was reported")
 end)
 
 test("a click on car A wins over a Parts session left recorded for car B", function()
