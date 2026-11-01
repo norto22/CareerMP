@@ -78,7 +78,8 @@ local function installBeamMP(opts)
 end
 
 local function setup()
-	game = {objects = {}, nextId = 100, rebuilt = {}, beamMPCalls = 0, mp = {}, invToVeh = {}}
+	game = {objects = {}, nextId = 100, rebuilt = {}, beamMPCalls = 0, mp = {}, invToVeh = {},
+		sentSpawns = {}, sentEdits = {}}
 	logs, toasts, hooks = {}, {}, {}
 	unpack = unpack or table.unpack
 
@@ -121,6 +122,19 @@ local function setup()
 	MPVehicleGE = {
 		isOwn = function(id) local e = game.mp[id] return e ~= nil and e.own == true end,
 		getVehicleByGameID = function(id) return game.mp[id] end,
+		-- MPVehicleGE.onVehicleSpawned: a car with no entry (or no jbeam) is sent to the server as
+		-- this player's new car (sendVehicleSpawn); one with an entry is sent as an edit. Nothing
+		-- in BeamMP's list changes until the server answers; see serverAnswers.
+		onVehicleSpawned = function(gameVehicleID)
+			if game.relinkRaises then error("vehicle data not ready") end
+			if not MPCoreNetwork.isMPSession() then return end
+			local vehicle = game.mp[gameVehicleID]
+			if not vehicle or not vehicle.jbeam then
+				table.insert(game.sentSpawns, gameVehicleID)
+			else
+				table.insert(game.sentEdits, gameVehicleID)
+			end
+		end,
 	}
 	core_vehicles = {replaceVehicle = gameReplaceVehicle, spawnNewVehicle = gameSpawnNewVehicle}
 
@@ -132,6 +146,10 @@ local function setup()
 			return {CAR_B, CAR_A}
 		end,
 		getVehicleIdFromInventoryId = function(inv) return game.invToVeh[inv] end,
+		getInventoryIdFromVehicleId = function(vehId)
+			for inv, id in pairs(game.invToVeh) do if id == vehId then return inv end end
+			return nil
+		end,
 		getVehicles = function() return {[CAR_A] = {niceName = "A"}, [CAR_B] = {niceName = "B"}} end,
 		getVehicleThumbnail = function() return "" end,
 		-- inventory.lua:450-470, replaceOption 2: rebuild the car with that inventory id in place,
@@ -162,8 +180,16 @@ local function setup()
 			return {}
 		end,
 	}
+	-- partShopping.lua: Buy charges and saves the cart; cancelShopping fires onPartShoppingCancelled,
+	-- rebuilds the session's car from its saved entry with replaceOption 2 and ends the session.
+	game.bought, game.cancelled = 0, 0
 	career_modules_partShopping = {startShopping = function() end, installPart = function() end,
-		applyShopping = function() end}
+		applyShopping = function() game.bought = game.bought + 1 end,
+		cancelShopping = function()
+			game.cancelled = game.cancelled + 1
+			patches.onPartShoppingCancelled()
+			career_modules_inventory.spawnVehicle(game.startedFor, 2)
+		end}
 	career_modules_tuning = {start = function() end}
 	career_modules_painting = {start = function() end}
 	career_modules_vehiclePerformance = {startDragTest = function() end}
@@ -228,6 +254,23 @@ local COMPUTER_FACILITY = {id = "garageComputer", name = "Garage", doors = {{}}}
 local function unlink(obj) game.mp[obj.id] = nil end
 
 local function lastToast() return toasts[#toasts] end
+
+-- The BeamMP server's answer to every spawn sent so far. "accept": the echo reaches
+-- onServerVehicleSpawned, which files the car as this player's local car. "refuse" (car limit
+-- or a plugin): the echo files it, then Od reaches onServerVehicleRemoved, which deletes the car
+-- from this player's world.
+local function serverAnswers(answer)
+	for _, id in ipairs(game.sentSpawns) do
+		local obj = game.objects[id]
+		game.mp[id] = {isLocal = true, own = true, jbeam = obj and obj.JBeam}
+		if answer == "refuse" then
+			game.mp[id] = nil
+			if obj then obj.destroyed = true end
+			game.objects[id] = nil
+		end
+	end
+	game.sentSpawns = {}
+end
 
 --== rebuilds go to the car the game named ===================================
 
@@ -433,6 +476,94 @@ test("the quick repair on an unlinked car A, on foot, leaves the garage pointing
 	same(#game.rebuilt, 0, "cars rebuilt")
 end)
 
+--== a refused garage car is sent to the server as this player's ==============
+
+test("a refused unlinked garage car is sent to the server once, and nothing changes until it answers", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#game.sentSpawns, 1, "spawns sent")
+	same(game.sentSpawns[1], game.carA.id, "the car sent")
+	same(game.mp[game.carA.id], nil, "car A's entry before the server answers")
+	expect(string.find(toasts[1].msg, "Mileage is linking it", 1, true), "message: " .. tostring(toasts[1].msg))
+end)
+
+test("a refused car is sent again only after 2 seconds", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#game.sentSpawns, 1, "spawns sent by two refusals at once")
+	patches.onUpdate(1)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#game.sentSpawns, 1, "spawns sent after 1 second")
+	patches.onUpdate(1.5)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#game.sentSpawns, 2, "spawns sent after 2.5 seconds")
+end)
+
+test("after the server accepts, the next rebuild of car A rebuilds car A in place", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	serverAnswers("accept")
+	local back = core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA)
+	same(back, game.carA, "the car that came back")
+	expect(rebuiltOnly(game.carA.id), "only car A was rebuilt")
+	same(pickups(), 1, "copies of car A")
+	same(game.carB.JBeam, "sedan", "car B")
+end)
+
+test("after the server refuses, car A is gone from the world, its garage entry is kept and no copy exists", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	local carAId = game.carA.id
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	serverAnswers("refuse")
+	same(game.objects[carAId], nil, "car A in the world")
+	same(game.invToVeh[CAR_A], carAId, "the garage's entry for car A")
+	same(pickups(), 0, "pickups in the world")
+	same(game.walker.JBeam, "unicycle", "the walking avatar")
+end)
+
+test("a car with no garage entry, or listed as another player's, is never sent to the server", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	local stray = newObj("pickup")
+	local remote = newObj("van")
+	game.mp[remote.id] = {isLocal = false, own = false, jbeam = "van"}
+	game.invToVeh[3] = remote.id
+	core_vehicles.replaceVehicle("pickup", {}, stray)
+	core_vehicles.replaceVehicle("pickup", {}, remote)
+	same(#game.sentSpawns, 0, "spawns sent")
+	same(#game.sentEdits, 0, "edits sent")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+end)
+
+test("a send that raises is logged and the rebuild is still refused", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	unlink(game.carA)
+	game.relinkRaises = true
+	local ok, back = pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
+	expect(ok, "the rebuild call did not raise: " .. tostring(back))
+	same(back, nil, "what the rebuild returned")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+	same(pickups(), 1, "copies of car A")
+	same(countLines(logs, "vehicle data not ready"), 1, "the failed send logged")
+end)
+
 --== everything else keeps BeamMP's behaviour ================================
 
 local function keepsBeamMP(name, named, prepare)
@@ -455,14 +586,62 @@ local function keepsBeamMP(name, named, prepare)
 end
 
 keepsBeamMP("a rebuild that names no car keeps BeamMP's behaviour", nil)
-keepsBeamMP("a rebuild of another player's car keeps BeamMP's behaviour", function()
+
+test("a rebuild of another player's car is refused and says whose it is", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
 	local remote = newObj("van")
-	game.mp[remote.id] = {isLocal = false, own = false}
-	return remote
+	game.mp[remote.id] = {isLocal = false, own = false, jbeam = "van"}
+	local back = core_vehicles.replaceVehicle("pickup", {}, remote)
+	same(back, nil, "what the rebuild returned")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+	same(#game.rebuilt, 0, "cars rebuilt")
+	same(remote.JBeam, "van", "the other player's car")
+	same(#toasts, 1, "messages shown")
+	expect(string.find(toasts[1].msg, "another player's", 1, true), "message: " .. tostring(toasts[1].msg))
 end)
-keepsBeamMP("a rebuild naming a destroyed car keeps BeamMP's behaviour", function()
+
+test("a rebuild naming a destroyed car is refused and logged, with no message", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carB
 	game.carA.destroyed = true
-	return game.carA
+	local back = core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(back, nil, "what the rebuild returned")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+	same(game.carB.JBeam, "sedan", "car B")
+	same(#toasts, 0, "messages shown")
+	same(countLines(logs, "W mileage.patches: "), 1, "warning lines")
+end)
+
+test("many refused rebuilds of car A show one message until a rebuild of car A succeeds", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	local entry = game.mp[game.carA.id]
+	unlink(game.carA)
+	for _ = 1, 10 do core_vehicles.replaceVehicle("pickup", {}, game.carA) end
+	same(#toasts, 1, "messages shown for ten refusals")
+	same(countLines(logs, "W mileage.patches: refused"), 10, "refusals logged")
+	game.mp[game.carA.id] = entry
+	same(core_vehicles.replaceVehicle("pickup", {}, game.carA), game.carA, "the rebuild once car A is linked")
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(#toasts, 2, "messages shown after car A was unlinked again")
+end)
+
+test("with BeamMP loaded but no server session, a rebuild of an unlinked car is handed on as before", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.noSession = true
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(game.beamMPCalls, 1, "BeamMP's rebuild calls")
+	same(#toasts, 0, "messages shown")
 end)
 
 --== staying on top of BeamMP ================================================
@@ -604,12 +783,11 @@ test("a rebuild passes every argument through, the fourth included, on both path
 	patches.apply()
 	game.player = game.carB
 	local opt = {config = "x"}
-	local remote = newObj("van")
-	game.mp[remote.id] = {isLocal = false, own = false}
 	core_vehicles.replaceVehicle("pickup", opt, game.carA, true)
-	core_vehicles.replaceVehicle("pickup", opt, remote, true)
+	core_vehicles.replaceVehicle("pickup", opt, nil, true)
 	same(#calls, 2, "calls reaching BeamMP")
-	for i, named in ipairs({game.carA, remote}) do
+	for i, named in ipairs({game.carA, false}) do
+		named = named or nil
 		same(calls[i].model, "pickup", "model " .. i)
 		same(calls[i].opt, opt, "options table " .. i)
 		same(calls[i].other, named, "named car " .. i)
@@ -760,4 +938,70 @@ test("a click on car A wins over a Parts session left recorded for car B", funct
 	patches.onPartShoppingStarted()
 	clickAt("partShopping", CAR_A)
 	same(announced("onPartShoppingStartedMP")[2], CAR_A, "inventory id")
+end)
+
+--== Buy waits until the car is linked ========================================
+
+local function partsSessionOn(inv)
+	setup()
+	installBeamMP()
+	patches.apply()
+	clickAt("partShopping", inv)
+end
+
+test("Buy after a refused part fitting on car A cancels Parts and charges nothing", function()
+	partsSessionOn(CAR_A)
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA)
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 0, "purchases made")
+	same(game.cancelled, 1, "Parts sessions cancelled")
+	same(announced("onPartShoppingTransactionCompleteMP"), nil, "transaction complete announced")
+	same(#toasts, 2, "messages shown: the refusal, then the cancelled purchase")
+	expect(string.find(lastToast().msg, "nothing was charged", 1, true), "message: " .. tostring(lastToast().msg))
+	same(lastToast().type, "warning", "message type")
+	same(pickups(), 1, "copies of car A")
+	same(game.invToVeh[CAR_A], game.carA.id, "the garage's game vehicle for car A")
+	same(countLines(logs, "W mileage.patches: cancelled"), 1, "cancelled purchases logged")
+end)
+
+test("after the server accepts, Parts on car A again rebuilds car A in place and Buy charges once", function()
+	partsSessionOn(CAR_A)
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	career_modules_partShopping.applyShopping()
+	serverAnswers("accept")
+	clickAt("partShopping", CAR_A)
+	same(core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA), game.carA, "the rebuilt car")
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 1, "purchases made")
+	same(game.cancelled, 1, "Parts sessions cancelled")
+	same(announced("onPartShoppingTransactionCompleteMP")[1], CAR_A, "transaction complete announced for")
+	same(pickups(), 1, "copies of car A")
+	same(game.carA.config, "A with new part", "car A's parts")
+end)
+
+test("a refused rebuild of car B does not stop Buy for car A", function()
+	partsSessionOn(CAR_A)
+	unlink(game.carB)
+	core_vehicles.replaceVehicle("sedan", {}, game.carB)
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 1, "purchases made")
+	same(game.cancelled, 0, "Parts sessions cancelled")
+end)
+
+test("cancelling Parts, and revert, clear car A's refusal", function()
+	for _, drop in ipairs({
+		function() patches.onPartShoppingCancelled() end,
+		function() patches.revert() patches.apply() end,
+	}) do
+		partsSessionOn(CAR_A)
+		unlink(game.carA)
+		core_vehicles.replaceVehicle("pickup", {}, game.carA)
+		drop()
+		clickAt("partShopping", CAR_A)
+		career_modules_partShopping.applyShopping()
+		same(game.bought, 1, "purchases made")
+		same(game.cancelled, 0, "Parts sessions cancelled")
+	end
 end)

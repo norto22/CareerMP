@@ -469,12 +469,7 @@ local function applyEnrichments()
 		extensions.hook("onPartShoppingPartInstalledMP", { part = args[1], inventoryId = inventoryId })
 	end)
 
-	-- Stock fires onPartShoppingTransactionComplete with no arguments.
-	wrap("career_modules_partShopping", "applyShopping", function()
-		local inventoryId = resolveInventoryId(pending.partShopping)
-		extensions.hook("onPartShoppingTransactionCompleteMP", inventoryId)
-		pending.partShopping = nil
-	end)
+	-- partShopping.applyShopping is wrapped in applyBuyGuard, below the garage rebuild patch.
 
 	-- vehiclePerformance fires no start hook of its own, so without this the
 	-- certification menu would never pull the player into the car. startDragTest is
@@ -662,8 +657,13 @@ end
 -- which this does not touch. debug.setupvalue would be the direct way in and the sandbox
 -- refuses it; rawset on _G is what dragSync already does in the shipped game.
 --
--- Anything else (no car named, another player's car, a car that is gone) goes to the
--- function underneath untouched.
+-- A rebuild with no car named goes to the function underneath untouched. In a server session,
+-- a rebuild naming a car this player's BeamMP list does not have as their own is refused:
+-- BeamMP would drop the named car and rebuild the walking avatar or the car the player sits in
+-- (or spawn a new one), leaving an upgraded copy the garage does not know about. Nothing is
+-- rebuilt, the caller gets nil as from a failed rebuild, and the player is told once per car.
+-- Outside a session (single player, or BeamMP loaded but not on a server) there is no such
+-- copy, so the rebuild is handed on as before.
 
 --- True while a named-car rebuild is running, so a call that reaches us again from inside
 --- it (BeamMP calling an older wrapper of ours underneath it) passes straight through.
@@ -704,11 +704,123 @@ local function reportWrongRebuild(namedId, returned)
 	end
 end
 
+--- Cars whose refusal message has been shown, by game vehicle id, until a rebuild of that car
+--- succeeds. The Parts screen rebuilds on every part tried, so one message per rebuild would flood.
+local refusalShown = {}
+
+--- Garage cars with a refused rebuild, by inventory id, until a rebuild of that car succeeds or
+--- Parts is cancelled. A Parts session on such a car cannot be bought; see applyBuyGuard.
+local refusedInventoryIds = {}
+
+--- When each refused car was last sent to the server, by game vehicle id, on relinkClock.
+local relinkSentAt = {}
+--- Seconds of onUpdate time, for spacing the sends below.
+local relinkClock = 0
+--- A refused car is sent again only after this long, if a later rebuild finds it still unlinked.
+local RELINK_INTERVAL = 2 -- seconds
+
+--- True when BeamMP says this is a server session and its car list can be asked.
+local function inServerSession()
+	local mp, net = MPVehicleGE, MPCoreNetwork
+	if type(mp) ~= "table" or type(mp.isOwn) ~= "function"
+		or type(mp.getVehicleByGameID) ~= "function" then
+		return false
+	end
+	if type(net) ~= "table" or type(net.isMPSession) ~= "function" then return false end
+	local ok, session = pcall(net.isMPSession)
+	return ok and session == true
+end
+
+--- The career inventory id of a game vehicle, or nil when it is not one of the garage's cars.
+local function inventoryIdOfVehicle(vehId)
+	local inventory = career_modules_inventory
+	if type(inventory) ~= "table" or type(inventory.getInventoryIdFromVehicleId) ~= "function" then
+		return nil
+	end
+	local ok, inventoryId = pcall(inventory.getInventoryIdFromVehicleId, vehId)
+	if ok then return inventoryId end
+	return nil
+end
+
+local function warnPlayer(msg)
+	if guihooks and type(guihooks.trigger) == "function" then
+		guihooks.trigger("toastrMsg", {type = "warning", title = "Mileage", msg = msg, config = {timeOut = 8000}})
+	end
+end
+
+--- Ask BeamMP to send a garage car it has no entry for to the server as a car this player just
+--- spawned. onVehicleSpawned sends BeamMP's own spawn message; the server files the car under the
+--- sending connection and echoes it back, which makes BeamMP list it as this player's, or refuses
+--- it (car limit, a plugin), which makes BeamMP delete it from this player's world while the
+--- garage keeps it. Nothing arrives within this call. Only called from the garage rebuild, never
+--- while BeamMP is building another player's car (its private nextSpawnIsRemote would swallow
+--- the send). Returns true when it was sent now.
+local function relinkCar(id)
+	local last = relinkSentAt[id]
+	if last and relinkClock - last < RELINK_INTERVAL then return false end
+	if type(MPVehicleGE.onVehicleSpawned) ~= "function" then
+		log("W", "mileage.patches", "BeamMP has no onVehicleSpawned, so vehicle " .. id .. " cannot be linked")
+		return false
+	end
+	relinkSentAt[id] = relinkClock
+	local ok, err = pcall(MPVehicleGE.onVehicleSpawned, id)
+	if not ok then
+		log("E", "mileage.patches", string.format("could not send vehicle %d to the server to link it: %s", id, tostring(err)))
+		return false
+	end
+	log("I", "mileage.patches", "sent vehicle " .. id .. " to the server to link it to this player")
+	return true
+end
+
+--- A garage rebuild naming `otherVeh`, which BeamMP does not list as this player's: rebuild
+--- nothing, log it, tell the player once, and when it is one of the garage's cars that BeamMP
+--- has no entry for at all, link it (a car BeamMP lists as another player's is never claimed).
+local function refuseRebuild(otherVeh)
+	local alive, id = pcall(function() return otherVeh:getID() end)
+	if not alive or type(id) ~= "number" then
+		log("W", "mileage.patches", "refused a garage rebuild of a car that no longer exists - nothing was rebuilt")
+		return nil
+	end
+
+	local inventoryId = inventoryIdOfVehicle(id)
+	if inventoryId ~= nil then refusedInventoryIds[inventoryId] = true end
+
+	local listed = MPVehicleGE.getVehicleByGameID(id) ~= nil
+	local msg
+	if listed then
+		msg = "This car is listed as another player's on the server, so Mileage did not change it."
+	elseif inventoryId ~= nil then
+		relinkCar(id)
+		msg = "This car is not linked to you on the server, so Mileage did not change it. " ..
+			"Mileage is linking it: try again in a moment."
+	else
+		msg = "This car is not linked to you on the server, so Mileage did not change it."
+	end
+	log("W", "mileage.patches", string.format(
+		"refused a garage rebuild of vehicle %d (inventory id %s): BeamMP %s - nothing was rebuilt",
+		id, tostring(inventoryId), listed and "lists it as another player's" or "has no entry for it"))
+	if not refusalShown[id] then
+		refusalShown[id] = true
+		warnPlayer(msg)
+	end
+	return nil
+end
+
+--- A rebuild of this car went through: it is linked, so forget its refusal.
+local function rebuildSucceeded(vehId)
+	refusalShown[vehId] = nil
+	local inventoryId = inventoryIdOfVehicle(vehId)
+	if inventoryId ~= nil then refusedInventoryIds[inventoryId] = nil end
+end
+
 local function applyRebuildPatch()
 	replace("core_vehicles", "replaceVehicle", function(original, modelName, opt, otherVeh, ...)
 		if rebuildingNamedCar then return original(modelName, opt, otherVeh, ...) end
 		local namedId = ownLocalCarId(otherVeh)
-		if not namedId then return original(modelName, opt, otherVeh, ...) end
+		if not namedId then
+			if otherVeh ~= nil and inServerSession() then return refuseRebuild(otherVeh) end
+			return original(modelName, opt, otherVeh, ...)
+		end
 
 		local previous = rawget(_G, "getPlayerVehicle")
 		local real = previous or getPlayerVehicle
@@ -736,9 +848,60 @@ local function applyRebuildPatch()
 		local returned = results[2]
 		if returned ~= nil then
 			local sameCar, returnedId = pcall(function() return returned:getID() end)
-			if not sameCar or returnedId ~= namedId then reportWrongRebuild(namedId, returned) end
+			if not sameCar or returnedId ~= namedId then
+				reportWrongRebuild(namedId, returned)
+			else
+				rebuildSucceeded(namedId)
+			end
 		end
 		return unpack(results, 2, results.n)
+	end)
+end
+
+--== Parts: no Buy while the car's rebuild was refused =========================
+-- Buy writes the cart into the saved car and takes the money, whatever is on the garage floor.
+-- When a rebuild of the session's car was refused, the car on the floor never got the parts, so
+-- Buy cancels the session instead: nothing is charged and the game puts the car back from its
+-- saved entry (partShopping.cancelShopping). Once the car is linked, the next Parts session
+-- rebuilds it in place and Buy runs.
+--
+-- Also fires onPartShoppingTransactionCompleteMP: stock fires onPartShoppingTransactionComplete
+-- with no arguments. Both live in one wrapper because a second wrapper on the same function
+-- would not install (prepare refuses to wrap one of ours).
+
+local function cancelRefusedPurchase(inventoryId)
+	log("W", "mileage.patches", string.format(
+		"cancelled a Parts purchase for inventory id %s: a rebuild of that car was refused because " ..
+		"BeamMP does not list it as this player's - nothing was charged", tostring(inventoryId)))
+	warnPlayer("Purchase cancelled and nothing was charged: this car is not linked to you on the " ..
+		"server yet. Mileage is linking it: open Parts again in a moment.")
+	local shopping = career_modules_partShopping
+	if type(shopping) ~= "table" or type(shopping.cancelShopping) ~= "function" then
+		log("E", "mileage.patches", "partShopping.cancelShopping is missing, so the Parts session was left open")
+		return
+	end
+	local ok, err = pcall(shopping.cancelShopping)
+	if not ok then
+		log("E", "mileage.patches", "could not cancel the Parts session: " .. tostring(err))
+	end
+end
+
+local function applyBuyGuard()
+	replace("career_modules_partShopping", "applyShopping", function(original, ...)
+		local inventoryId = resolveInventoryId(pending.partShopping)
+		if inventoryId ~= nil and refusedInventoryIds[inventoryId] then
+			cancelRefusedPurchase(inventoryId)
+			return nil
+		end
+		local results = pack(original(...))
+		local ok, err = pcall(function()
+			extensions.hook("onPartShoppingTransactionCompleteMP", resolveInventoryId(pending.partShopping))
+			pending.partShopping = nil
+		end)
+		if not ok then
+			log("E", "mileage.patches", "post-hook for career_modules_partShopping.applyShopping failed: " .. tostring(err))
+		end
+		return unpack(results, 1, results.n)
 	end)
 end
 
@@ -838,6 +1001,7 @@ end
 
 -- Menus closing invalidates the recorded ids.
 function M.onPartShoppingCancelled()
+	if pending.partShopping ~= nil then refusedInventoryIds[pending.partShopping] = nil end
 	pending.partShopping = nil
 end
 
@@ -855,6 +1019,7 @@ function M.apply()
 	applyEnrichments()
 	applyUnicyclePatch()
 	applyRebuildPatch()
+	applyBuyGuard()
 	applyWalkGuard()
 	applySeatedRepairGuard()
 	applyPurchaseInsuranceGuard()
@@ -905,6 +1070,7 @@ function M.revert()
 	applied = false
 	pending.tuning, pending.partShopping, pending.painting = nil, nil, nil
 	clickedInventoryId = nil
+	refusalShown, refusedInventoryIds, relinkSentAt = {}, {}, {}
 end
 
 function M.isApplied() return applied end
@@ -933,6 +1099,8 @@ local retryAccumulator = 0
 local RETRY_INTERVAL = 2 -- seconds
 
 local function onUpdate(dtReal)
+	relinkClock = relinkClock + (dtReal or 0)
+
 	-- A held repair that never completes must not wedge the feature.
 	if pendingSeatedRepair then
 		-- Armed by onEnterVehicleFinished, and only run once the player is genuinely out of
