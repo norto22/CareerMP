@@ -122,3 +122,89 @@ test("without the traffic system or its setFocus the switch is logged once and g
 		same(countLines(logs, "onVehicleSwitched failed"), 0, "switch errors")
 	end
 end)
+
+--== active and ghost settings only on change ===============================
+
+local function ghostCommands(veh)
+	local n = 0
+	for _, cmd in ipairs(veh.queued) do
+		if string.find(cmd, "careerMPEnabler.setGhost", 1, true) then n = n + 1 end
+	end
+	return n
+end
+
+-- The enabler with the server's settings in place, as rxCareerSync leaves them.
+local function startedEnabler()
+	local enabler, objects, vehicles = setup()
+	local config = {remoteVehicleGhost = false, remoteUnicycleGhost = true, localUnicycleGhost = false}
+	local i = 1
+	while true do
+		local n = debug.getupvalue(enabler.onUpdate, i)
+		if n == nil then break end
+		if n == "clientConfig" then debug.setupvalue(enabler.onUpdate, i, config) end
+		i = i + 1
+	end
+	extensions.core_input_actionFilter = {setGroup = function() end, addAction = function() end}
+	return enabler, objects, vehicles
+end
+
+local FULL_MAP = '{["1-0"] = {active = true}, ["1-1"] = {active = true}}'
+
+-- The server's vehicle-state event, which onExtensionLoaded registers with BeamMP.
+local function vehSync(enabler, data)
+	local i = 1
+	while true do
+		local n, v = debug.getupvalue(enabler.onExtensionLoaded, i)
+		if n == nil then error("rxCareerVehSync not found") end
+		if n == "rxCareerVehSync" then return v(data) end
+		i = i + 1
+	end
+end
+
+test("the same vehicle list twice switches another player's car on once", function()
+	local enabler, objects = setup()
+	vehSync(enabler,FULL_MAP)
+	vehSync(enabler,FULL_MAP)
+	same(objects[9].activeCalls, 1, "setActive calls on car 9")
+	same(objects[10].activeCalls, 1, "setActive calls on car 10")
+end)
+
+test("a changed state is still applied, and the nametag follows it", function()
+	local enabler, objects, vehicles = setup()
+	vehSync(enabler,FULL_MAP)
+	vehSync(enabler,'{["1-0"] = {active = false}}')
+	same(objects[9].active, false, "car 9 hidden")
+	same(objects[9].activeCalls, 2, "setActive calls")
+	same(vehicles["1-0"].hideNametag, true, "nametag hidden")
+	vehSync(enabler,'{["1-0"] = {active = true}}')
+	same(objects[9].active, true, "car 9 shown")
+	same(vehicles["1-0"].hideNametag, false, "nametag shown")
+end)
+
+test("two frames queue another player's ghost setting once", function()
+	local enabler, objects = startedEnabler()
+	enabler.onUpdate(0.016)
+	enabler.onUpdate(0.016)
+	same(ghostCommands(objects[9]), 1, "setGhost commands on car 9")
+	same(objects[9].queued[1], "careerMPEnabler.setGhost(false)", "the server's setting")
+end)
+
+test("a car that is ready again or reset gets its ghost setting again", function()
+	for _, hook in ipairs({"onVehicleReady", "onVehicleResetted"}) do
+		local enabler, objects = startedEnabler()
+		enabler.onUpdate(0.016)
+		enabler[hook](9)
+		enabler.onUpdate(0.016)
+		same(ghostCommands(objects[9]), 2, hook .. ": setGhost commands on car 9")
+		same(ghostCommands(objects[10]), 1, hook .. ": setGhost commands on car 10")
+	end
+end)
+
+test("leaving the server forgets what was applied, so a rejoin applies every car again", function()
+	local enabler, objects = startedEnabler()
+	vehSync(enabler,FULL_MAP)
+	enabler.onUpdate(0.016)
+	enabler.onBeamMPServerLeave()
+	vehSync(enabler,FULL_MAP)
+	same(objects[9].activeCalls, 2, "setActive calls on car 9")
+end)
