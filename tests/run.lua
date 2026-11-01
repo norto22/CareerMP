@@ -10,6 +10,7 @@ local files = {
 	"tests/server_config_test.lua",
 	"tests/announcements_test.lua",
 	"tests/insurance_restore_test.lua",
+	"tests/join_insurance_check_test.lua",
 	"tests/connection_watch_test.lua",
 }
 
