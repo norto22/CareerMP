@@ -188,7 +188,14 @@ local function sendTrafficMarks()
 				seen[serverVehicleID] = true
 				local mark = isTrafficCar(gameVehicleID, veh)
 				local sent = sentMarks[serverVehicleID]
-				local previous = sent and sent.gameVehicleID == gameVehicleID and sent.mark or false
+				-- A car never marked counts as unmarked, as the server has it. A car rebuilt
+				-- under a new game id keeps the server's old mark, so its mark is sent again.
+				local previous = false
+				if sent and sent.gameVehicleID == gameVehicleID then
+					previous = sent.mark
+				elseif sent then
+					previous = nil
+				end
 				if mark ~= previous then
 					changed = changed or {}
 					changed[serverVehicleID] = mark

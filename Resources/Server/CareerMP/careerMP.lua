@@ -1068,13 +1068,14 @@ function onVehicleSpawnHandler(player_id, vehicle_id,  data)
 	sendVehicleState(serverVehicleID)
 end
 
+-- A rebuilt car is switched on, and every player is told: their copy is rebuilt too and
+-- must not take the hidden state they last kept for it.
 function onVehicleEditedHandler(player_id, vehicle_id,  data)
-	if vehicleStates[player_id .. "-" .. vehicle_id] then
-		vehicleStates[player_id .. "-" .. vehicle_id].active = true
-	else
-		vehicleStates[player_id .. "-" .. vehicle_id] = {}
-		vehicleStates[player_id .. "-" .. vehicle_id].active = true
-	end
+	local serverVehicleID = player_id .. "-" .. vehicle_id
+	local state = vehicleStates[serverVehicleID] or {}
+	state.active = true
+	vehicleStates[serverVehicleID] = state
+	sendVehicleState(serverVehicleID)
 end
 
 function onVehicleDeletedHandler(player_id, vehicle_id)

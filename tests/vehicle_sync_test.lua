@@ -245,6 +245,44 @@ test("a second career start installs once, and a reloaded traffic module gets it
 	same(countLines(logs, "mission start: 4 traffic and parked cars hidden"), 2, "hidden on the reloaded module")
 end)
 
+test("a mission start hands the mission manager the game's stash, and its end hands it back", function()
+	local module, game = setupTraffic()
+	local gameUnfreeze = gameplay_traffic.unfreezeState
+	local received
+	gameplay_traffic.unfreezeState = function(t, p, k, options)
+		received = {t, p, k}
+		return gameUnfreeze(t, p, k, options)
+	end
+	module.onCareerActive(true)
+	local stashed = missionStart()
+	expect(type(stashed[1]) == "table" and #stashed[1].ids == 4, "the game's traffic stash returned")
+	same(stashed[2] and stashed[2].police, true, "the game's police stash returned")
+	same(stashed[3] and stashed[3].parking, true, "the game's parking stash returned")
+	missionEnd(stashed)
+	for i = 1, 3 do same(received[i], stashed[i], "stash " .. i .. " handed back to the game") end
+	local passed = {gameplay_traffic.freezeState({exceptVehicleId = 1})}
+	same(passed[3] and passed[3].parking, true, "a freeze left to the game returns its stash")
+end)
+
+test("a mission end with no options still tells the game to keep the cars", function()
+	local module, game = setupTraffic()
+	module.onCareerActive(true)
+	local stashed = missionStart()
+	gameplay_traffic.unfreezeState(stashed[1], stashed[2], stashed[3])
+	same(game.calls[2][2].respawnVehicles, false, "respawnVehicles passed to the game")
+	for id = 2, 5 do same(game.objects[id].active, true, "car " .. id .. " shown") end
+	same(game.respawned, 0, "cars spawned again")
+end)
+
+test("a mission hide that fails while finding the cars leaves the mission start to the game", function()
+	local module, game = setupTraffic()
+	module.onCareerActive(true)
+	be = {getObjectByID = function() error("object lookup broke") end}
+	missionStart()
+	same(game.calls[1][2].despawnVehicles, true, "despawnVehicles passed to the game")
+	same(countLines(logs, "mission hide failed, traffic left to the game"), 1, "error lines")
+end)
+
 --== two players and the server ==============================================
 -- Each player runs the real enabler on their own stand-in game, the server runs the
 -- real plugin, and messages between them queue until pump() delivers them.
@@ -463,6 +501,15 @@ test("a parked car my friend climbs into gets their nametag within a second, and
 	same(nametag(me, "1-2"), true, "the parked car once my friend is out")
 end)
 
+test("a car the game lists only as AI traffic, with no traffic or parked flag, carries no nametag", function()
+	local me, friend = twoPlayers()
+	spawn(1, 3, {JBeam = "etk800", ai = true})
+	spawn(1, 4, {JBeam = "bastion", ai = false})
+	frames(friend, 1)
+	same(nametag(me, "1-3"), true, "my friend's AI road car")
+	same(nametag(me, "1-4"), false, "a car in my friend's traffic data that is not AI")
+end)
+
 test("marks go out at most once a second, only when they change, and only for the sender's cars", function()
 	local me, friend = twoPlayers()
 	frames(friend, 0.5)
@@ -584,6 +631,23 @@ test("a traffic car hidden for a mission keeps its mark, so it comes back withou
 	same(marksSent(friend), sent, "marks sent once it is back in traffic")
 end)
 
+test("a marked car my friend's game rebuilds and they then drive gets their nametag back", function()
+	local me, friend = twoPlayers()
+	frames(friend, 1)
+	same(nametag(me, "1-2"), true, "the parked car before the rebuild")
+	-- The rebuilt parked car has a new game id, and my friend climbs into it.
+	friend.objects[gameId(1, 2)] = nil
+	local veh = {owner = 1, serverVehicleID = "1-2", JBeam = "covet", isParked = "true", active = true}
+	function veh:getActive() return self.active end
+	friend.objects[999] = veh
+	friend.vehicles["1-2"].gameVehicleID = 999
+	friend.playerVehicle = 999
+	onVehicleEditedHandler(1, 2, "")
+	pump()
+	frames(friend, 1)
+	same(nametag(me, "1-2"), false, "the rebuilt car my friend drives")
+end)
+
 --== one-car updates =========================================================
 
 local function rows(t)
@@ -669,6 +733,52 @@ test("the server ignores hides with a malformed id, a non-boolean or a bad paylo
 	pump()
 	same(#toEveryone(), 0, "updates sent")
 	same(me.objects[gameId(1, 0)].active, true, "my friend's car on my game")
+end)
+
+test("a car is its owner's by the whole player id, not by the id's first digits", function()
+	newWorld()
+	onVehicleSpawnHandler(10, 0, "")
+	onVehicleSpawnHandler(1, 0, "")
+	world.broadcasts = {}
+	careerVehicleActiveHandler(1, encode({serverVehicleID = "10-0", active = false}))
+	careerVehicleTrafficMarks(1, encode({["10-0"] = true}))
+	careerVehicleActiveHandler(10, encode({serverVehicleID = "1-0", active = false}))
+	careerVehicleTrafficMarks(10, encode({["1-0"] = true}))
+	same(#world.broadcasts, 0, "updates for another player's car")
+	careerVehicleActiveHandler(10, encode({serverVehicleID = "10-0", active = false}))
+	careerVehicleTrafficMarks(10, encode({["10-0"] = true}))
+	same(#world.broadcasts, 2, "updates for player 10's own car")
+	local last = world.broadcasts[2].table["10-0"]
+	same(last.active, false, "its hide")
+	same(last.traffic, true, "its mark")
+end)
+
+test("my game ignores a vehicle update that is not a list of car states", function()
+	local me = busyFriend()
+	for _, data in ipairs({"null", "{broken", "5", encode({["1-1"] = "hidden", ["1-2"] = false}),
+			encode({["9-9"] = {active = false}})}) do
+		as(me, me.handlers.rxCareerVehSync, data)
+	end
+	same(me.objects[gameId(1, 1)].active, true, "car 1-1 on my game")
+	same(me.objects[gameId(1, 2)].active, true, "car 1-2 on my game")
+	as(me, me.handlers.rxCareerVehSync, encode({["1-15"] = {active = false, traffic = true}}))
+	same(me.objects[gameId(1, 15)].active, false, "a good update after the bad ones")
+end)
+
+test("a hidden car my friend rebuilds shows again on my game", function()
+	local me, friend = busyFriend()
+	local gid = gameId(1, 15)
+	as(friend, function() friend.objects[gid]:setActive(0) end)
+	pump()
+	same(me.objects[gid].active, false, "the car once hidden")
+	-- My friend's game rebuilds the car, which comes back switched on there, and my game
+	-- builds its copy again.
+	friend.objects[gid].active = true
+	onVehicleEditedHandler(1, 15, "")
+	me.objects[gid].active = true
+	as(me, me.enabler.onVehicleSpawned, gid)
+	pump()
+	same(me.objects[gid].active, true, "the rebuilt car on my game")
 end)
 
 test("a player who asks still gets the full list, hides and marks included", function()
