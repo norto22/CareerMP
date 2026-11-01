@@ -444,3 +444,146 @@ test("the restore follows a reloaded career module and leaving puts the game's b
 	meter.onBeamMPServerLeave()
 	expect(reloaded.restoreTrafficAfterTutorialPhase == original, "leaving restores the game's restore")
 end)
+
+--== the server's traffic share ==============================================
+
+local function withShare(road, parked)
+	return {roadTrafficEnabled = true, roadTrafficAmount = 6, parkedTrafficEnabled = true, parkedTrafficAmount = 8,
+		trafficShare = {road = road, parked = parked}}
+end
+
+test("a career start spawns the server's share of its traffic total", function()
+	local meter = setup({config = withShare(2, 3)})
+	meter.onBeforeCareerActivate()
+	careerSetup(6, 8)
+	same(find("helper")[2], 2, "road passed to the game")
+	same(find("helper")[4], 3, "parked passed to the game")
+	same(find("trafficActive")[2], 2, "active road")
+	same(find("parkingActive")[2], 3, "active parked")
+end)
+
+test("without a share the per-player amounts are used", function()
+	local meter = setup()
+	same(select(1, meter.serverAmounts(config)), 6, "road")
+	same(select(2, meter.serverAmounts(config)), 8, "parked")
+end)
+
+test("a share is held to 0 to 50 and to the server's switches", function()
+	local meter = setup()
+	local road, parked = meter.serverAmounts(withShare(70, -2))
+	same(road, 50, "road share of 70")
+	same(parked, 0, "parked share of -2")
+	local off = withShare(4, 4)
+	off.parkedTrafficEnabled = false
+	same(select(2, meter.serverAmounts(off)), 0, "parked share with parked traffic off")
+	same(select(1, meter.serverAmounts({roadTrafficEnabled = true, roadTrafficAmount = 6, trafficShare = "x"})), 6,
+		"a share that is not a table")
+end)
+
+test("a new share during an active career sets the active driving and parked amounts", function()
+	local meter = setup({config = withShare(6, 8)})
+	meter.onBeforeCareerActivate()
+	careerSetup(6, 8)
+	meter.onTrafficOrParkingReady()
+	meter.onCareerActive(true)
+	calls = {}
+	config.trafficShare = {road = 4, parked = 5}
+	meter.onTrafficShare()
+	same(find("trafficActive")[2], 4, "active road")
+	same(find("parkingActive")[2], 5, "active parked")
+	same(#calls, 2, "calls to the game")
+end)
+
+test("a share that arrives before the career is active is used at the career start, not applied at once", function()
+	local meter = setup({config = withShare(6, 8)})
+	config.trafficShare = {road = 3, parked = 4}
+	meter.onTrafficShare()
+	same(#calls, 0, "calls to the game before the career start")
+	meter.onBeforeCareerActivate()
+	careerSetup(6, 8)
+	same(find("helper")[2], 3, "road passed to the game")
+	same(find("helper")[4], 4, "parked passed to the game")
+end)
+
+test("a share that arrives while the career start sets up traffic is applied once traffic is ready", function()
+	local meter = setup({config = withShare(6, 8)})
+	meter.onBeforeCareerActivate()
+	meter.onCareerActive(true)
+	gameplay_traffic.setupTrafficHelper(6, {}, 8, nil)
+	config.trafficShare = {road = 2, parked = 2}
+	meter.onTrafficShare()
+	gameplay_traffic.setActiveAmount(6)
+	gameplay_parking.setActiveAmount(8)
+	same(find("trafficActive")[2], 6, "the career start's own active road")
+	meter.onTrafficOrParkingReady()
+	same(find("trafficActive", 2)[2], 2, "active road once traffic is ready")
+	same(find("parkingActive", 2)[2], 2, "active parked once traffic is ready")
+end)
+
+test("a game without setActiveAmount reports it once and nothing else changes", function()
+	local meter = setup({config = withShare(6, 8)})
+	meter.onCareerActive(true)
+	gameplay_traffic.setActiveAmount = nil
+	config.trafficShare = {road = 4, parked = 5}
+	local ok, err = pcall(meter.onTrafficShare)
+	expect(ok, "did not raise: " .. tostring(err))
+	meter.onTrafficShare()
+	same(countLines(logs, "E careerMP.compat: gameplay_traffic.setActiveAmount missing"), 1, "reported once")
+	same(find("parkingActive")[2], 5, "the parked amount still set")
+end)
+
+test("off a server a share does nothing", function()
+	local meter = setup({mp = false, config = withShare(6, 8)})
+	meter.onCareerActive(true)
+	meter.onTrafficShare()
+	same(#calls, 0, "calls to the game")
+end)
+
+--== the enabler keeps the share =============================================
+
+local ENABLER = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
+
+-- The real enabler with the settings handlers it registers.
+local function enablerWithHandlers()
+	local handlers = {}
+	function AddEventHandler(name, fn) handlers[name] = fn end
+	local function luaText(v)
+		if type(v) == "table" then
+			local parts = {}
+			for k, val in pairs(v) do table.insert(parts, "[" .. luaText(k) .. "]=" .. luaText(val)) end
+			return "{" .. table.concat(parts, ",") .. "}"
+		elseif type(v) == "string" then
+			return string.format("%q", v)
+		end
+		return tostring(v)
+	end
+	jsonEncode = luaText
+	jsonDecode = function(text) return (loadstring or load)("return " .. text)() end
+	settings = {getValue = function() return nil end, setValue = function() end}
+	extensions = {
+		careerMP_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
+		core_input_actionFilter = {setGroup = function() end, addAction = function() end},
+	}
+	MPConfig = {getNickname = function() return "player" end}
+	local enabler = dofile(ENABLER)
+	enabler.onExtensionLoaded()
+	return enabler, handlers, luaText
+end
+
+test("the enabler keeps the share with the settings, through a settings update, and hands a new share on", function()
+	local enabler, handlers, luaText = enablerWithHandlers()
+	local applied = 0
+	extensions.careerMP_traffic = {onTrafficShare = function() applied = applied + 1 end}
+	handlers.rxClientConfigUpdate(luaText({consoleEnabled = true, trafficShare = {road = 3, parked = 4}}))
+	same(enabler.getClientConfig().trafficShare.road, 3, "share kept with the settings")
+	handlers.rxClientConfigUpdate(luaText({consoleEnabled = true}))
+	same(enabler.getClientConfig().trafficShare.road, 3, "share kept through an update without one")
+	local before = enabler.getClientConfig()
+	handlers.rxCareerTrafficShare(luaText({road = 1, parked = 2}))
+	same(enabler.getClientConfig().trafficShare.parked, 2, "the new share")
+	expect(enabler.getClientConfig() == before, "the settings table the career start holds sees the new share")
+	same(applied, 1, "share handed to the traffic meter")
+	handlers.rxCareerTrafficShare("{broken")
+	handlers.rxCareerTrafficShare(luaText({road = "x"}))
+	same(enabler.getClientConfig().trafficShare.parked, 2, "a bad share changes nothing")
+end)

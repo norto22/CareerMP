@@ -44,6 +44,11 @@ local defaultConfig = {
 		allowTransactions = true,
 		sessionSendingMax = 100000,
 		sessionReceiveMax = 200000,
+		-- Traffic across the whole server, 0 to 400 of each kind; 0 means no limit. Each
+		-- player spawns client.roadTrafficAmount and parkedTrafficAmount until the players
+		-- together would pass these totals, then the totals are split between them.
+		roadTrafficTotal = 18,
+		parkedTrafficTotal = 24,
 	},
 	client = {
 		localUnicycleGhost = false,
@@ -1028,9 +1033,99 @@ local function dropUnstartedPlayer(player_id, why)
 	MP.DropPlayer(player_id, "CareerMP failed to load!")
 end
 
+--Traffic shares
+--
+-- Every player's traffic is shared with everyone, so a server-wide total keeps the map
+-- from filling as players join. Each player counted (from its settings request, before
+-- its career spawns traffic) keeps the per-player amount until the players together
+-- would pass server.roadTrafficTotal / parkedTrafficTotal; then the total is split
+-- evenly, one spare car each to the lowest player ids. A total of 0 means no limit. A
+-- joiner's share goes in its own settings; players already in get rxCareerTrafficShare
+-- SHARE_SETTLE_SECONDS after the last join or leave, only when their share changed.
+
+local SHARE_MAX = 50
+local TOTAL_MAX = 400
+local SHARE_SETTLE_SECONDS = 3
+local sharesSent = {}        -- player_id -> {road, parked}, the share that player has
+local sharesChangedAt = nil  -- when players last joined, left or the settings changed
+
+local function wholeIn(value, high)
+	local n = tonumber(value)
+	if not n or n ~= n then return 0 end
+	return math.floor(math.max(0, math.min(high, n)))
+end
+
+local function perPlayerAmount(enabledKey, amountKey)
+	if Config.client[enabledKey] ~= true then return 0 end
+	return wholeIn(Config.client[amountKey], SHARE_MAX)
+end
+
+-- perPlayer each for ids (sorted), split from total once they would pass it.
+local function split(shares, kind, perPlayer, total, ids)
+	local n = #ids
+	local each, spare = perPlayer, 0
+	if total > 0 and perPlayer * n > total then
+		each = math.floor(total / n)
+		spare = total - each * n
+	end
+	for i, id in ipairs(ids) do
+		shares[id][kind] = math.min(perPlayer, each + (i <= spare and 1 or 0))
+	end
+end
+
+-- {[player_id] = {road, parked}} for every player counted.
+local function trafficShares()
+	local ids = {}
+	for id, entry in pairs(pendingActivation) do
+		if entry.counted and not entry.dropped then table.insert(ids, id) end
+	end
+	table.sort(ids)
+	local shares = {}
+	for _, id in ipairs(ids) do shares[id] = {} end
+	split(shares, "road", perPlayerAmount("roadTrafficEnabled", "roadTrafficAmount"),
+		wholeIn(Config.server.roadTrafficTotal, TOTAL_MAX), ids)
+	split(shares, "parked", perPlayerAmount("parkedTrafficEnabled", "parkedTrafficAmount"),
+		wholeIn(Config.server.parkedTrafficTotal, TOTAL_MAX), ids)
+	return shares
+end
+
+local function sharesChanged()
+	sharesChangedAt = signalTimer:GetCurrent()
+end
+
+local function sendChangedShares()
+	if not sharesChangedAt or signalTimer:GetCurrent() - sharesChangedAt < SHARE_SETTLE_SECONDS then return end
+	sharesChangedAt = nil
+	for id, share in pairs(trafficShares()) do
+		local last = sharesSent[id]
+		if last and MP.IsPlayerConnected(id) and (last.road ~= share.road or last.parked ~= share.parked) then
+			sharesSent[id] = share
+			sendJson("trafficShare", id, "rxCareerTrafficShare", share)
+		end
+	end
+end
+
+-- The client settings with this player's share added; Config.client itself never gets one.
+local function settingsFor(player_id)
+	local settings = {}
+	for key, value in pairs(Config.client) do settings[key] = value end
+	local share = trafficShares()[player_id] or {
+		road = perPlayerAmount("roadTrafficEnabled", "roadTrafficAmount"),
+		parked = perPlayerAmount("parkedTrafficEnabled", "parkedTrafficAmount"),
+	}
+	sharesSent[player_id] = share
+	settings.trafficShare = share
+	return settings
+end
+
 function careerSyncRequested(player_id, data)
 	received("config")
-	sendJson("config", player_id, "rxCareerSync", Config.client)
+	local counted = pendingActivation[player_id]
+	if counted and not counted.counted then
+		counted.counted = true
+		sharesChanged()
+	end
+	sendJson("config", player_id, "rxCareerSync", settingsFor(player_id))
 	-- Guard: the entry is gone if the player disconnected between join and sync.
 	local entry = pendingActivation[player_id]
 	if not entry or entry.careerActive then return end
@@ -1224,6 +1319,7 @@ function tick()
 	end
 	validateCareerMPActivation()
 	sendWantedVehicleLists()
+	sendChangedShares()
 	ticksSinceAlive = ticksSinceAlive + 1
 	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
 		ticksSinceAlive = 0
@@ -1273,6 +1369,10 @@ function onPlayerDisconnectHandler(player_id)
 	damageRate.request[player_id] = nil
 	listAnsweredAt[player_id] = nil
 	listWanted[player_id] = nil
+	if sharesSent[player_id] then
+		sharesSent[player_id] = nil
+		sharesChanged()
+	end
 	-- BeamMP removes a leaving player's cars; their states go with them.
 	local prefix = tostring(player_id) .. "-"
 	for serverVehicleID in pairs(vehicleStates) do
@@ -1349,6 +1449,8 @@ function SetConfig(arguments)
 	print("[CareerMP] ---------- Config:    " .. section .. " " .. tostring(key) .. " set to " .. tostring(Config[section][key]))
 	WriteJson(configPath .. "config.json", Config)
 	sendJson("config", -1, "rxClientConfigUpdate", Config.client)
+	-- An amount, a switch or a total may have changed everyone's share.
+	sharesChanged()
 end
 
 function Update(arguments)
@@ -1408,8 +1510,16 @@ local function printStats()
 	end
 	print(string.format("Players: %d", #players))
 	print(string.format("Cars: %d, %d of them traffic or parked", carCount, trafficCount))
+	local function total(key)
+		local n = wholeIn(Config.server[key], TOTAL_MAX)
+		return n > 0 and tostring(n) or "no limit"
+	end
+	print(string.format("Traffic total: %s driving, %s parked", total("roadTrafficTotal"), total("parkedTrafficTotal")))
 	for _, id in ipairs(players) do
-		print(string.format("  %s: %d cars, %d traffic or parked", describePlayer(id), cars[id].all, cars[id].traffic))
+		local line = string.format("  %s: %d cars, %d traffic or parked", describePlayer(id), cars[id].all, cars[id].traffic)
+		local share = sharesSent[id]
+		if share then line = line .. string.format(", share %d driving %d parked", share.road, share.parked) end
+		print(line)
 	end
 end
 

@@ -118,6 +118,48 @@ test("a config missing only the traffic settings gets the new defaults for them"
 	end)
 end)
 
+test("a fresh install has a server-wide traffic total of 18 driving and 24 parked cars", function()
+	run(function()
+		local prepareConfig = loadPlugin()
+		stored = nil
+		prepareConfig()
+		same(written.server.roadTrafficTotal, 18, "roadTrafficTotal")
+		same(written.server.parkedTrafficTotal, 24, "parkedTrafficTotal")
+	end)
+end)
+
+test("an existing config gains the traffic totals at their defaults and keeps every other value", function()
+	run(function()
+		local prepareConfig = loadPlugin()
+		stored = ownersConfig()
+		local before = ownersConfig()
+		prepareConfig()
+		same(written.server.roadTrafficTotal, 18, "roadTrafficTotal")
+		same(written.server.parkedTrafficTotal, 24, "parkedTrafficTotal")
+		for section, fields in pairs(before) do
+			for key, value in pairs(fields) do
+				if not key:find("^extraTraffic") then
+					same(written[section][key], value, section .. " " .. key)
+				end
+			end
+		end
+	end)
+end)
+
+test("an owner's own traffic totals are kept, and SetConfig changes one", function()
+	run(function()
+		local prepareConfig = loadPlugin()
+		stored = ownersConfig()
+		stored.server.roadTrafficTotal, stored.server.parkedTrafficTotal = 0, 40
+		prepareConfig()
+		same(written.server.roadTrafficTotal, 0, "roadTrafficTotal")
+		same(written.server.parkedTrafficTotal, 40, "parkedTrafficTotal")
+		stored, written = written, nil
+		SetConfig({"server", "roadTrafficTotal", "30"})
+		same(written and written.server.roadTrafficTotal, 30, "roadTrafficTotal after SetConfig")
+	end)
+end)
+
 test("an unknown setting in the server section is still called invalid", function()
 	run(function()
 		local prepareConfig = loadPlugin()

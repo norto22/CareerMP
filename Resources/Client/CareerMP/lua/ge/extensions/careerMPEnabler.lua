@@ -727,9 +727,28 @@ end
 local function rxClientConfigUpdate(data)
 	local decoded = jsonDecode(data)
 	if not decoded then return end
+	-- The shared settings carry no traffic share; this player's last one is kept.
+	if decoded.trafficShare == nil and clientConfig then decoded.trafficShare = clientConfig.trafficShare end
 	clientConfig = decoded
 	settingsCheck()
 	actionsCheck()
+end
+
+-- A player joined or left a full server: this player's new share of the server's
+-- traffic total, {road, parked}. It is kept in the client config (which a career start
+-- under way already holds) and handed to the traffic meter.
+local function rxCareerTrafficShare(data)
+	local ok, share = pcall(jsonDecode, data)
+	if not ok or type(share) ~= "table" or tonumber(share.road) == nil or tonumber(share.parked) == nil then
+		log("W", logTag, "rxCareerTrafficShare: not a traffic share, ignored")
+		return
+	end
+	if not clientConfig then return end
+	clientConfig.trafficShare = {road = tonumber(share.road), parked = tonumber(share.parked)}
+	log("I", logTag, string.format("traffic share from the server - road %d, parked %d",
+		clientConfig.trafficShare.road, clientConfig.trafficShare.parked))
+	local traffic = extensions.careerMP_traffic
+	if traffic and type(traffic.onTrafficShare) == "function" then traffic.onTrafficShare() end
 end
 
 -- Career activation spawns the player's own starter vehicle; drop the BeamMP
@@ -806,6 +825,7 @@ local function onExtensionLoaded()
 
 	AddEventHandler("rxCareerSync", rxCareerSync)
 	AddEventHandler("rxClientConfigUpdate", rxClientConfigUpdate)
+	AddEventHandler("rxCareerTrafficShare", rxCareerTrafficShare)
 	AddEventHandler("rxCareerVehSync", rxCareerVehSync)
 	AddEventHandler("rxTrafficSignalTimer", rxTrafficSignalTimer)
 

@@ -9,7 +9,8 @@
 --   gameplay_parking.setActiveAmount(parkingAmount)
 --
 -- On a server every player's traffic is shared with everyone, so the server decides
--- the amounts. For one career start this extension replaces those three functions so
+-- the amounts: this player's share of the server's traffic total, which shrinks as the
+-- server fills (see "share changes"). For one career start this extension replaces those three functions so
 -- the server's amounts go through instead, and each puts the game's function back after
 -- its one call. Everything else (police, pursuits, fines, parking, tutorial handling)
 -- stays the game's own code for whatever version the player runs.
@@ -87,10 +88,28 @@ local function amountFor(config, enabledKey, amountKey)
 	return used
 end
 
---- The server's road and parked amounts for every player: 0 for a switched-off kind,
---- otherwise the configured amount held to whole numbers from 0 to 50.
+-- This player's share of the server's traffic total, when the server sent one.
+local function shareFor(config, enabledKey, kind)
+	if config[enabledKey] ~= true then return 0 end
+	local raw = config.trafficShare[kind]
+	local amount = tonumber(raw)
+	if amount == nil or amount ~= amount then
+		warnOnce("trafficShare." .. kind, raw, 0)
+		return 0
+	end
+	local used = math.floor(math.max(0, math.min(MAX_AMOUNT, amount)))
+	if used ~= amount then warnOnce("trafficShare." .. kind, raw, used) end
+	return used
+end
+
+--- The road and parked amounts this player spawns: 0 for a switched-off kind, otherwise
+--- the player's share of the server's traffic total (config.trafficShare) when the server
+--- sent one, else the per-player amount, held to whole numbers from 0 to 50.
 function M.serverAmounts(config)
 	if type(config) ~= "table" then return 0, 0 end
+	if type(config.trafficShare) == "table" then
+		return shareFor(config, "roadTrafficEnabled", "road"), shareFor(config, "parkedTrafficEnabled", "parked")
+	end
 	return amountFor(config, "roadTrafficEnabled", "roadTrafficAmount"),
 		amountFor(config, "parkedTrafficEnabled", "parkedTrafficAmount")
 end
@@ -371,6 +390,47 @@ local function removeMissionHide()
 	mission = nil
 end
 
+--== share changes ===========================================================
+-- When a player joins or leaves a full server, the server sends everyone already in a new
+-- share of its traffic total (the enabler keeps it with the client config). During a
+-- career the share is applied through the game's active amounts, which hide or show
+-- traffic cars; a career start reads it in its own setup, and one that arrives while the
+-- start is setting up traffic is applied once traffic is ready.
+
+local careerActive = false
+local shareWaiting = false
+
+local function applyShare()
+	local config = serverConfig()
+	if not config then return end
+	-- No career start is under way, so a replacement still armed is stale.
+	restoreAll("traffic share changed")
+	local road, parked = M.serverAmounts(config)
+	local compat = extensions.careerMP_compat
+	local consequence = "a new traffic share waits for the next career start"
+	local setRoad = compat.pickOrWarn(gameplay_traffic, "gameplay_traffic", "setActiveAmount", consequence)
+	local setParked = compat.pickOrWarn(gameplay_parking, "gameplay_parking", "setActiveAmount", consequence)
+	if setRoad then setRoad(road) end
+	if setParked then setParked(parked) end
+	log("I", logTag, string.format("traffic share changed - road %d, parked %d", road, parked))
+end
+
+--- The enabler received a new share from the server.
+function M.onTrafficShare()
+	if not serverConfig() then return end
+	if start then
+		shareWaiting = true
+	elseif careerActive then
+		applyShare()
+	end
+end
+
+local function applyWaitingShare()
+	if not shareWaiting then return end
+	shareWaiting = false
+	if careerActive then applyShare() end
+end
+
 --== hooks ===================================================================
 
 --- Fired by the game's career.lua at the top of activateCareer, before its modules set
@@ -380,7 +440,8 @@ function M.onBeforeCareerActivate()
 end
 
 function M.onCareerActive(active)
-	if active and serverConfig() then
+	careerActive = active == true and serverConfig() ~= nil
+	if careerActive then
 		installTutorialRestore()
 		installMissionHide()
 	end
@@ -402,10 +463,11 @@ function M.onTrafficOrParkingReady()
 	if not applied then
 		warnNotApplied()
 		restoreAll("traffic ready without the meter")
-		return
+	else
+		log("I", logTag, string.format("traffic ready - %s road, %s parked",
+			count(gameplay_traffic, "getTrafficAmount"), count(gameplay_parking, "getParkingAmount")))
 	end
-	log("I", logTag, string.format("traffic ready - %s road, %s parked",
-		count(gameplay_traffic, "getTrafficAmount"), count(gameplay_parking, "getParkingAmount")))
+	applyWaitingShare()
 end
 
 -- Safety net: a career start that never sets up traffic, or never calls the active
@@ -428,10 +490,12 @@ function M.onUpdate()
 	start = nil
 	restoreAll("timed out")
 	replacedSince = nil
+	applyWaitingShare()
 end
 
 function M.onBeamMPServerLeave()
 	start = nil
+	careerActive, shareWaiting = false, false
 	restoreAll("left the server")
 	removeTutorialRestore()
 	removeMissionHide()
@@ -444,6 +508,7 @@ end
 
 function M.onExtensionUnloaded()
 	start = nil
+	careerActive, shareWaiting = false, false
 	restoreAll("unloaded")
 	removeTutorialRestore()
 	removeMissionHide()
