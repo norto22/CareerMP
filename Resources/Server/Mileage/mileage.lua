@@ -1970,7 +1970,8 @@ function mileageRaceReport(player_id, data)
 			callOff(race, report.failed and consoleText(report.failed) or (consoleText(name) .. " gave up"))
 		elseif race.decision == "none" and not live.reports[name] then
 			live.gaveUp = name
-			finishRace(race, otherRacer(race, name), "gaveUp", false)
+			-- The other racer has the prize if they really reached the finish.
+			finishRace(race, otherRacer(race, name), "gaveUp", live.reports[otherRacer(race, name)] ~= nil)
 		end
 		return
 	end
@@ -2045,6 +2046,13 @@ local function racesPlayerLeft(name)
 		if other then
 			if live.phase == "staking" or live.phase == "pose" or live.phase == "teleport" then
 				callOff(race, consoleText(name) .. " left")
+			elseif live.reports[name] then
+				-- Already at the finish: the race is theirs to win in the wait that is running,
+				-- whether or not they are still here; what they are owed waits for them.
+			elseif live.reports[other] then
+				-- The other racer reached the finish: theirs, here or not.
+				live.gaveUp = name
+				finishRace(race, other, "left", true)
 			elseif playerIdByName(other) then
 				live.gaveUp = name
 				finishRace(race, other, "left", false)

@@ -398,6 +398,55 @@ World.test("a racer who leaves after the countdown loses their stake, paid once 
 	same(world:savedTotal(), 20000, "total across saves")
 end)
 
+World.test("a racer who reached the finish first and then leaves still wins the stakes", function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	arrive(world, ann)
+	-- Ann's game reported her finish; she quits before the server's 5 s wait is over.
+	world:leave(ann)
+	world:advance(10)
+	world:rejoin(ann)
+	world:advance(3)
+	same(lastRaceMessage(world, bob, "result").winner, "Ann", "winner on Bob's screen")
+	same(ann.money, 11000, "Ann, first to the finish")
+	same(bob.money, 9000, "Bob, who never finished")
+	same(world:savedTotal(), 20000, "total across saves")
+end)
+
+World.test("a winner who reached the finish keeps the server prize when the other racer then gives up or leaves",
+		function(world)
+	for _, how in ipairs({"gives up", "leaves"}) do
+		local ann, bob = pair(world)
+		world:setConfig("server", "racePrize", "500")
+		startRace(world, ann, bob, 1000)
+		arrive(world, ann)
+		if how == "gives up" then
+			world:as(bob, function() mileage_streetRace.giveUp() end)
+			world:pump()
+		else
+			world:leave(bob)
+		end
+		world:advance(3)
+		same(lastRaceMessage(world, ann, "result").winner, "Ann", "winner when the other racer " .. how)
+		same(ann.money, 11500, "Ann: both stakes and the prize she finished for, when the other " .. how)
+		world = World.new()
+	end
+end)
+
+World.test("a racer who finished and went offline wins when the other racer then leaves too", function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	arrive(world, ann)
+	world:leave(ann)
+	world:leave(bob)
+	world:advance(10)
+	world:rejoin(ann)
+	world:rejoin(bob)
+	world:advance(5)
+	same(ann.money, 11000, "Ann, who finished, is paid both stakes")
+	same(bob.money, 9000, "Bob")
+end)
+
 World.test("a racer who gives up loses their stake to the other", function(world)
 	local ann, bob = pair(world)
 	startRace(world, ann, bob, 1000)
