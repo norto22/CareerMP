@@ -326,6 +326,29 @@ test("traffic that is not ready after 60 seconds is reported with the amounts as
 	same(countLines(logs, "traffic ready -"), 0, "a late ready is not logged as this start's")
 end)
 
+-- A safety net that kept the start after warning would repeat the line every frame; a
+-- ready that did not clear the start would warn after a normal join.
+test("the not-ready warning is logged once, and never after a ready in time", function()
+	local meter = setup()
+	meter.onBeforeCareerActivate()
+	careerSetup(20, 20)
+	meter.onUpdate()
+	clock = 61
+	meter.onUpdate()
+	clock = 200
+	meter.onUpdate()
+	same(countLines(logs, "traffic not ready"), 1, "one warning after many frames")
+	meter = setup()
+	meter.onBeforeCareerActivate()
+	careerSetup(20, 20)
+	meter.onUpdate()
+	meter.onTrafficOrParkingReady()
+	clock = 120
+	meter.onUpdate()
+	same(countLines(logs, "traffic ready - 6 road, 8 parked"), 1, "ready line")
+	same(countLines(logs, "traffic not ready"), 0, "no warning after a ready in time")
+end)
+
 test("leaving the server and unloading put the game's functions back", function()
 	local meter, traffic, parking = setup()
 	local helper, pActive = traffic.setupTrafficHelper, parking.setActiveAmount
@@ -393,6 +416,19 @@ test("a career module without the restore is reported once and left alone", func
 	expect(driving.restoreTrafficAfterTutorialPhase == original, "untouched")
 	same(countLines(logs, "E careerMP.compat: career_modules_playerDriving.setTrafficAfterTutorial missing - " ..
 		"the tutorial traffic restore keeps the player's own amounts"), 1, "one warning, through compat")
+end)
+
+-- Reading the module's functions before checking the module exists would raise inside
+-- the career start; logging under careerMP.traffic would hide it from the compat filter.
+test("a game without the career traffic module is reported through compat, not raised", function()
+	local meter = setup()
+	career_modules_playerDriving = nil
+	local ok, err = pcall(meter.onCareerActive, true)
+	expect(ok, "did not raise: " .. tostring(err))
+	same(countLines(logs, "E careerMP.compat: career_modules_playerDriving.restoreTrafficAfterTutorialPhase missing - " ..
+		"the tutorial traffic restore keeps the player's own amounts"), 1, "reported through compat")
+	same(countLines(logs, "careerMP.traffic: career_modules_playerDriving"), 0, "not under the meter's own tag")
+	meter.onBeamMPServerLeave()
 end)
 
 test("the restore follows a reloaded career module and leaving puts the game's back", function()
