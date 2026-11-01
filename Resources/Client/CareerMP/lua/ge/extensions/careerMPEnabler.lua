@@ -446,6 +446,21 @@ local function failCareerStart(reason)
 	moveToPlay()
 end
 
+-- The game's insurance records do not always load on a join, which breaks Repair and the
+-- Insurances page (see careerMP/insuranceRestore.lua). A failing check is logged and the
+-- join still completes: a broken repair screen is less harmful than a dropped player.
+local function ensureInsuranceLoaded()
+	local restore = extensions.careerMP_insuranceRestore
+	if not restore then
+		log("E", logTag, "join: careerMP_insuranceRestore is not loaded - insurance records not checked")
+		return
+	end
+	local ok, err = pcall(restore.ensureLoaded)
+	if not ok then
+		log("E", logTag, "join: insurance check failed: " .. firstLine(err))
+	end
+end
+
 -- Per frame while the career start settles: it is done once the career is active and
 -- its loading screens are released.
 local function updateCareerStart()
@@ -472,6 +487,7 @@ local function updateCareerStart()
 		join.start = nil
 		log("I", logTag, "join: career active")
 		releaseJoinHold("career active")
+		ensureInsuranceLoaded()
 		reportCareerStart(true)
 		moveToPlay()
 		return
