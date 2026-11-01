@@ -1111,12 +1111,45 @@ end
 -- "b", "n"}); the server passes a message on, unchanged, to every other player, but only
 -- from the car's owner, under DAMAGE_MAX_BYTES and at most DAMAGE_PER_SECOND a second per
 -- player. A game that builds a copy of someone's car asks for its full damage
--- ({"v": ...}), which goes to the owner alone. The games check every value themselves.
+-- ({"v": ...}), which goes to the owner alone. The owner's answer is flagged ("f":1 right
+-- after the car id) and goes only to the players who asked for that car in the last
+-- FULL_WANTED_SECONDS; with nobody waiting it goes to everyone. The games check every
+-- value themselves.
+--
+-- The server reads the car id from the message's fixed start instead of decoding it, and
+-- drops a message that could name a second car to a receiver's decoder (another "v", or
+-- any escape), so the id checked here is the only one.
 
 local DAMAGE_MAX_BYTES = 32768
 local DAMAGE_PER_SECOND = 4
 local DAMAGE_REQUEST_MAX_BYTES = 256
+local FULL_WANTED_SECONDS = 5
 local damageRate = {send = {}, request = {}}
+-- fullWanted[serverVehicleID][player_id] = when that player asked for the car's full damage
+local fullWanted = {}
+
+-- The car id of a damage message and whether it is a flagged answer; nil for a message
+-- not in the form the games send.
+local function readDamageMessage(data)
+	local serverVehicleID = data:match('^{"v":"(%d+%-%d+)",')
+	if not serverVehicleID or data:sub(-1) ~= "}" then return nil end
+	if data:find('"v"', 3, true) or data:find("\\", 1, true) then return nil end
+	local after = #serverVehicleID + 9
+	return serverVehicleID, data:sub(after, after + 5) == '"f":1,'
+end
+
+-- The players still waiting for a car's full damage, or nil when none is.
+local function playersWaitingFor(serverVehicleID)
+	local askers = fullWanted[serverVehicleID]
+	if not askers then return nil end
+	local now = signalTimer:GetCurrent()
+	for id, at in pairs(askers) do
+		if now - at > FULL_WANTED_SECONDS or not MP.IsPlayerConnected(id) then askers[id] = nil end
+	end
+	if next(askers) then return askers end
+	fullWanted[serverVehicleID] = nil
+	return nil
+end
 
 -- true while player_id is within the per-second limit of this kind of message.
 local function withinDamageRate(kind, player_id)
@@ -1134,9 +1167,10 @@ function careerDamage(player_id, data)
 	received("damage")
 	if type(data) ~= "string" or #data > DAMAGE_MAX_BYTES then return end
 	if not withinDamageRate("send", player_id) then return end
-	local message = decodeTable(data)
-	if not message or not ownsVehicle(player_id, message.v) then return end
-	for id in pairs(MP.GetPlayers()) do
+	local serverVehicleID, answer = readDamageMessage(data)
+	if not serverVehicleID or not ownsVehicle(player_id, serverVehicleID) then return end
+	local targets = answer and playersWaitingFor(serverVehicleID) or MP.GetPlayers()
+	for id in pairs(targets) do
 		if id ~= player_id then
 			send("damage", id, "rxCareerDamage", data)
 		end
@@ -1154,6 +1188,8 @@ function careerDamageRequest(player_id, data)
 	owner = tonumber(owner)
 	if not owner or owner == player_id or not MP.GetPlayers()[owner] then return end
 	if not ownsVehicle(owner, serverVehicleID) then return end
+	fullWanted[serverVehicleID] = fullWanted[serverVehicleID] or {}
+	fullWanted[serverVehicleID][player_id] = signalTimer:GetCurrent()
 	send("damage", owner, "rxCareerDamageRequest", '{"v":"' .. serverVehicleID .. '"}')
 end
 
@@ -1241,6 +1277,10 @@ function onPlayerDisconnectHandler(player_id)
 	local prefix = tostring(player_id) .. "-"
 	for serverVehicleID in pairs(vehicleStates) do
 		if serverVehicleID:sub(1, #prefix) == prefix then vehicleStates[serverVehicleID] = nil end
+	end
+	for serverVehicleID, askers in pairs(fullWanted) do
+		askers[player_id] = nil
+		if serverVehicleID:sub(1, #prefix) == prefix or not next(askers) then fullWanted[serverVehicleID] = nil end
 	end
 end
 

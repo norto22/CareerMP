@@ -233,7 +233,7 @@ local function rxCareerDamage(data)
 end
 
 -- Another game built a copy of one of this game's cars, or its copy drifted: the owner
--- car sends its full damage.
+-- car answers with its full damage, flagged so only the players who asked receive it.
 local function rxCareerDamageRequest(data)
 	if type(data) ~= "string" or #data > 256 then return end
 	local ok, request = pcall(jsonDecode, data)
@@ -241,7 +241,7 @@ local function rxCareerDamageRequest(data)
 	local gameVehicleID = MPVehicleGE.getGameVehicleID(request.v)
 	if not gameVehicleID or roles[gameVehicleID] ~= "owner" or not MPVehicleGE.isOwn(gameVehicleID) then return end
 	local veh = be:getObjectByID(gameVehicleID)
-	if veh then veh:queueLuaCommand("careerMPDamage.sendFull()") end
+	if veh then veh:queueLuaCommand("careerMPDamage.answerFull()") end
 end
 
 -- From a copy's vehicle Lua: it disagrees with its owner (wantFull = 1), or the owner

@@ -16,7 +16,8 @@
 -- The owner wins: a copy that disagrees with what its owner reported on more than 20
 -- beams for two checks in a row (damage only this game simulated) is reset in place and
 -- given the owner's full damage. An owner's reset or repair sends a cleared notice, and
--- an owner answers a request for its full damage (a copy built late, or one resynced).
+-- an owner answers a request for its full damage (a copy built late, or one resynced)
+-- with flagged messages the server passes only to the players who asked.
 --
 -- Every value from a message is checked against this car before it is used.
 
@@ -51,8 +52,12 @@ local sent = {}
 local lastDamage = nil
 local sinceSend = 0
 local moreToSend = false
-local fullWanted = false
-local fullQueue, fullNext = nil, 1
+-- A full send still to start: "all" for every player, "answer" for the players who asked
+-- (its chunks are flagged and the server sends them only to those players). A full send
+-- for everyone covers an answer; an answer asked for while one is being sent follows it.
+local fullWanted = nil
+local fullQueue, fullNext, fullAnswer = nil, 1, false
+local answerAfter = false
 local clearedPending = false
 
 -- Copy: the owner's last reported state of each beam ({len, broken}), and whether the
@@ -142,8 +147,9 @@ local function changedBeams(against)
 end
 
 -- One message from list[first..]: at most MAX_BEAMS beams and MAX_NODES points. Returns
--- the message and the index of the first beam it left out.
-local function packMessage(list, first)
+-- the message and the index of the first beam it left out. An answer (flagged) reaches
+-- only the players who asked, so it leaves `sent`, what every player has, as it was.
+local function packMessage(list, first, flagged)
 	local fr = carFrame()
 	if not fr then return nil, first end
 	local beams, nodes, seen, nodeCount = {}, {}, {}, 0
@@ -165,10 +171,11 @@ local function packMessage(list, first)
 		local len, broken = obj:getBeamRestLength(cid), isBroken(cid)
 		local deform = beamstate.deformedBeams and beamstate.deformedBeams[cid] or 0
 		table.insert(beams, string.format("%d,%.4f,%d,%.3f", cid, len, broken and 1 or 0, deform))
-		sent[cid] = {len = len, broken = broken}
+		if not flagged then sent[cid] = {len = len, broken = broken} end
 		i = i + 1
 	end
-	return '{"c":0,"b":[' .. table.concat(beams, ",") .. '],"n":[' .. table.concat(nodes, ",") .. ']}', i
+	return (flagged and '{"f":1,' or '{') .. '"c":0,"b":[' .. table.concat(beams, ",") .. '],"n":['
+		.. table.concat(nodes, ",") .. ']}', i
 end
 
 local function send(message)
@@ -200,23 +207,30 @@ local function ownerTick()
 	end
 
 	if fullWanted then
-		fullWanted = false
+		fullAnswer = fullWanted == "answer"
+		if not fullAnswer then answerAfter = false end
+		fullWanted = nil
 		fullQueue, fullNext = changedBeams(builtState), 1
 		if #fullQueue == 0 then
 			-- An undamaged car still answers, so the copy knows its owner is listening.
 			fullQueue = nil
-			send('{"c":0,"b":[],"n":[]}')
+			send(fullAnswer and '{"f":1,"c":0,"b":[],"n":[]}' or '{"c":0,"b":[],"n":[]}')
 			return
 		end
 	end
 	if fullQueue then
-		local message, nextIndex = packMessage(fullQueue, fullNext)
+		local message, nextIndex = packMessage(fullQueue, fullNext, fullAnswer)
 		if message then send(message) end
 		fullNext = nextIndex
 		if fullNext > #fullQueue then
 			fullQueue = nil
-			-- Beams sent early in the transfer may have changed since: compare again.
+			-- Beams sent early in the transfer may have changed since, and an answer's
+			-- beams reached only who asked: compare again.
 			moreToSend = true
+			if answerAfter then
+				answerAfter = false
+				fullWanted = "answer"
+			end
 		end
 		lastDamage = damage
 		return
@@ -359,24 +373,37 @@ local function setRole(newRole)
 	if newRole == role then return end
 	role = newRole
 	forgetSent()
-	lastDamage, sinceSend, fullWanted, clearedPending = nil, 0, false, false
+	lastDamage, sinceSend, fullWanted, clearedPending = nil, 0, nil, false
+	fullAnswer, answerAfter = false, false
 	reported, heard, sinceCheck, checksOver, sinceResync = {}, false, 0, 0, huge
 	checkedDamage, lastCount, reportsChanged = nil, 0, false
 	if role and next(baseline) == nil then captureBaseline() end
 	if role == "owner" then
 		-- Copies built before this car became an owner asked too early: everyone gets its
 		-- full damage once, an undamaged car an empty message, so they know it reports.
-		fullWanted = true
+		fullWanted = "all"
 	end
 end
 
--- Another game asked for this car's damage (it built a copy, or its copy drifted). With
--- clearFirst = 1 (this game dropped queued messages) a cleared notice goes first, so
--- copies start again from the car as built and nothing dropped is left on them.
+-- Every player gets this car's full damage: it became an owner, or (clearFirst = 1) this
+-- game dropped queued messages, and a cleared notice goes first so copies start again
+-- from the car as built and nothing dropped is left on them.
 local function sendFull(clearFirst)
 	if role ~= "owner" then return end
-	fullWanted = true
+	fullWanted = "all"
 	if clearFirst == 1 then clearedPending = true end
+end
+
+-- Another game asked for this car's damage (it built a copy, or its copy drifted): an
+-- answer only the players who asked receive.
+local function answerFull()
+	if role ~= "owner" or fullWanted == "all" then return end
+	if fullQueue and not fullAnswer then
+		-- A full send for everyone is under way; the answer follows it.
+		answerAfter = true
+		return
+	end
+	fullWanted = "answer"
 end
 
 local function updateGFX(dt)
@@ -413,6 +440,7 @@ end
 
 M.setRole = setRole
 M.sendFull = sendFull
+M.answerFull = answerFull
 M.applyDamage = applyDamage
 M.updateGFX = updateGFX
 M.onReset = onReset

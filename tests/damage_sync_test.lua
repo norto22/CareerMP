@@ -769,6 +769,158 @@ test("a full-damage request reaches the car's owner only", function()
 	same(#serverSends("rxCareerDamageRequest"), 1, "requests passed on after bad ones")
 end)
 
+--== full-damage answers go to who asked =====================================
+
+local function targetsOf(sends)
+	local to = {}
+	for _, s in ipairs(sends) do table.insert(to, s.target) end
+	table.sort(to)
+	return table.concat(to, ",")
+end
+
+test("a flagged full-damage chunk goes only to the players who asked for that car", function()
+	threeGames()
+	careerDamageRequest(2, '{"v":"0-3"}')
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[7,0.5,0,0.3],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "2", "a flagged chunk")
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","c":0,"b":[7,0.5,0,0.3],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1,2", "an ordinary message")
+end)
+
+test("a flagged chunk with nobody asking in the last 5 seconds goes to every other player", function()
+	threeGames()
+	world.now = 0
+	careerDamageRequest(2, '{"v":"0-3"}')
+	world.now = 6
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1,2", "a flagged chunk after the ask expired")
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-4","f":1,"c":0,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1,2", "a flagged chunk nobody asked for")
+end)
+
+test("two players asking for one car both get its flagged chunks", function()
+	threeGames()
+	addGame(3)
+	careerDamageRequest(2, '{"v":"0-3"}')
+	careerDamageRequest(3, '{"v":"0-3"}')
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "2,3", "a flagged chunk")
+end)
+
+test("the server drops a damage message that names a car twice or holds an escape", function()
+	threeGames()
+	careerDamage(0, '{"v":"0-3","c":0,"v":"1-0","b":[7,0.5,0,0.3],"n":[]}')
+	careerDamage(0, '{"v":"0-3","c":0,"v" :"1-0","b":[],"n":[]}')
+	careerDamage(0, '{"v":"0-3","c":0,"\\u0076":"1-0","b":[],"n":[]}')
+	careerDamage(0, '{ "v":"0-3","c":0,"b":[],"n":[]}')
+	same(#serverSends("rxCareerDamage"), 0, "messages sent")
+end)
+
+test("a leaving player's asks are forgotten", function()
+	local games = threeGames()
+	careerDamageRequest(2, '{"v":"0-3"}')
+	world.games[2] = nil
+	onPlayerDisconnectHandler(2)
+	world.serverSent = {}
+	careerDamage(0, '{"v":"0-3","f":1,"c":0,"b":[],"n":[]}')
+	same(targetsOf(serverSends("rxCareerDamage")), "1", "a flagged chunk after the asker left")
+end)
+
+-- What a car's vehicle Lua queued for the game-engine Lua, as raw message text.
+local function rawMessages(car)
+	local messages = {}
+	local queue = car.game.geQueue
+	car.game.geQueue = {}
+	for _, cmd in ipairs(queue) do
+		careerMP_damageSync = {onLocalDamage = function(_, json) table.insert(messages, json) end}
+		assert(compile(cmd))()
+	end
+	return messages
+end
+
+test("an owner asked for its full damage answers with flagged chunks, a new owner's full send is not flagged", function()
+	local car = soloCar({beams = 900, nodes = 50})
+	for cid = 0, 849 do dent(car, cid, 0.8) end
+	inVehicle(car, car.ext.setRole, "owner")
+	tick(car, 3)
+	local announce = rawMessages(car)
+	expect(#announce >= 3, "chunks of the new owner's full send: " .. #announce)
+	for _, m in ipairs(announce) do same(m:sub(1, 6), '{"c":0', "an unflagged chunk") end
+	inVehicle(car, car.ext.answerFull)
+	tick(car, 3)
+	local answer = rawMessages(car)
+	expect(#answer >= 3, "chunks of the answer: " .. #answer)
+	for _, m in ipairs(answer) do same(m:sub(1, 13), '{"f":1,"c":0,', "a flagged chunk") end
+end)
+
+test("an undamaged owner answers a request with one flagged empty message", function()
+	local car = ownerCar()
+	tick(car)
+	rawMessages(car)
+	inVehicle(car, car.ext.answerFull)
+	tick(car)
+	local answer = rawMessages(car)
+	same(#answer, 1, "messages")
+	same(answer[1], '{"f":1,"c":0,"b":[],"n":[]}', "the answer")
+end)
+
+test("a full send for everyone replaces a flagged answer still being sent", function()
+	local car = soloCar({beams = 900, nodes = 50})
+	for cid = 0, 849 do dent(car, cid, 0.8) end
+	inVehicle(car, car.ext.setRole, "owner")
+	tick(car, 3)
+	rawMessages(car)
+	inVehicle(car, car.ext.answerFull)
+	tick(car, 0.5)
+	inVehicle(car, car.ext.sendFull, 1)
+	tick(car, 3)
+	local after = rawMessages(car)
+	local flagged, cleared = 0, 0
+	for _, m in ipairs(after) do
+		if m:sub(1, 7) == '{"f":1,' then flagged = flagged + 1 end
+		if m:sub(1, 6) == '{"c":1' then cleared = cleared + 1 end
+	end
+	same(cleared, 1, "cleared notices")
+	same(flagged, 1, "flagged chunks: only the one sent before the full send for everyone")
+end)
+
+test("a dent made while a full answer goes to one player still reaches every other player", function()
+	local games = threeGames()
+	local owners = games[1]
+	local owner = addCar(owners, 0, 0, {beams = 900, nodes = 50})
+	owners.playerVehicle = owner.gid
+	for cid = 0, 849 do dent(owner, cid, 0.8) end
+	local seen = addCar(games[2], 0, 0, {beams = 900, nodes = 50})
+	step(6)
+	same(seen.restLen[849], 0.8, "the first copy has the owner's dents")
+	-- Player 2 builds a copy late and asks for the car's full damage. Once the first
+	-- chunk of the answer is out, the owner dents a beam of a later chunk and a new one.
+	local late = addCar(games[3], 0, 0, {beams = 900, nodes = 50})
+	local before = #sentToServer("careerDamage", 0)
+	local answering = false
+	for _ = 1, 40 do
+		step(0.25)
+		for i = before + 1, #sentToServer("careerDamage", 0) do
+			if sentToServer("careerDamage", 0)[i].data:find('"f":1,', 1, true) then answering = true end
+		end
+		if answering then break end
+	end
+	expect(answering, "the owner started its answer")
+	dent(owner, 849, 0.75)
+	dent(owner, 880, 0.7)
+	step(6)
+	same(late.restLen[100], 0.8, "the late copy has the owner's earlier dents")
+	same(seen.restLen[849], 0.75, "the first copy has the change to a beam of the answer")
+	same(seen.restLen[880], 0.7, "the first copy has the new dent")
+	same(late.restLen[849], 0.75, "the late copy has the change to a beam of the answer")
+	same(late.restLen[880], 0.7, "the late copy has the new dent")
+end)
+
 --== phantom damage, resets and late joiners ================================
 
 -- Two games where the copy has heard from its owner: the owner dented beam 7.
