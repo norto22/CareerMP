@@ -9,21 +9,28 @@ local DISCONNECT_TITLE = "You have been disconnected from the server"
 local LEAVE_LUA = "MPCoreNetwork.leaveServer(true)"
 
 local logs, triggers, saves, dialogs, handlers, mp, saveFails, originalDialog
+-- How the game's save ends: "now" fires onSaveFinished inside saveCurrent, "later"
+-- leaves it to the test, "never" returns without it (the game's own failed write).
+local saveFinish
+local current
 
 -- A fresh game on a server and a fresh watch (its state lives in module locals).
 local function setup(opts)
 	opts = opts or {}
 	logs, triggers, saves, dialogs, handlers = {}, {}, 0, {}, {}
-	mp, saveFails = opts.mp ~= false, false
+	mp, saveFails, saveFinish = opts.mp ~= false, false, "now"
 
 	function log(level, tag, msg) table.insert(logs, level .. " " .. tag .. ": " .. msg) end
 	function setExtensionUnloadMode() end
 	function AddEventHandler(name, fn) handlers[name] = fn end
 	MPCoreNetwork = {isMPSession = function() return mp end}
 	extensions = {careerMP_compat = dofile(COMPAT)}
+	-- The game's saveCurrent: a failed write logs and toasts but never raises, and only
+	-- a finished save fires onSaveFinished, sometimes frames later.
 	career_saveSystem = {saveCurrent = function()
 		saves = saves + 1
 		if saveFails then error("disk full") end
+		if saveFinish == "now" then current.onSaveFinished() end
 	end}
 	guihooks = {trigger = function(name, data) table.insert(triggers, {name = name, data = data}) end}
 	UI = {
@@ -34,6 +41,7 @@ local function setup(opts)
 	originalDialog = UI.showMdDialog
 
 	local watch = dofile(SOURCE)
+	current = watch
 	watch.onExtensionLoaded()
 	return watch
 end
@@ -191,6 +199,67 @@ test("trying the save again reports saved once it works", function()
 	same(saves, 2, "saves")
 end)
 
+test("a save the game never confirms is reported as failed, never as saved", function()
+	local watch = setup()
+	saveFinish = "never"
+	watch.onCareerActive(true)
+	frames(watch, 10)
+	local lost, count = lastLost()
+	same(count, 1, "events once the alarm is raised")
+	same(lost.saveState, "saving", "save state while the game has not confirmed it")
+	same(lost.saved, false, "saved while waiting")
+	frames(watch, 9)
+	same(select(2, lastLost()), 1, "no verdict before 10 s")
+	frames(watch, 1)
+	lost, count = lastLost()
+	same(count, 2, "events")
+	same(lost.saveState, "failed", "save state")
+	same(lost.saved, false, "saved")
+	same(countLines(logs, "E careerMP.connection: career save failed"), 1, "failure logged")
+	frames(watch, 30)
+	same(select(2, lastLost()), 2, "the failure is reported once")
+end)
+
+test("a save the game confirms some frames later is then reported as saved", function()
+	local watch = setup()
+	saveFinish = "later"
+	watch.onCareerActive(true)
+	frames(watch, 10)
+	same(lastLost().saveState, "saving", "save state before the game confirms it")
+	frames(watch, 3)
+	watch.onSaveFinished()
+	local lost, count = lastLost()
+	same(count, 2, "events")
+	same(lost.saveState, "saved", "save state")
+	same(lost.saved, true, "saved")
+	frames(watch, 30)
+	same(select(2, lastLost()), 2, "no failure after the confirmation")
+end)
+
+test("another save finishing while nothing is lost or pending changes nothing", function()
+	local watch = setup()
+	saveFinish = "never"
+	watch.onCareerActive(true)
+	watch.onSaveFinished()
+	same(lastLost(), nil, "alarm")
+	frames(watch, 10)
+	frames(watch, 10)
+	same(lastLost().saveState, "failed", "a late, unrelated finish before the alarm does not count")
+end)
+
+test("trying again after a save the game never confirmed waits for its confirmation", function()
+	local watch = setup()
+	saveFinish = "never"
+	watch.onCareerActive(true)
+	frames(watch, 20)
+	same(lastLost().saveState, "failed", "first save")
+	saveFinish = "now"
+	watch.retrySave()
+	local lost = lastLost()
+	same(lost.saveState, "saved", "after trying again")
+	same(saves, 2, "saves")
+end)
+
 test("trying the save again when nothing is lost does nothing", function()
 	local watch = setup()
 	watch.onCareerActive(true)
@@ -261,6 +330,7 @@ test("without BeamMP's dialog function the silence check still works", function(
 	setup().onExtensionUnloaded()
 	UI = nil
 	local watch = dofile(SOURCE)
+	current = watch
 	watch.onExtensionLoaded()
 	same(countLines(logs, "W careerMP.connection: UI.showMdDialog missing"), 1, "missing hook logged")
 	watch.onCareerActive(true)

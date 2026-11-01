@@ -18,6 +18,7 @@ local M = {}
 local logTag = "careerMP.connection"
 
 local SILENCE_SECONDS = 10
+local SAVE_WAIT_SECONDS = 10       -- how long the game's save has to confirm it finished
 local MAX_FRAME_SECONDS = 1        -- one long frame (a load, a hitch) counts as this much
 local FLASH_SECONDS = 10
 local LOST_MESSAGE = "Lost connection to the server"
@@ -29,8 +30,13 @@ local DISCONNECT_OK_LUA = "MPCoreNetwork.leaveServer(true)"
 local watching = false
 -- Seconds since the server was last heard, each frame counting at most MAX_FRAME_SECONDS.
 local silence = 0
--- Set once the connection is lost: {kicked, reason, closed (BeamMP reported it), saved}.
+-- Set once the connection is lost: {kicked, reason, closed (BeamMP reported it),
+-- saveState = "saving" | "saved" | "failed"}.
 local lost = nil
+-- Seconds waited for the game to confirm the save, while one is pending.
+local saveWait = nil
+-- True while the game's saveCurrent runs, so a confirmation inside it is not sent twice.
+local inSaveCall = false
 -- BeamMP's dialog function while wrapped: {ui, original, wrapper}.
 local hooked = nil
 local missingHookWarned = false
@@ -47,7 +53,8 @@ end
 
 local function publishLost()
 	guihooks.trigger("careerMPConnectionLost", {
-		kicked = lost.kicked, reason = lost.reason, saved = lost.saved, message = message(),
+		kicked = lost.kicked, reason = lost.reason, message = message(),
+		saveState = lost.saveState, saved = lost.saveState == "saved",
 	})
 end
 
@@ -61,11 +68,23 @@ local function announce()
 	publishLost()
 end
 
--- True only when the game's save returned without an error.
+local function saveFailed(why)
+	saveWait = nil
+	lost.saveState = "failed"
+	log("E", logTag, "career save failed: " .. why)
+end
+
+-- The game's save never raises when its write fails: it toasts, logs and skips
+-- onSaveFinished, which it fires only for a finished save, sometimes frames later. So
+-- the career counts as saved only once onSaveFinished arrives; without it within
+-- SAVE_WAIT_SECONDS the save failed. The caller tells the player list.
 local function save()
+	lost.saveState = "saving"
+	saveWait = 0
+	inSaveCall = true
 	local ok, err = pcall(function() career_saveSystem.saveCurrent() end)
-	if not ok then log("E", logTag, "career save failed: " .. tostring(err)) end
-	return ok
+	inSaveCall = false
+	if not ok then saveFailed(tostring(err)) end
 end
 
 -- kicked: BeamMP gave a reason. closed: BeamMP itself reported the disconnect.
@@ -80,7 +99,7 @@ local function declareLost(kicked, reason, closed)
 		return
 	end
 	lost = {kicked = kicked, reason = reason, closed = closed}
-	lost.saved = save()
+	save()
 	if kicked then
 		log("W", logTag, "kicked from the server: " .. reason)
 	else
@@ -91,6 +110,7 @@ end
 
 local function clearLost()
 	lost = nil
+	saveWait = nil
 	silence = 0
 	publishRestored()
 end
@@ -153,8 +173,8 @@ end
 
 --- Saves the career again after a failed save, and tells the player list the result.
 function M.retrySave()
-	if not lost or lost.saved then return end
-	lost.saved = save()
+	if not lost or lost.saveState ~= "failed" then return end
+	save()
 	publishLost()
 end
 
@@ -176,10 +196,27 @@ function M.onCareerActive(active)
 	end
 end
 
+--- Fired by the game's save system once a save has finished writing.
+function M.onSaveFinished()
+	if not lost or lost.saveState ~= "saving" then return end
+	saveWait = nil
+	lost.saveState = "saved"
+	log("I", logTag, "career saved")
+	-- Inside saveCurrent the caller tells the player list once it returns.
+	if not inSaveCall then publishLost() end
+end
+
 function M.onUpdate(dtReal)
+	local dt = math.max(0, math.min(MAX_FRAME_SECONDS, tonumber(dtReal) or 0))
+	if saveWait then
+		saveWait = saveWait + dt
+		if saveWait >= SAVE_WAIT_SECONDS then
+			saveFailed(string.format("the game did not confirm it within %d s", SAVE_WAIT_SECONDS))
+			publishLost()
+		end
+	end
 	if not watching or lost then return end
-	local dt = tonumber(dtReal) or 0
-	silence = silence + math.max(0, math.min(MAX_FRAME_SECONDS, dt))
+	silence = silence + dt
 	if silence >= SILENCE_SECONDS then declareLost(false, nil, false) end
 end
 

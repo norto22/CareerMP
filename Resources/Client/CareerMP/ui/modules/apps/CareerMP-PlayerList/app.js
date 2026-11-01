@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 var connected = false;
+var connectionLost = false;
 var players = [];
 // NOTE: must be `var`, not `let`. 0.39's UI app service re-evaluates app.js in the
 // same scope on refresh (see the ?uiAppRefresh= query it appends). A top-level `let`
@@ -136,6 +137,7 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 	})
 
 	$scope.$on('onBeamMPPlayerList', function(event, data) {
+		if (connectionLost) return;
 		let playersList = document.getElementById("players-table");
 		let parsedList = JSON.parse(data);
 		
@@ -321,15 +323,29 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 
 	// Lost server connection, from careerMP/connectionWatch. The banner sits outside the
 	// folding list so it shows either way; its text is bound as text, never as markup.
-	$scope.connection = {lost: false, message: "", saved: false};
+	// While it shows, BeamMP's player list updates are ignored so the dead session's
+	// players do not come back underneath it (connectionLost is set at once, not on the
+	// next digest).
+	$scope.connection = {lost: false, message: "", saveState: ""};
+
+	var SAVE_TEXT = {
+		saving: "Saving your career...",
+		saved: "Your career was saved.",
+		failed: "Your career could not be saved."
+	};
+
+	$scope.saveText = function() {
+		return SAVE_TEXT[$scope.connection.saveState] || "";
+	};
 
 	$scope.$on('careerMPConnectionLost', function(event, data) {
 		data = data || {};
+		connectionLost = true;
 		$scope.$evalAsync(function() {
 			$scope.connection = {
 				lost: true,
 				message: String(data.message || "Lost connection to the server"),
-				saved: data.saved === true
+				saveState: SAVE_TEXT[data.saveState] ? data.saveState : (data.saved === true ? "saved" : "failed")
 			};
 		});
 		players = [];
@@ -338,8 +354,9 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 	})
 
 	$scope.$on('careerMPConnectionRestored', function() {
+		connectionLost = false;
 		$scope.$evalAsync(function() {
-			$scope.connection = {lost: false, message: "", saved: false};
+			$scope.connection = {lost: false, message: "", saveState: ""};
 		});
 		bngApi.engineLua('if UI and UI.updatePlayersList then UI.updatePlayersList() end');
 	})
