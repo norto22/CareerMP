@@ -4,18 +4,19 @@
 -- only when the career starts. On a CareerMP join that load does not always finish, and
 -- the records stay empty: the Insurances page lists no insurers, and the repair screen
 -- crashes looking up the car's insurance record ("attempt to index a nil value" in
--- getRepairData), so Repair at the garage computer never opens.
+-- getRepairData), so Repair at the garage computer never opens. The next autosave then
+-- writes those empty records to the player's server save.
 --
--- Once the join's career start has settled, ensureLoaded() checks the records and, when
--- they never loaded, runs the insurance module's own career-start load. If the player's
--- server save already holds the empty insurance file the missing records leave behind
--- (no insurers and no cars), that file is copied to insurance.careermp-backup.json, the
--- copy is read back, and only then is the file blanked so the game builds fresh
+-- Once the join's career start has settled, ensureLoaded() checks the records. It runs the
+-- insurance module's own career-start load when the records never loaded, or when they
+-- loaded from such an empty save (no insurers and no cars saved, none in memory either).
+-- Before that load, an empty save is copied to insurance.careermp-backup.json, the copy is
+-- read back and compared, and only then is the file blanked so the game builds fresh
 -- defaults. Owned cars that still have no record are then registered through the game's
 -- own "vehicle added to inventory" step, which records them as uninsured.
 --
--- Records that loaded normally are never reloaded: that would throw away the player's
--- unsaved insurance changes.
+-- Records that loaded from a save with insurers or cars in it are never reloaded: that
+-- would throw away the player's unsaved insurance changes.
 
 local M = {}
 
@@ -31,9 +32,14 @@ local function isEmpty(t)
 	return type(t) ~= "table" or next(t) == nil
 end
 
-local function sameKeys(a, b)
-	for k in pairs(a) do if b[k] == nil then return false end end
-	for k in pairs(b) do if a[k] == nil then return false end end
+local function sameValue(a, b)
+	if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+	for k, v in pairs(a) do
+		if not sameValue(v, b[k]) then return false end
+	end
+	for k in pairs(b) do
+		if a[k] == nil then return false end
+	end
 	return true
 end
 
@@ -48,40 +54,40 @@ local function savePath()
 	return path
 end
 
-local function writeFile(file, data)
-	return pcall(career_saveSystem.jsonWriteFileSafe, file, data, true)
-end
-
--- Resets the saved insurance file when it has the empty shape the missing records write,
--- after a backup that reads back the same. Returns true when the file was reset.
-local function resetEmptySave(path)
-	local file = path .. "/career/insurance.json"
+-- The saved insurance file when it has the empty shape the missing records write (an empty
+-- car list and no insurers), or nil.
+local function readEmptySave(file)
 	local data = jsonReadFile(file)
 	if type(data) ~= "table" or type(data.invVehs) ~= "table" or not isEmpty(data.plInsurancesData) then
-		return false
+		return nil
 	end
 	if not isEmpty(data.invVehs) then
 		log("W", logTag, "no insurers saved but car records remain in " .. file .. " - left unchanged")
-		return false
+		return nil
 	end
+	return data
+end
 
+-- Writes data and reads it back. Returns true only when the file now holds exactly data.
+local function writeAndCheck(file, data)
+	local ok, err = pcall(career_saveSystem.jsonWriteFileSafe, file, data, true)
+	if not ok then return false, firstLine(err) end
+	if not sameValue(jsonReadFile(file), data) then return false, "does not read back as written" end
+	return true
+end
+
+-- Backs up an empty insurance save and blanks it. Returns true when the file was reset.
+local function resetEmptySave(path, data)
+	local file = path .. "/career/insurance.json"
 	local backup = path .. "/career/insurance.careermp-backup.json"
-	local ok, err = writeFile(backup, data)
+	local ok, why = writeAndCheck(backup, data)
 	if not ok then
-		log("E", logTag, "could not write " .. backup .. " (" .. firstLine(err) .. ") - " .. file .. " left unchanged")
+		log("E", logTag, "could not back up to " .. backup .. " (" .. why .. ") - " .. file .. " left unchanged")
 		return false
 	end
-	local copy = jsonReadFile(backup)
-	if type(copy) ~= "table" or not sameKeys(copy, data)
-			or isEmpty(copy.invVehs) ~= isEmpty(data.invVehs)
-			or isEmpty(copy.plInsurancesData) ~= isEmpty(data.plInsurancesData) then
-		log("E", logTag, backup .. " does not read back as written - " .. file .. " left unchanged")
-		return false
-	end
-
-	ok, err = writeFile(file, {})
+	ok, why = writeAndCheck(file, {})
 	if not ok then
-		log("E", logTag, "could not reset " .. file .. " (" .. firstLine(err) .. ")")
+		log("E", logTag, "could not reset " .. file .. " (" .. why .. ")")
 		return false
 	end
 	log("I", logTag, "empty insurance save " .. file .. " reset, original kept in " .. backup)
@@ -95,12 +101,17 @@ local function addUninsuredCars(ins)
 		log("W", logTag, "missing career_modules_inventory.getVehicles - cars without a record not checked")
 		return 0
 	end
+	local ok, vehicles = pcall(inventory.getVehicles)
+	if not ok then
+		log("E", logTag, "could not list the inventory: " .. firstLine(vehicles))
+		return 0
+	end
 	local records = ins.getInvVehs() or {}
 	local added, ids = 0, {}
-	for inventoryId, veh in pairs(inventory.getVehicles() or {}) do
+	for inventoryId, veh in pairs(vehicles or {}) do
 		if type(veh) == "table" and veh.owned and not records[inventoryId] then
-			local ok, err = xpcall(ins.onVehicleAddedToInventory, debug.traceback, {inventoryId = inventoryId})
-			if ok then
+			local added_ok, err = xpcall(ins.onVehicleAddedToInventory, debug.traceback, {inventoryId = inventoryId})
+			if added_ok then
 				added = added + 1
 				table.insert(ids, tostring(inventoryId))
 			else
@@ -114,8 +125,9 @@ local function addUninsuredCars(ins)
 	return added
 end
 
---- Loads the insurance records if they never loaded and registers owned cars that have no
---- record. Returns {loaded, reloaded (the game's load was run), backedUp, added, error}.
+--- Loads the insurance records if they never loaded or loaded from an empty save, and
+--- registers owned cars that have no record. Returns {loaded, reloaded (the game's load
+--- was run), backedUp, added, error}.
 function M.ensureLoaded()
 	local summary = {loaded = false, reloaded = false, backedUp = false, added = 0, error = nil}
 
@@ -136,10 +148,19 @@ function M.ensureLoaded()
 	end
 
 	summary.loaded = ins.getDriverScore() ~= nil
-	if not summary.loaded then
-		log("I", logTag, "insurance records were not loaded by the career start - loading them")
-		local path = savePath()
-		if path then summary.backedUp = resetEmptySave(path) end
+	local path = savePath()
+	local emptySave = nil
+	if path and (not summary.loaded or isEmpty(ins.getInvVehs())) then
+		emptySave = readEmptySave(path .. "/career/insurance.json")
+	end
+
+	if not summary.loaded or emptySave then
+		if summary.loaded then
+			log("I", logTag, "insurance records loaded from an empty save - loading them again")
+		else
+			log("I", logTag, "insurance records were not loaded by the career start - loading them")
+		end
+		if emptySave then summary.backedUp = resetEmptySave(path, emptySave) end
 
 		summary.reloaded = true
 		local ok, err = xpcall(ins.onCareerActive, debug.traceback, true)

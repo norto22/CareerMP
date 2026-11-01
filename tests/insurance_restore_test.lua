@@ -331,3 +331,76 @@ test("a game without the inventory module is reported and the check still return
 	same(summary.added, 0, "added")
 	same(countLines(logs, "W careerMP.insurance: missing career_modules_inventory.getVehicles"), 1, "warning")
 end)
+
+--== records loaded from an empty save ======================================
+
+test("records loaded from an empty save are reset and loaded again", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 80}
+	local restore = setup({file = saved})
+	career_modules_insurance_insurance.onCareerActive(true) -- the career start's own load
+	expect(isEmpty(ins.insurers), "the career start's load left no insurers")
+	local summary = restore.ensureLoaded()
+	same(ins.loads, 2, "game loads")
+	same(summary.reloaded, true, "reloaded")
+	same(summary.backedUp, true, "backedUp")
+	same(files[BACKUP].driverScore, 80, "backup keeps the original content")
+	expect(not isEmpty(ins.insurers), "insurers listed after the second load")
+	same(summary.added, 1, "added")
+	same(countLines(logs, "loaded from an empty save"), 1, "log says why it loaded again")
+end)
+
+test("records loaded from an empty save with a car added since are not reloaded", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 80}
+	local restore = setup({file = saved})
+	career_modules_insurance_insurance.onCareerActive(true)
+	ins.invVehs[1] = {insuranceId = -1}
+	local summary = restore.ensureLoaded()
+	same(ins.loads, 1, "game loads")
+	same(#writes, 0, "file writes")
+	same(summary.reloaded, false, "reloaded")
+end)
+
+--== backup and reset checks =================================================
+
+test("a backup that reads back with changed values leaves insurance.json untouched", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 100}
+	local restore = setup({file = saved})
+	career_saveSystem.jsonWriteFileSafe = function(path, data)
+		table.insert(writes, path)
+		local written = copy(data)
+		if path == BACKUP then written.driverScore = 0 end
+		files[path] = written
+	end
+	local summary = restore.ensureLoaded()
+	expect(not contains(writes, FILE), "insurance.json written")
+	same(files[FILE].driverScore, 100, "insurance.json content")
+	same(summary.backedUp, false, "backedUp")
+	same(countLines(logs, "E careerMP.insurance: could not back up"), 1, "error logged")
+end)
+
+test("a reset write that returns without writing is not counted as backed up", function()
+	local saved = {invVehs = {}, plInsurancesData = {}, driverScore = 100}
+	local restore = setup({file = saved})
+	career_saveSystem.jsonWriteFileSafe = function(path, data)
+		table.insert(writes, path)
+		if path == FILE then return false end
+		files[path] = copy(data)
+		return true
+	end
+	local summary = restore.ensureLoaded()
+	same(summary.backedUp, false, "backedUp")
+	same(files[FILE].driverScore, 100, "insurance.json content")
+	same(countLines(logs, "E careerMP.insurance: could not reset"), 1, "error logged")
+	same(countLines(logs, "reset, original kept"), 0, "success logged")
+	same(ins.loads, 1, "game loads")
+end)
+
+test("an inventory that fails to list its cars is logged and the summary still written", function()
+	local restore = setup({loaded = true})
+	career_modules_inventory.getVehicles = function() error("inventory not ready") end
+	local ok, summary = pcall(restore.ensureLoaded)
+	expect(ok, "ensureLoaded raised: " .. tostring(summary))
+	same(summary.added, 0, "added")
+	same(countLines(logs, "E careerMP.insurance: could not list the inventory: "), 1, "error logged")
+	same(countLines(logs, "I careerMP.insurance: loaded=true"), 1, "summary line")
+end)
