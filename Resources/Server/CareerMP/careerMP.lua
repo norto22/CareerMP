@@ -463,6 +463,8 @@ function onInit()
 	MP.RegisterEvent("careerVehSyncRequested","careerVehSyncRequested")
 	MP.RegisterEvent("careerVehicleActiveHandler","careerVehicleActiveHandler")
 	MP.RegisterEvent("careerVehicleTrafficMarks","careerVehicleTrafficMarks")
+	MP.RegisterEvent("careerDamage","careerDamage")
+	MP.RegisterEvent("careerDamageRequest","careerDamageRequest")
 
 	-- Drag racing. One enveloped relay carries BeamNG 0.39's own multiplayer drag
 	-- protocol; the server routes and elects the host but never interprets a message.
@@ -965,6 +967,56 @@ function careerVehicleTrafficMarks(player_id, data)
 	if next(changed) then MP.TriggerClientEventJson(-1, "rxCareerVehSync", changed) end
 end
 
+--Damage between players
+--
+-- Each player's game sends the dents of its own cars ({"v": "<player>-<vehicle>", "c",
+-- "b", "n"}); the server passes a message on, unchanged, to every other player, but only
+-- from the car's owner, under DAMAGE_MAX_BYTES and at most DAMAGE_PER_SECOND a second per
+-- player. A game that builds a copy of someone's car asks for its full damage
+-- ({"v": ...}), which goes to the owner alone. The games check every value themselves.
+
+local DAMAGE_MAX_BYTES = 32768
+local DAMAGE_PER_SECOND = 4
+local DAMAGE_REQUEST_MAX_BYTES = 256
+local damageRate = {send = {}, request = {}}
+
+-- true while player_id is within the per-second limit of this kind of message.
+local function withinDamageRate(kind, player_id)
+	local now = signalTimer:GetCurrent()
+	local rate = damageRate[kind][player_id]
+	if not rate or now - rate.since >= 1 then
+		rate = {since = now, count = 0}
+		damageRate[kind][player_id] = rate
+	end
+	rate.count = rate.count + 1
+	return rate.count <= DAMAGE_PER_SECOND
+end
+
+function careerDamage(player_id, data)
+	if type(data) ~= "string" or #data > DAMAGE_MAX_BYTES then return end
+	if not withinDamageRate("send", player_id) then return end
+	local message = decodeTable(data)
+	if not message or not ownsVehicle(player_id, message.v) then return end
+	for id in pairs(MP.GetPlayers()) do
+		if id ~= player_id then
+			MP.TriggerClientEvent(id, "rxCareerDamage", data)
+		end
+	end
+end
+
+function careerDamageRequest(player_id, data)
+	if type(data) ~= "string" or #data > DAMAGE_REQUEST_MAX_BYTES then return end
+	if not withinDamageRate("request", player_id) then return end
+	local request = decodeTable(data)
+	local serverVehicleID = request and request.v
+	if type(serverVehicleID) ~= "string" then return end
+	local owner = serverVehicleID:match("^(%d+)%-%d+$")
+	owner = tonumber(owner)
+	if not owner or owner == player_id or not MP.GetPlayers()[owner] then return end
+	if not ownsVehicle(owner, serverVehicleID) then return end
+	MP.TriggerClientEvent(owner, "rxCareerDamageRequest", '{"v":"' .. serverVehicleID .. '"}')
+end
+
 function validateCareerMPActivation()
 	local now = signalTimer:GetCurrent()
 	for id in pairs(MP.GetPlayers()) do
@@ -1039,6 +1091,8 @@ function onPlayerDisconnectHandler(player_id)
 	ledger.send[player_id] = nil
 	ledger.receive[player_id] = nil
 	pendingActivation[player_id] = nil
+	damageRate.send[player_id] = nil
+	damageRate.request[player_id] = nil
 end
 
 function onConsoleInputHandler(message)

@@ -89,7 +89,7 @@ local function as(game, fn, ...)
 end
 
 local function newWorld()
-	world = {games = {}, toServer = {}, toClients = {}, serverSent = {}}
+	world = {games = {}, toServer = {}, toClients = {}, serverSent = {}, received = {}}
 	logs = {}
 	function log(level, tag, msg) table.insert(logs, level .. " " .. tag .. ": " .. msg) end
 	function setExtensionUnloadMode() end
@@ -251,6 +251,7 @@ local function pump()
 		world.toServer, world.toClients = {}, {}
 		for _, m in ipairs(toServer) do
 			busy = true
+			table.insert(world.received, m)
 			local handler = _G[m.name]
 			if handler then handler(m.from, m.data) end
 		end
@@ -499,4 +500,232 @@ test("an owner car ignores damage messages meant for copies", function()
 	local car = ownerCar()
 	inVehicle(car, car.ext.applyDamage, 0, {7, 0.5, 0, 0.3}, {})
 	same(car.restLen[7], 1, "beam 7")
+end)
+
+--== roles ===================================================================
+
+local function roleCommands(car)
+	local roles = {}
+	for _, cmd in ipairs(car.roleLog or {}) do table.insert(roles, cmd) end
+	return roles
+end
+
+-- Records every role a car's vehicle Lua is given.
+local function watchRoles(car)
+	car.roleLog = {}
+	local setRole = car.ext.setRole
+	car.ext.setRole = function(role)
+		table.insert(car.roleLog, role)
+		return setRole(role)
+	end
+end
+
+local function sentToServer(name, from)
+	local list = {}
+	for _, m in ipairs(world.received) do
+		if m.name == name and (from == nil or m.from == from) then table.insert(list, m) end
+	end
+	return list
+end
+
+test("an own car becomes the owner only after two checks as a car the player drives", function()
+	newWorld()
+	local game = addGame(0)
+	local car = addCar(game, 0, 0)
+	watchRoles(car)
+	step(1)
+	same(#roleCommands(car), 0, "roles after one check")
+	step(1)
+	same(table.concat(roleCommands(car), ","), "owner", "roles after two checks")
+	step(3)
+	same(#roleCommands(car), 1, "role sent once")
+end)
+
+test("traffic, parked cars and the walking unicycle never send damage", function()
+	newWorld()
+	local game = addGame(0)
+	local traffic = addCar(game, 0, 1, {isTraffic = "true"})
+	local parked = addCar(game, 0, 2, {isParked = "true"})
+	local ai = addCar(game, 0, 3)
+	game.trafficData[ai.gid] = {isAi = true}
+	local walker = addCar(game, 0, 4, {jbeam = "unicycle"})
+	local other = addGame(1)
+	addCar(other, 0, 4, {jbeam = "unicycle"})
+	for _, car in ipairs({traffic, parked, ai, walker}) do watchRoles(car) end
+	step(5)
+	for _, car in ipairs({traffic, parked, ai, walker}) do
+		same(#roleCommands(car), 0, "roles for car " .. car.sid)
+	end
+	same(#sentToServer("careerDamageRequest"), 0, "full-damage requests for a unicycle")
+end)
+
+test("the car the player drives sends its damage even when it came from traffic", function()
+	newWorld()
+	local game = addGame(0)
+	local car = addCar(game, 0, 0, {isTraffic = "true"})
+	game.playerVehicle = car.gid
+	watchRoles(car)
+	step(2)
+	same(table.concat(roleCommands(car), ","), "owner", "roles")
+end)
+
+test("another player's car becomes a copy at once and asks its owner for full damage once", function()
+	local owner, copy, owners, copies = twoGames()
+	step(4)
+	local requests = sentToServer("careerDamageRequest", 1)
+	same(#requests, 1, "requests from the copy's game")
+	same(requests[1].data, '{"v":"0-0"}', "request")
+	same(#sentToServer("careerDamageRequest", 0), 0, "requests from the owner's game")
+end)
+
+--== the game-engine module ==================================================
+
+test("a game sends at most 3 damage messages to the server a second", function()
+	local owner, copy, owners = twoGames()
+	step(2)
+	for _ = 1, 10 do
+		as(owners, owners.ge.onLocalDamage, owner.gid, '{"c":0,"b":[],"n":[]}')
+	end
+	local before = #sentToServer("careerDamage", 0)
+	for _ = 1, 20 do
+		as(owners, owners.ge.onUpdate, 0.05)
+		pump()
+	end
+	local sent = #sentToServer("careerDamage", 0) - before
+	expect(sent >= 2 and sent <= 3, "messages in one second: " .. sent)
+end)
+
+test("a message from a car that is not this game's owner car is not sent", function()
+	local owner, copy, owners, copies = twoGames()
+	step(2)
+	as(copies, copies.ge.onLocalDamage, copy.gid, '{"c":0,"b":[],"n":[]}')
+	as(owners, owners.ge.onLocalDamage, 999, '{"c":0,"b":[],"n":[]}')
+	step(1)
+	same(#sentToServer("careerDamage"), 0, "messages sent")
+end)
+
+local function deliver(game, text)
+	as(game, game.handlers.rxCareerDamage, text)
+	pump()
+end
+
+test("a received message for this game's own car, an unknown car or a malformed id is dropped", function()
+	local owner, copy, owners, copies = twoGames()
+	step(2)
+	deliver(owners, '{"v":"0-0","c":0,"b":[7,0.5,0,0.3],"n":[]}')
+	same(owner.restLen[7], 1, "own car")
+	deliver(copies, '{"v":"0-9","c":0,"b":[7,0.5,0,0.3],"n":[]}')
+	deliver(copies, '{"v":"0-0x","c":0,"b":[7,0.5,0,0.3],"n":[]}')
+	deliver(copies, '{"v":0,"c":0,"b":[7,0.5,0,0.3],"n":[]}')
+	same(copy.restLen[7], 1, "copy")
+	deliver(copies, '{"v":"0-0","c":0,"b":[7,0.5,0,0.3],"n":[]}')
+	same(copy.restLen[7], 0.5, "a well-formed message still applies")
+end)
+
+test("text in a received message never reaches a vehicle command", function()
+	local owner, copy, owners, copies = twoGames()
+	step(2)
+	local ran = false
+	_G.injected = function() ran = true end
+	deliver(copies, '{"v":"0-0","c":0,"b":[7,"1});injected();({",0,0.3],"n":[]}')
+	deliver(copies, '{"v":"0-0","c":0,"b":[7,0.5,0,0.3],"n":["3);injected();(",0,0,0]}')
+	deliver(copies, '{"v":"0-0","c":"1);injected();(","b":[],"n":[]}')
+	_G.injected = nil
+	same(ran, false, "injected code ran")
+	same(copy.restLen[7], 1, "nothing applied from a malformed message")
+	same(#copy.vehicleQueue, 0, "vehicle commands left")
+end)
+
+test("a received message the game cannot decode is dropped without an error", function()
+	local owner, copy, owners, copies = twoGames()
+	step(2)
+	local decode = jsonDecode
+	jsonDecode = function() error("bad json") end
+	deliver(copies, '{"v":"0-0",')
+	jsonDecode = decode
+	same(copy.restLen[7], 1, "copy")
+end)
+
+test("a received message with a wrong row length or too many rows is dropped", function()
+	local owner, copy, owners, copies = twoGames()
+	step(2)
+	deliver(copies, '{"v":"0-0","c":0,"b":[7,0.5,0],"n":[]}')
+	same(copy.restLen[7], 1, "three numbers in a row")
+	local rows = {}
+	for cid = 0, 400 do table.insert(rows, cid .. ",0.5,0,0.3") end
+	deliver(copies, '{"v":"0-0","c":0,"b":[' .. table.concat(rows, ",") .. '],"n":[]}')
+	same(copy.restLen[7], 1, "401 beams")
+end)
+
+--== the server relay ========================================================
+
+local function serverSends(event)
+	local list = {}
+	for _, m in ipairs(world.serverSent) do
+		if m.event == event then table.insert(list, m) end
+	end
+	return list
+end
+
+local function threeGames()
+	newWorld()
+	local games = {addGame(0), addGame(1), addGame(2)}
+	world.serverSent = {}
+	return games
+end
+
+test("the server passes a damage message from the car's owner to every other player, unchanged", function()
+	threeGames()
+	local text = '{"v":"0-3","c":0,"b":[7,0.5,0,0.3],"n":[]}'
+	careerDamage(0, text)
+	local sends = serverSends("rxCareerDamage")
+	same(#sends, 2, "messages sent")
+	local to = {}
+	for _, s in ipairs(sends) do
+		to[s.target] = true
+		same(s.data, text, "message")
+	end
+	expect(to[1] and to[2] and not to[0], "sent to players 1 and 2 only")
+end)
+
+test("the server drops damage for a car the sender does not own", function()
+	threeGames()
+	careerDamage(1, '{"v":"0-3","c":0,"b":[],"n":[]}')
+	careerDamage(1, '{"v":"10-3","c":0,"b":[],"n":[]}')
+	careerDamage(1, '{"v":"1-3x","c":0,"b":[],"n":[]}')
+	careerDamage(1, '{"c":0,"b":[],"n":[]}')
+	same(#serverSends("rxCareerDamage"), 0, "messages sent")
+end)
+
+test("the server drops an oversize message and one that does not decode", function()
+	threeGames()
+	careerDamage(0, '{"v":"0-3","c":0,"b":[' .. string.rep("1,", 17000) .. '1],"n":[]}')
+	careerDamage(0, '{"v":"0-3",')
+	careerDamage(0, nil)
+	same(#serverSends("rxCareerDamage"), 0, "messages sent")
+end)
+
+test("the server passes at most 4 damage messages a second from one player", function()
+	threeGames()
+	for _ = 1, 6 do careerDamage(0, '{"v":"0-3","c":0,"b":[],"n":[]}') end
+	same(#serverSends("rxCareerDamage"), 8, "messages sent to two players")
+	careerDamage(1, '{"v":"1-0","c":0,"b":[],"n":[]}')
+	same(#serverSends("rxCareerDamage"), 10, "another player has their own limit")
+	world.now = (world.now or 0) + 1
+	careerDamage(0, '{"v":"0-3","c":0,"b":[],"n":[]}')
+	same(#serverSends("rxCareerDamage"), 12, "a second later")
+end)
+
+test("a full-damage request reaches the car's owner only", function()
+	threeGames()
+	careerDamageRequest(1, '{"v":"2-5"}')
+	local sends = serverSends("rxCareerDamageRequest")
+	same(#sends, 1, "requests passed on")
+	same(sends[1].target, 2, "to the owner")
+	same(sends[1].data, '{"v":"2-5"}', "request")
+	careerDamageRequest(2, '{"v":"2-5"}')
+	careerDamageRequest(1, '{"v":"7-5"}')
+	careerDamageRequest(1, '{"v":"2-5);x"}')
+	careerDamageRequest(1, '{"v":5}')
+	same(#serverSends("rxCareerDamageRequest"), 1, "requests passed on after bad ones")
 end)
