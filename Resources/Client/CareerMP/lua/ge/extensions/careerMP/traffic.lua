@@ -16,6 +16,9 @@
 --
 -- If the career ever stops handing its amounts over this way, traffic still spawns at
 -- the player's own setting and the log says the server's amounts were not applied.
+--
+-- For the whole server session it also hides the player's traffic around a mission
+-- instead of letting the game delete and respawn it (see "mission hide").
 
 local M = {}
 
@@ -221,6 +224,153 @@ local function removeTutorialRestore()
 	tutorial = nil
 end
 
+--== mission hide ============================================================
+-- On a mission start the game's mission manager stashes traffic with
+--
+--   gameplay_traffic.freezeState({despawnVehicles = true, exceptVehicleId = <player's car>})
+--
+-- which deletes every traffic, police and parked car except the one the player drives,
+-- and spawns them all again at the end with unfreezeState(..., {respawnVehicles = true}).
+-- On a server each of those is a new vehicle on every other player's game, announced
+-- and queued by BeamMP and then built at once, which stalls their game. On a server the
+-- cars are hidden for the mission instead, which CareerMP's hide/show sync carries to
+-- everyone, and shown again at the end. Any other freeze is left to the game.
+
+local unpack = table.unpack or unpack
+
+-- {module, freeze, unfreeze} while the replacement is installed on that module table.
+local mission = nil
+
+-- Cars hidden by a mission start and not yet shown again.
+local hiddenForMission = nil
+
+local passThroughLogged = false
+
+local function copyWith(options, key, value)
+	local copy = {}
+	if type(options) == "table" then
+		for k, v in pairs(options) do copy[k] = v end
+	end
+	copy[key] = value
+	return copy
+end
+
+local function callOr(module, fnName, fallback)
+	if type(module) ~= "table" or type(module[fnName]) ~= "function" then return fallback end
+	local ok, value = pcall(module[fnName])
+	if ok and type(value) == "table" then return value end
+	return fallback
+end
+
+-- The cars the game's freeze would delete (AI or isTraffic road traffic and parked
+-- cars, except exceptId) that are showing now. Pooled cars are already hidden and the
+-- game's traffic pool puts them back itself.
+local function missionCars(exceptId)
+	local ids, seen = {}, {}
+	local function add(id)
+		if id == exceptId or seen[id] then return end
+		local obj = be:getObjectByID(id)
+		if obj and obj:getActive() then
+			seen[id] = true
+			table.insert(ids, id)
+		end
+	end
+	local trafficIds = {}
+	for id, entry in pairs(callOr(gameplay_traffic, "getTrafficData", {})) do
+		if type(entry) == "table" then
+			local obj = be:getObjectByID(id)
+			if entry.isAi == true or (obj and obj.isTraffic == "true") then table.insert(trafficIds, id) end
+		end
+	end
+	table.sort(trafficIds)
+	for _, id in ipairs(trafficIds) do add(id) end
+	for _, id in ipairs(callOr(gameplay_parking, "getParkedCarsList", {})) do add(id) end
+	return ids
+end
+
+local function makeMissionFreeze(original)
+	return function(options, ...)
+		if type(options) ~= "table" or options.despawnVehicles ~= true then
+			if not passThroughLogged then
+				passThroughLogged = true
+				log("I", logTag, "the game froze traffic without asking to delete it - left to the game")
+			end
+			return original(options, ...)
+		end
+		local found, ids = xpcall(missionCars, debug.traceback, options.exceptVehicleId)
+		if not found then
+			log("E", logTag, "mission hide failed, traffic left to the game: " .. tostring(ids))
+			return original(options, ...)
+		end
+		local results = pack(original(copyWith(options, "despawnVehicles", false), ...))
+		hiddenForMission = hiddenForMission or {}
+		local hidden = 0
+		for _, id in ipairs(ids) do
+			local obj = be:getObjectByID(id)
+			if obj then
+				obj:setActive(0)
+				table.insert(hiddenForMission, id)
+				hidden = hidden + 1
+			end
+		end
+		log("I", logTag, string.format("mission start: %d traffic and parked cars hidden instead of deleted", hidden))
+		return unpack(results, 1, results.n)
+	end
+end
+
+-- Shows the cars a mission start hid that still exist; returns how many.
+local function showMissionCars()
+	local ids = hiddenForMission
+	hiddenForMission = nil
+	if not ids then return nil, 0 end
+	local shown = 0
+	for _, id in ipairs(ids) do
+		local obj = be:getObjectByID(id)
+		if obj then
+			obj:setActive(1)
+			shown = shown + 1
+		end
+	end
+	return shown, #ids
+end
+
+local function makeMissionUnfreeze(original)
+	return function(trafficData, policeData, parkingData, options, ...)
+		local shown, total = showMissionCars()
+		if not shown then return original(trafficData, policeData, parkingData, options, ...) end
+		log("I", logTag, string.format("mission end: %d of %d hidden traffic and parked cars shown again", shown, total))
+		return original(trafficData, policeData, parkingData, copyWith(options, "respawnVehicles", false), ...)
+	end
+end
+
+-- Installed on the game's traffic module that is current at each career start.
+local function installMissionHide()
+	local module = gameplay_traffic
+	if mission and mission.module == module then return end
+	local compat = extensions.careerMP_compat
+	local consequence = "a mission start deletes and respawns traffic for every player"
+	local freezeFn = compat.pickOrWarn(module, "gameplay_traffic", "freezeState", consequence)
+	local unfreezeFn = compat.pickOrWarn(module, "gameplay_traffic", "unfreezeState", consequence)
+	if not freezeFn or not unfreezeFn then return end
+	mission = {module = module, freeze = freezeFn, unfreeze = unfreezeFn}
+	module.freezeState = makeMissionFreeze(freezeFn)
+	module.unfreezeState = makeMissionUnfreeze(unfreezeFn)
+end
+
+-- Cars still hidden for a mission are shown again: the game's own unfreeze has no
+-- copies to spawn them from.
+local function removeMissionHide()
+	local shown, total = showMissionCars()
+	if shown then
+		log("I", logTag, string.format("mission hide removed: %d of %d hidden cars shown again", shown, total))
+	end
+	passThroughLogged = false
+	if not mission then return end
+	mission.module.freezeState = mission.freeze
+	mission.module.unfreezeState = mission.unfreeze
+	mission = nil
+end
+
 --== hooks ===================================================================
 
 --- Fired by the game's career.lua at the top of activateCareer, before its modules set
@@ -230,7 +380,10 @@ function M.onBeforeCareerActivate()
 end
 
 function M.onCareerActive(active)
-	if active and serverConfig() then installTutorialRestore() end
+	if active and serverConfig() then
+		installTutorialRestore()
+		installMissionHide()
+	end
 end
 
 local function count(module, fnName)
@@ -281,6 +434,7 @@ function M.onBeamMPServerLeave()
 	start = nil
 	restoreAll("left the server")
 	removeTutorialRestore()
+	removeMissionHide()
 	warned = {}
 end
 
@@ -292,6 +446,7 @@ function M.onExtensionUnloaded()
 	start = nil
 	restoreAll("unloaded")
 	removeTutorialRestore()
+	removeMissionHide()
 	log("I", logTag, "CareerMP traffic meter UNLOADED")
 end
 

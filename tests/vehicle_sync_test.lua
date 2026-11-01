@@ -140,3 +140,107 @@ test("a mission end on a server shows the hidden cars again and spawns none", fu
 	end
 	same(game.respawned, 0, "cars spawned again")
 end)
+
+test("the game's freeze and unfreeze are told to keep the cars, with the mission's other options", function()
+	local module, game = setupTraffic()
+	module.onCareerActive(true)
+	missionEnd(missionStart())
+	local freeze, unfreeze = game.calls[1], game.calls[2]
+	same(freeze[1], "freeze", "first call")
+	same(freeze[2].despawnVehicles, false, "despawnVehicles passed to the game")
+	same(freeze[2].exceptVehicleId, 1, "exceptVehicleId passed to the game")
+	same(unfreeze[1], "unfreeze", "second call")
+	same(unfreeze[2].respawnVehicles, false, "respawnVehicles passed to the game")
+end)
+
+test("the log says how many cars a mission start hid and its end showed again", function()
+	local module = setupTraffic()
+	module.onCareerActive(true)
+	missionEnd(missionStart())
+	same(countLines(logs, "mission start: 4 traffic and parked cars hidden instead of deleted"), 1, "hide line")
+	same(countLines(logs, "mission end: 4 of 4 hidden traffic and parked cars shown again"), 1, "restore line")
+end)
+
+test("a hidden car deleted during the mission is skipped at its end", function()
+	local module, game = setupTraffic()
+	module.onCareerActive(true)
+	local stashed = missionStart()
+	game.objects[4]:delete()
+	missionEnd(stashed)
+	same(game.objects[5].active, true, "car 5 shown")
+	same(countLines(logs, "mission end: 3 of 4 hidden traffic and parked cars shown again"), 1, "restore line")
+end)
+
+test("a car pooled away before the mission stays hidden after it", function()
+	local module, game = setupTraffic()
+	game.objects[2].active = false
+	module.onCareerActive(true)
+	missionEnd(missionStart())
+	same(game.objects[2].active, false, "pooled car 2")
+	same(game.objects[3].active, true, "car 3")
+end)
+
+test("a freeze that does not ask to delete traffic is left to the game, logged once", function()
+	local module, game = setupTraffic()
+	module.onCareerActive(true)
+	gameplay_traffic.freezeState({exceptVehicleId = 1})
+	gameplay_traffic.freezeState()
+	same(game.calls[1][2].despawnVehicles, nil, "options passed unchanged")
+	same(game.calls[2][2], nil, "no options passed unchanged")
+	for id = 2, 5 do same(game.objects[id].active, true, "car " .. id .. " left showing") end
+	same(countLines(logs, "the game froze traffic without asking to delete it"), 1, "log lines")
+	gameplay_traffic.unfreezeState({ids = {}}, nil, nil, {respawnVehicles = true})
+	same(game.calls[3][2].respawnVehicles, true, "an unfreeze with nothing hidden is the game's own")
+end)
+
+test("off a server the game's freeze and unfreeze are never replaced", function()
+	local module, game = setupTraffic({mp = false})
+	local freeze, unfreeze = gameplay_traffic.freezeState, gameplay_traffic.unfreezeState
+	module.onCareerActive(true)
+	same(gameplay_traffic.freezeState, freeze, "freezeState")
+	same(gameplay_traffic.unfreezeState, unfreeze, "unfreezeState")
+	missionStart()
+	same(game.objects[2], nil, "the game deletes traffic as before")
+end)
+
+test("a missing freeze or unfreeze is warned about once and the game is left alone", function()
+	local module = setupTraffic()
+	gameplay_traffic.unfreezeState = nil
+	local freeze = gameplay_traffic.freezeState
+	module.onCareerActive(true)
+	module.onCareerActive(true)
+	same(gameplay_traffic.freezeState, freeze, "freezeState left alone")
+	same(countLines(logs, "gameplay_traffic.unfreezeState missing"), 1, "warnings")
+end)
+
+test("leaving the server or unloading puts the game's functions back", function()
+	for _, hook in ipairs({"onBeamMPServerLeave", "onExtensionUnloaded"}) do
+		local module = setupTraffic()
+		local freeze, unfreeze = gameplay_traffic.freezeState, gameplay_traffic.unfreezeState
+		module.onCareerActive(true)
+		expect(gameplay_traffic.freezeState ~= freeze, hook .. ": installed")
+		module[hook]()
+		same(gameplay_traffic.freezeState, freeze, hook .. ": freezeState")
+		same(gameplay_traffic.unfreezeState, unfreeze, hook .. ": unfreezeState")
+	end
+end)
+
+test("leaving mid-mission shows the hidden cars again", function()
+	local module, game = setupTraffic()
+	module.onCareerActive(true)
+	missionStart()
+	module.onBeamMPServerLeave()
+	for id = 2, 5 do same(game.objects[id].active, true, "car " .. id) end
+end)
+
+test("a second career start installs once, and a reloaded traffic module gets it again", function()
+	local module, game = setupTraffic()
+	module.onCareerActive(true)
+	module.onCareerActive(true)
+	missionEnd(missionStart())
+	same(#game.calls, 2, "game calls through a single replacement")
+	newGame()
+	module.onCareerActive(true)
+	missionStart()
+	same(countLines(logs, "mission start: 4 traffic and parked cars hidden"), 2, "hidden on the reloaded module")
+end)
