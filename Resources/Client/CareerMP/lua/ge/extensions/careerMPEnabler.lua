@@ -220,8 +220,17 @@ end
 
 --Traffic Signals and Cameras
 
+-- A player's AI traffic counts as that player's own vehicles in multiplayer, so a
+-- traffic car caught by a camera would be announced under the player's name.
+local function isAiTraffic(gameVehicleID)
+	if not gameplay_traffic or type(gameplay_traffic.getTrafficData) ~= "function" then return false end
+	local entry = (gameplay_traffic.getTrafficData() or {})[gameVehicleID]
+	return type(entry) == "table" and entry.isAi == true
+end
+
 local function onSpeedTrapTriggered(speedTrapData, playerSpeed, overSpeed)
 	if not MPVehicleGE.isOwn(speedTrapData.subjectID) then return end
+	if isAiTraffic(speedTrapData.subjectID) then return end
 	local veh = be:getObjectByID(speedTrapData.subjectID)
 	if not veh then return end
 	local highscore, leaderboard = gameplay_speedTrapLeaderboards.addRecord(speedTrapData, playerSpeed, overSpeed, veh)
@@ -236,6 +245,7 @@ end
 
 local function onRedLightCamTriggered(redLightData, playerSpeed)
 	if not MPVehicleGE.isOwn(redLightData.subjectID) then return end
+	if isAiTraffic(redLightData.subjectID) then return end
 	local veh = be:getObjectByID(redLightData.subjectID)
 	if not veh then return end
 	redLightData.licensePlate = veh:getDynDataFieldbyName("licenseText", 0) or "Illegible"

@@ -4,12 +4,12 @@
 -- Every call site in CareerMP goes through here instead of calling the game
 -- directly, so a future rename is a one-file fix rather than a hunt.
 --
--- Target: BeamNG.drive 0.39 (build 20859). Each entry also names the 0.38.6 API
--- it replaces.
+-- Target: BeamNG.drive 0.40.4.0. The game APIs used here took their current names in
+-- 0.39; each entry also names the 0.38.6 API it replaces.
 
 local M = {}
 
-M.targetGameVersion = "0.39"
+M.targetGameVersion = "0.40.4.0"
 
 -- Picks the first field that exists on a module, so one call site can serve
 -- several game versions. Returns the function plus the name that matched,
