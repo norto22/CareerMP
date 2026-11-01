@@ -822,7 +822,11 @@ local function onUpdate(dtReal, dtSim, dtRaw)
 		if veh then
 			local ghost = nil
 			if not MPVehicleGE.isOwn(gameVehicleID) then
-				ghost = veh.JBeam == "unicycle" and clientConfig.remoteUnicycleGhost or clientConfig.remoteVehicleGhost
+				if veh.JBeam == "unicycle" then
+					ghost = clientConfig.remoteUnicycleGhost
+				else
+					ghost = clientConfig.remoteVehicleGhost
+				end
 			elseif veh.JBeam == "unicycle" then
 				ghost = clientConfig.localUnicycleGhost
 			end
