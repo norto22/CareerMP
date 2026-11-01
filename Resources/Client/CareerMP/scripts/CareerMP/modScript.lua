@@ -6,7 +6,9 @@
 --                      *MP hooks the feature extensions listen for
 --   3. careerPatches - neutralises career activation's vehicle cleanup before
 --                      any career can start
---   4. features
+--   4. traffic       - hands the server's traffic amounts to the game's career
+--                      traffic setup
+--   5. features
 --
 -- 'manual' unload mode keeps these alive across level switches, which career
 -- does constantly.
@@ -20,6 +22,7 @@ end
 loadPersistent('careerMP/compat')
 loadPersistent('careerMP/patches')
 loadPersistent('careerMP/careerPatches')
+loadPersistent('careerMP/traffic')
 
 -- Core
 loadPersistent('careerMPEnabler')
