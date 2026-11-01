@@ -120,6 +120,88 @@ test("a layout stamped for an older build is still rebuilt from this build's ori
 	same(countLines(logs, "was written for build 0.39.2.1.0"), 1, "old stamp named in the log")
 end)
 
+local OLD_PLACEMENT = {position = "absolute", left = "10px", top = "200px", width = "320px", height = "410px"}
+
+local function placedOldList()
+	local layout = oldCareerLayout(BUILD)
+	layout.apps[2].placement = copy(OLD_PLACEMENT)
+	return layout
+end
+
+local function samePlacement(placement, wanted, what)
+	for k, v in pairs(wanted) do same(placement[k], v, what .. " " .. k) end
+	for k, v in pairs(placement) do same(wanted[k], v, what .. " " .. k) end
+end
+
+for _, withCatalogue in ipairs({true, false}) do
+	local label = withCatalogue and "with" or "without"
+	test("the CareerMP player list becomes Mileage's where the player put it, " .. label .. " the app catalogue", function()
+		local M = loadModule({
+			[USER_DEFAULT .. "career.uilayout.json"] = placedOldList(),
+			[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+		})
+		if not withCatalogue then ui_apps = nil end
+		M.migrateLayouts()
+		local layout = written[USER_DEFAULT .. "career.uilayout.json"]
+		local list = names(layout)
+		same(indexOf(list, "careermpplayerlist"), nil, "old player list")
+		same(indexOf(list, "mileageplayerlist"), 2, "swapped where it was")
+		samePlacement(layout.apps[2].placement, OLD_PLACEMENT, "placement")
+		local count = 0
+		for _, name in ipairs(list) do
+			if name == "mileageplayerlist" then count = count + 1 end
+		end
+		same(count, 1, "one Mileage player list")
+	end)
+end
+
+test("BeamMP's own player list is still replaced at Mileage's default place", function()
+	local layout = oldCareerLayout(BUILD)
+	layout.apps[2] = {appName = "beammpPlayerListVue", placement = copy(OLD_PLACEMENT)}
+	local M = loadModule({
+		[USER_DEFAULT .. "career.uilayout.json"] = layout,
+		[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+	})
+	M.migrateLayouts()
+	local saved = written[USER_DEFAULT .. "career.uilayout.json"]
+	local i = indexOf(names(saved), "mileageplayerlist")
+	expect(i, "Mileage player list")
+	same(saved.apps[i].placement.top, "240px", "Mileage's default top")
+	same(saved.apps[i].placement.left, "", "Mileage's default left")
+end)
+
+test("an old careermp.uilayout.json naming the old player list goes on top of the shipped override", function()
+	local M = loadModule({
+		[USER_DEFAULT .. "mileage.uilayout.json"] = {
+			apps = {{appName = "mileageplayerlist", placement = {left = "100px"}}},
+		},
+		[USER_DEFAULT .. "careermp.uilayout.json"] = {
+			apps = {{appName = "careermpplayerlist", placement = {left = "777px"}}},
+		},
+		[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+	})
+	M.migrateLayouts()
+	local layout = written[USER_DEFAULT .. "career.uilayout.json"]
+	local list = names(layout)
+	same(indexOf(list, "careermpplayerlist"), nil, "old name never added")
+	local i = indexOf(list, "mileageplayerlist")
+	expect(i, "player list added")
+	same(layout.apps[i].placement.left, "777px", "the player's old override")
+end)
+
+test("with no old override file the shipped override places the player list", function()
+	local M = loadModule({
+		[USER_DEFAULT .. "mileage.uilayout.json"] = {
+			apps = {{appName = "mileageplayerlist", placement = {left = "100px"}}},
+		},
+		[ORIGINAL_DEFAULT .. "career.uilayout.json"] = {apps = {{appName = "gameApp1"}}},
+	})
+	M.migrateLayouts()
+	local layout = written[USER_DEFAULT .. "career.uilayout.json"]
+	local i = indexOf(names(layout), "mileageplayerlist")
+	same(layout.apps[i].placement.left, "100px", "shipped override placement")
+end)
+
 test("an override saved as careermp.uilayout.json still places the player list", function()
 	local M = loadModule({
 		[USER_DEFAULT .. "careermp.uilayout.json"] = {
