@@ -447,6 +447,73 @@ World.test("a racer who finished and went offline wins when the other racer then
 	same(bob.money, 9000, "Bob")
 end)
 
+-- Rejects a leave by a racer who already reported that ends the race for them at once:
+-- the 5 s wait still runs, and a faster time reported in it wins.
+World.test("a racer who reached the finish and left is still beaten by a faster time reported in the 5 s wait",
+		function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	local _, race = races(world)
+	world:advance(130)
+	world:drive(ann, KM.x + 5, KM.y)
+	world:serverOutput(function() mileageRaceReport(ann.id, World.encode({race = race.id, finished = 130})) end)
+	world:leave(ann)
+	world:advance(1)
+	world:drive(bob, KM.x + 5, KM.y)
+	world:serverOutput(function() mileageRaceReport(bob.id, World.encode({race = race.id, finished = 128})) end)
+	world:advance(6)
+	world:rejoin(ann)
+	world:advance(3)
+	same(lastRaceMessage(world, bob, "result").winner, "Bob", "the faster time wins")
+	same(bob.money, 11000, "Bob")
+	same(ann.money, 9000, "Ann")
+	same(world:savedTotal(), 20000, "total across saves")
+end)
+
+-- Rejects a leaderboard that only counts a win for a racer still connected.
+World.test("the win of a racer who finished and then left counts on the leaderboard for them", function(world)
+	local ann, bob = pair(world)
+	startRace(world, ann, bob, 1000)
+	arrive(world, ann)
+	world:leave(ann)
+	world:advance(10)
+	local wins = world:dataFile("leaderboard.json").wins
+	same(wins.Ann, 1, "Ann's win")
+	same(wins.Bob, nil, "no win for Bob")
+end)
+
+-- Rejects a give-up path that always pays the prize: it needs the winner's own finish.
+World.test("a racer who gives up before the other reached the finish earns them no server prize", function(world)
+	local ann, bob = pair(world)
+	world:setConfig("server", "racePrize", "500")
+	startRace(world, ann, bob, 1000)
+	world:advance(30)
+	world:as(bob, function() mileage_streetRace.giveUp() end)
+	world:pump()
+	world:advance(2)
+	same(ann.money, 11000, "Ann: both stakes, no prize")
+	same(lastRaceMessage(world, ann, "result").prize, 0, "result says no prize")
+end)
+
+-- Rejects a forfeit path that pays the prize itself and skips the per-pair cooldown.
+World.test("a winner who finished and whose opponent then gives up gets no second prize within the cooldown",
+		function(world)
+	local ann, bob = pair(world)
+	world:setConfig("server", "racePrize", "500")
+	startRace(world, ann, bob, 0)
+	arrive(world, ann)
+	world:advance(6)
+	same(ann.money, 10500, "the first prize")
+	ann.car.pos = {x = 0, y = 0, z = 0}
+	startRace(world, ann, bob, 0)
+	arrive(world, ann)
+	world:as(bob, function() mileage_streetRace.giveUp() end)
+	world:pump()
+	world:advance(2)
+	same(lastRaceMessage(world, ann, "result").winner, "Ann", "Ann won the second race")
+	same(ann.money, 10500, "no second prize within the cooldown")
+end)
+
 World.test("a racer who gives up loses their stake to the other", function(world)
 	local ann, bob = pair(world)
 	startRace(world, ann, bob, 1000)
