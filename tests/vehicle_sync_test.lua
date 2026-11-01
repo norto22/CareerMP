@@ -566,6 +566,24 @@ test("a car BeamMP gives a used server id is marked afresh", function()
 	same(nametag(me, "1-2"), true, "the new parked car")
 end)
 
+test("a traffic car hidden for a mission keeps its mark, so it comes back without a nametag", function()
+	local me, friend = twoPlayers()
+	frames(friend, 1)
+	local sent = marksSent(friend)
+	-- The game's freeze clears its traffic list while the car is hidden.
+	as(friend, function() friend.objects[gameId(1, 1)]:setActive(0) end)
+	friend.trafficData = {}
+	pump()
+	frames(friend, 2)
+	same(marksSent(friend), sent, "marks sent while the car is hidden")
+	friend.trafficData = {[gameId(1, 1)] = {isAi = true}}
+	as(friend, function() friend.objects[gameId(1, 1)]:setActive(1) end)
+	pump()
+	same(nametag(me, "1-1"), true, "the police car as soon as it is shown again")
+	frames(friend, 1)
+	same(marksSent(friend), sent, "marks sent once it is back in traffic")
+end)
+
 --== one-car updates =========================================================
 
 local function rows(t)

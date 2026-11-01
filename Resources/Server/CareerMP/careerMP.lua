@@ -952,16 +952,15 @@ function careerVehicleTrafficMarks(player_id, data)
 	local marks = decodeTable(data)
 	if not marks then return end
 	-- Marks that changed together go out together, holding only those cars.
-	local changed, any = {}, false
+	local changed = {}
 	for serverVehicleID, mark in pairs(marks) do
 		local state = vehicleStates[serverVehicleID]
 		if type(mark) == "boolean" and state and ownsVehicle(player_id, serverVehicleID) then
 			state.traffic = mark
 			changed[serverVehicleID] = state
-			any = true
 		end
 	end
-	if any then MP.TriggerClientEventJson(-1, "rxCareerVehSync", changed) end
+	if next(changed) then MP.TriggerClientEventJson(-1, "rxCareerVehSync", changed) end
 end
 
 function validateCareerMPActivation()
