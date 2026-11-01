@@ -46,8 +46,8 @@ local pending = {
 	painting = nil,
 }
 
--- The car the player clicked a button for at the garage computer, handed over by CareerMP's
--- computer copy (career/modules/computer.lua) before the button runs. Used by the next menu
+-- The car the player clicked a button for at the garage computer, recorded by the patch on
+-- career_modules_computer.computerButtonCallback before the button runs. Used by the next menu
 -- that opens without naming its car, then dropped, so a menu opened elsewhere later does not
 -- reuse it. A new click, a general button and the computer opening again replace it.
 local clickedInventoryId = nil
@@ -170,8 +170,8 @@ end
 -- from the stock-hook handlers below so the timing stays identical to stock.
 
 -- The garage computer's buttons pass the clicked car to each module's LOCAL start
--- function, which never passes through these wrappers, so CareerMP's computer copy hands
--- the click over itself (clickedInventoryId, above). These recorders cover the menus opened
+-- function, which never passes through these wrappers, so the computer's button callback
+-- records the click itself (clickedInventoryId, above). These recorders cover the menus opened
 -- through the module table: with a car named, that car; with none, the click; and only then
 -- the module's own fallback chain, mirrored here. The chains that end at
 -- getInventoryIdsInClosestGarage(true) are a guess: the first car that garage lists, which
@@ -212,7 +212,7 @@ end
 local pendingSeatedRepair = nil
 --- The garage computer facility the player last opened a menu on.
 ---
---- Recorded because the computer's own copy is a file-local (computer.lua:14) and the
+--- Recorded because the game's computer module keeps its own as a file-local and the
 --- repair screen's originComputerId is another. Needed to refresh the menu after a
 --- deferred repair; see runHeldRepair.
 local lastComputerFacility = nil
@@ -355,10 +355,46 @@ local function makeSeatedRepairGuard(fnName)
 	end
 end
 
---- Remember which computer the player is standing at.
-local function applyComputerRecorder()
-	wrap("career_modules_computer", "openMenu", function(_, args)
-		lastComputerFacility = args[1] or lastComputerFacility
+-- The game's garage computer closes its menu once the player is more than 1 m from its
+-- door, or 4 m from the computer when there is no door. Multiplayer position sync moves
+-- the player that far on its own, which closed the menu mid-use, so the menu's range is
+-- widened to at least this many metres.
+local COMPUTER_MENU_RANGE = 25
+
+-- Runs fn with career_modules_tether's starts widening their range to the computer's,
+-- and always puts the game's starts back. Only tethers started inside fn are affected.
+local function withComputerMenuRange(fn, ...)
+	local tether = career_modules_tether
+	if type(tether) ~= "table" then return fn(...) end
+	local door, sphere = tether.startDoorTether, tether.startSphereTether
+	local function widen(start)
+		if type(start) ~= "function" then return start end
+		return function(target, range, ...)
+			if type(range) == "number" and range < COMPUTER_MENU_RANGE then range = COMPUTER_MENU_RANGE end
+			return start(target, range, ...)
+		end
+	end
+	tether.startDoorTether, tether.startSphereTether = widen(door), widen(sphere)
+	local function finish(ok, ...)
+		tether.startDoorTether, tether.startSphereTether = door, sphere
+		if not ok then error((...), 0) end
+		return ...
+	end
+	return finish(pcall(fn, ...))
+end
+
+--- The game's own garage computer, patched: remember which computer the player is standing
+--- at, forget the last click when it opens, widen its menu's range, and record which car
+--- each button is for.
+local function applyComputerPatches()
+	replace("career_modules_computer", "openMenu", function(original, computerFacility, ...)
+		lastComputerFacility = computerFacility or lastComputerFacility
+		M.setClickedVehicle(nil)
+		return withComputerMenuRange(original, computerFacility, ...)
+	end)
+	replace("career_modules_computer", "computerButtonCallback", function(original, buttonId, inventoryId, ...)
+		M.setClickedVehicle(inventoryId)
+		return original(buttonId, inventoryId, ...)
 	end)
 end
 
@@ -822,7 +858,7 @@ function M.apply()
 	applyWalkGuard()
 	applySeatedRepairGuard()
 	applyPurchaseInsuranceGuard()
-	applyComputerRecorder()
+	applyComputerPatches()
 
 	-- Only count as applied when everything landed. Marking it applied regardless
 	-- would let a call made before the career modules exist stick, and the retry
