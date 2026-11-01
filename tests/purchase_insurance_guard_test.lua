@@ -170,3 +170,56 @@ test("the purchase data wrapper raises a non-text error again unchanged", functi
 	same(err, failure, "the same error object")
 	same(countLines(logs, "E careerMP.purchase: purchase screen data failed:"), 1, "the failure is logged")
 end)
+
+--== the installed guard across the patch lifecycle ===========================
+
+test("a failure filling the purchase screen through the installed guard is logged once and raised again, after the retry applies twice", function()
+	setupGame()
+	career_modules_vehicleShopping.sendPurchaseDataToUi = function()
+		error("vehicleShopping.lua:793: attempt to index a nil value\nstack traceback: ...", 0)
+	end
+	local patches = dofile(PATCHES)
+	patches.apply()
+	patches.apply() -- the retry loop calls apply() again while other targets are missing
+	extensions.careerMP_purchaseInsurance = dofile(PURCHASE)
+	local ok, err = pcall(career_modules_vehicleShopping.sendPurchaseDataToUi)
+	same(ok, false, "the failure is raised again")
+	expect(tostring(err):find("vehicleShopping.lua:793", 1, true) ~= nil, "the game's error: " .. tostring(err))
+	same(countLines(logs, "E careerMP.purchase: purchase screen data failed: vehicleShopping.lua:793: attempt to index a nil value"),
+		1, "one failure line")
+	same(countLines(logs, "stack traceback"), 0, "no stack line in the log")
+end)
+
+test("patches.revert() puts the game's own purchase menu and purchase data functions back", function()
+	setupGame()
+	local openOriginal = career_modules_vehicleShopping.openPurchaseMenu
+	local sendOriginal = career_modules_vehicleShopping.sendPurchaseDataToUi
+	local patches = dofile(PATCHES)
+	patches.apply()
+	expect(career_modules_vehicleShopping.openPurchaseMenu ~= openOriginal, "openPurchaseMenu is guarded")
+	expect(career_modules_vehicleShopping.sendPurchaseDataToUi ~= sendOriginal, "sendPurchaseDataToUi is guarded")
+	patches.revert()
+	same(career_modules_vehicleShopping.openPurchaseMenu, openOriginal, "openPurchaseMenu after revert")
+	same(career_modules_vehicleShopping.sendPurchaseDataToUi, sendOriginal, "sendPurchaseDataToUi after revert")
+end)
+
+test("a career start that reloads the shop module gets the guard on the new module", function()
+	setupGame()
+	local patches = dofile(PATCHES)
+	patches.apply()
+	extensions.careerMP_purchaseInsurance = dofile(PURCHASE)
+	-- The career start loads the career modules again: a fresh shop module table.
+	local fresh = {}
+	for k, v in pairs(career_modules_vehicleShopping) do fresh[k] = v end
+	fresh.openPurchaseMenu = function(purchaseType, shopId, insuranceId)
+		table.insert(calls, {purchaseType = purchaseType, shopId = shopId, insuranceId = insuranceId, fresh = true})
+		return "opened"
+	end
+	career_modules_vehicleShopping = fresh
+	patches.onCareerActive(true)
+	career_modules_vehicleShopping.openPurchaseMenu("inspect", SHOP_ID)
+	same(#calls, 1, "the game's purchase menu was opened once")
+	same(calls[1].fresh, true, "the new module's purchase menu ran")
+	same(calls[1].insuranceId, -1, "insurance choice with no policies loaded")
+	same(game.reloads, 1, "reloads")
+end)
