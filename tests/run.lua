@@ -13,6 +13,7 @@ local files = {
 	"tests/join_insurance_check_test.lua",
 	"tests/connection_watch_test.lua",
 	"tests/vehicle_sync_test.lua",
+	"tests/parking_challenge_test.lua",
 	"tests/remote_vehicle_test.lua",
 	"tests/damage_sync_test.lua",
 	"tests/purchase_insurance_test.lua",
