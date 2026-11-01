@@ -269,3 +269,23 @@ test("the spare cars of a split go to the lowest player numbers, two-digit ids c
 	same(shareOf(2).parked, 4, "parked share of player 2")
 	same(shareOf(11).parked, 3, "parked share of player 11")
 end)
+
+test("a total above 400 counts as 400 once the players together would pass it", function()
+	newServer({road = 50, roadTotal = 1000})
+	for id = 0, 8 do join(id) end
+	wait(5)
+	local road = 0
+	for id = 0, 8 do road = road + shareOf(id).road end
+	same(road, 400, "road cars of 9 players at 50 each with a total of 1000")
+	same(shareOf(0).road, 45, "road share of player 0, one of the four spare cars")
+	same(shareOf(8).road, 44, "road share of player 8")
+end)
+
+test("a total smaller than the players gives one car each to the lowest ids and none to the rest", function()
+	newServer({roadTotal = 3})
+	for id = 0, 3 do join(id) end
+	wait(5)
+	same(shareOf(0).road, 1, "road share of player 0")
+	same(shareOf(2).road, 1, "road share of player 2")
+	same(shareOf(3).road, 0, "road share of player 3")
+end)
