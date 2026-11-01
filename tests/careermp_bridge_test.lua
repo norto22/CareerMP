@@ -1,12 +1,16 @@
 -- Resources/Server/CareerMP/careerMP.lua: the last CareerMP plugin, which CareerMP 0.2.0
--- servers update to. It installs the Mileage plugin and restarts into it, keeps running
--- as CareerMP when that fails, and stays off once Mileage is installed.
+-- servers update to. It holds Mileage's client mod in Mileage's server folder, installs the
+-- Mileage plugin and restarts into it, keeps running as CareerMP when that fails or while
+-- the handoff has not removed CareerMP.zip, and stays off once it has.
 
 local SOURCE = "Resources/Server/CareerMP/careerMP.lua"
 
 local RAW = "https://raw.githubusercontent.com/norto22/Mileage/main/"
 local PLUGIN_URL = RAW .. "Resources/Server/Mileage/mileage.lua"
 local VERSION_URL = RAW .. "Resources/Server/Mileage/versions/server.json"
+local CLIENT_URL = RAW .. "Resources/Client/Mileage.zip"
+local HELD_CLIENT = "Resources/Server/Mileage/Mileage.zip"
+local OLD_CLIENT = "Resources/Client/CareerMP.zip"
 local PLUGIN = "Resources/Server/Mileage/mileage.lua"
 local SERVER_VERSION = "Resources/Server/Mileage/versions/server.json"
 local OLD_CONFIG = "Resources/Server/CareerMP/config/config.json"
@@ -124,8 +128,18 @@ end
 local function mileageServed(lineage)
 	return {
 		[VERSION_URL] = string.format('{major = 0, minor = 3, revision = 0, lineage = %q}', lineage or "norto22/Mileage"),
+		[CLIENT_URL] = "mileage zip",
 		[PLUGIN_URL] = "-- Mileage",
 	}
+end
+
+-- Files under Resources/Client/ other than the CareerMP client mod.
+local function newClientFiles()
+	local found = {}
+	for path in pairs(files) do
+		if path:find("^Resources/Client/") and path ~= OLD_CLIENT then table.insert(found, path) end
+	end
+	return found
 end
 
 local function registeredEvent(name)
@@ -148,12 +162,47 @@ test("a CareerMP server installs the Mileage plugin and restarts into it", funct
 	end)
 end)
 
-test("the move fetches nothing but Mileage's version and plugin", function()
+test("the move fetches Mileage's version, then its client mod, then its plugin", function()
 	run(function()
 		start(nil, config(true, true), mileageServed())
-		same(#fetched, 2, "downloads")
+		same(#fetched, 3, "downloads")
 		same(fetched[1], VERSION_URL, "version first")
-		same(fetched[2], PLUGIN_URL, "then the plugin")
+		same(fetched[2], CLIENT_URL, "then the client mod")
+		same(fetched[3], PLUGIN_URL, "then the plugin")
+	end)
+end)
+
+test("the client mod is held in Mileage's server folder, never offered to players yet", function()
+	run(function()
+		start({[OLD_CLIENT] = "careermp zip"}, config(true, true), mileageServed())
+		same(files[HELD_CLIENT], "mileage zip", "held client mod")
+		same(#newClientFiles(), 0, "new files in Resources/Client/")
+		same(files[OLD_CLIENT], "careermp zip", "CareerMP client mod kept")
+		same(files[HELD_CLIENT .. ".download"], nil, "no download left behind")
+	end)
+end)
+
+test("when the client mod download fails nothing is installed and CareerMP keeps running", function()
+	run(function()
+		local served = mileageServed()
+		served[CLIENT_URL] = nil
+		same(start(nil, config(true, true), served), false, "willExit")
+		same(files[PLUGIN], nil, "no Mileage plugin")
+		same(writtenJson[SERVER_VERSION], nil, "no Mileage version")
+		same(files[HELD_CLIENT .. ".download"], nil, "no download left behind")
+		same(#fetched, 2, "plugin never fetched")
+		expect(registeredEvent("onPlayerJoin"), "CareerMP still handles players")
+		same(countLines(printed, "staying on CareerMP until the next start"), 1, "failure logged")
+	end)
+end)
+
+test("an empty client mod download is not held and installs no plugin", function()
+	run(function()
+		local served = mileageServed()
+		served[CLIENT_URL] = ""
+		same(start(nil, config(true, true), served), false, "willExit")
+		same(files[HELD_CLIENT], nil, "no held client mod")
+		same(files[PLUGIN], nil, "no Mileage plugin")
 	end)
 end)
 
@@ -212,11 +261,22 @@ test("with autoUpdate off nothing is fetched", function()
 	end)
 end)
 
-test("once Mileage is installed this plugin stays off", function()
+test("once Mileage is installed and CareerMP.zip is gone this plugin stays off", function()
 	run(function()
 		same(start({[PLUGIN] = "-- Mileage"}, config(true, true), mileageServed()), false, "willExit")
 		same(#registered, 0, "events registered")
 		same(#fetched, 0, "downloads")
 		same(countLines(printed, "this old plugin stays off"), 1, "logged")
+	end)
+end)
+
+test("while Mileage's handoff has not removed CareerMP.zip this plugin still runs as CareerMP", function()
+	run(function()
+		local existing = {[PLUGIN] = "-- Mileage", [OLD_CLIENT] = "careermp zip"}
+		same(start(existing, config(true, true), mileageServed()), false, "willExit")
+		expect(registeredEvent("onPlayerJoin"), "CareerMP handles players")
+		same(#fetched, 0, "downloads")
+		same(countLines(printed, "this old plugin stays off"), 0, "not off")
+		same(countLines(printed, "which is installed and takes over on its next start"), 1, "logged")
 	end)
 end)

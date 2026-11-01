@@ -36,12 +36,17 @@ local OLD_SERVER_PATH = "Resources/Server/CareerMP/"
 local OLD_PLUGIN = OLD_SERVER_PATH .. "careerMP.lua"
 local OLD_CONFIG = OLD_SERVER_PATH .. "config/config.json"
 local OLD_CLIENT = CLIENT_PATH .. "CareerMP.zip"
-local OLD_SERVER_FILES = {
-	OLD_PLUGIN,
+local OLD_VERSION_FILES = {
 	OLD_SERVER_PATH .. "versions/client.json",
 	OLD_SERVER_PATH .. "versions/server.json",
 	OLD_SERVER_PATH .. "versions/.remote.json",
 }
+-- The last CareerMP plugin downloads Mileage's client mod here, outside Resources/Client/,
+-- so BeamMP never offers it beside CareerMP.zip; the handoff moves it into place.
+local HELD_CLIENT = SERVER_PATH .. CLIENT_FILE
+-- CareerMP.zip waits here while the handoff removes the CareerMP plugin, so it can be put
+-- back if that fails.
+local SET_ASIDE_CLIENT = SERVER_PATH .. "CareerMP.zip.removed"
 
 local willExit = false
 
@@ -502,61 +507,132 @@ local function parseCommand(message, separator)
 	return command, arguments
 end
 
-local function copyFile(from, to)
-	local source = io.open(from, "rb")
-	if not source then return false end
-	local data = source:read("*a")
-	source:close()
+local function readFile(path)
+	local file = io.open(path, "rb")
+	if not file then return nil end
+	local data = file:read("*a")
+	file:close()
+	return data
+end
+
+local function moveLog(text)
+	print("[Mileage] ---------- Moving from CareerMP: " .. text)
+end
+
+-- Copies the settings through a temporary file that is read back and compared before it
+-- takes the real name, so a failed or partial copy never leaves a Mileage settings file.
+-- Returns true, or false and why.
+local function copySettings(from, to)
+	local data = readFile(from)
+	if not data then return false, "could not read " .. from end
 	local dir = to:match("(.+)/[^/]+$")
 	if dir and not FS.Exists(dir) then
 		FS.CreateDirectory(dir)
 	end
-	local target = io.open(to, "wb")
-	if not target then return false end
-	target:write(data or "")
-	target:close()
+	local tempPath = to .. ".tmp"
+	os.remove(tempPath)
+	local file = io.open(tempPath, "wb")
+	if not file then return false, "could not write " .. tempPath end
+	local written = file:write(data)
+	file:close()
+	if not written or readFile(tempPath) ~= data then
+		os.remove(tempPath)
+		return false, tempPath .. " did not read back the same as " .. from
+	end
+	if not os.rename(tempPath, to) then
+		os.remove(tempPath)
+		return false, "could not rename " .. tempPath .. " to " .. to
+	end
 	return true
 end
 
--- Finishes moving a server from CareerMP, whether its last CareerMP update installed
--- Mileage or the owner unpacked Mileage over the old files. Runs before the config loads:
---   * the CareerMP settings are copied over when Mileage has none of its own yet;
---   * the CareerMP client mod is removed, so joining players never load both mods;
---   * the CareerMP plugin and its version files are removed, so it never runs beside
---     Mileage. The old config stays where it was, for the owner to check and delete.
--- Returns true when a removed file means the server must restart to be rid of it.
-local function moveFromCareerMP()
-	local restart = false
-	local newConfig = configPath .. "config.json"
-	if not FS.Exists(newConfig) and FS.Exists(OLD_CONFIG) then
-		if copyFile(OLD_CONFIG, newConfig) then
-			print("[Mileage] ---------- Moving from CareerMP: copied the settings in " .. OLD_CONFIG .. " to " .. newConfig)
-		else
-			print("[Mileage] ---------- Moving from CareerMP: could not copy " .. OLD_CONFIG .. " to " .. newConfig .. ", starting with the default settings")
-		end
-	end
-	if FS.Exists(OLD_CLIENT) then
-		if os.remove(OLD_CLIENT) then
-			print("[Mileage] ---------- Moving from CareerMP: removed the old client mod " .. OLD_CLIENT)
-			restart = true
-		else
-			print("[Mileage] ---------- Moving from CareerMP: could not remove " .. OLD_CLIENT .. ", delete it so players do not load both mods")
-		end
-	end
-	for _, path in ipairs(OLD_SERVER_FILES) do
+-- Removes each path that exists, logging any that cannot be. Returns whether all went.
+local function removeAll(paths)
+	local all = true
+	for _, path in ipairs(paths) do
 		if FS.Exists(path) then
 			if os.remove(path) then
-				print("[Mileage] ---------- Moving from CareerMP: removed " .. path)
-				if path == OLD_PLUGIN then restart = true end
+				moveLog("removed " .. path)
 			else
-				print("[Mileage] ---------- Moving from CareerMP: could not remove " .. path .. ", delete it so CareerMP does not run beside Mileage")
+				moveLog("could not remove " .. path .. ", delete it by hand")
+				all = false
 			end
 		end
 	end
-	if FS.Exists(OLD_CONFIG) then
-		print("[Mileage] ---------- Moving from CareerMP: the old settings stay in " .. OLD_CONFIG .. "; delete " .. OLD_SERVER_PATH .. " once you no longer need them")
+	return all
+end
+
+-- Finishes moving a server from CareerMP, whether its last CareerMP update installed
+-- Mileage or the owner unpacked Mileage over the old files. Runs before anything else
+-- starts, in an order where every failure leaves CareerMP serving players:
+--   1. CareerMP's settings are copied, through a checked temporary file, when Mileage
+--      has none of its own yet.
+--   2. While CareerMP.zip is in place, Mileage's client mod must be ready: in place, held
+--      by the last CareerMP plugin, or downloaded now to the held path.
+--   3. CareerMP.zip is set aside and the CareerMP plugin removed; if the plugin cannot be
+--      removed CareerMP.zip goes back. Only then does the held client mod go into place.
+-- Leftovers from an earlier move (version files, a held or set-aside zip) are cleaned up.
+-- The old settings stay where they were, for the owner to check and delete.
+--
+-- Returns "done" when CareerMP was removed this start and the server must restart to be
+-- rid of it, "failed" when a step failed and CareerMP was left as it was, or "none".
+local function moveFromCareerMP()
+	local newConfig = configPath .. "config.json"
+	if not FS.Exists(newConfig) and FS.Exists(OLD_CONFIG) then
+		local ok, why = copySettings(OLD_CONFIG, newConfig)
+		if not ok then
+			moveLog("could not copy the settings: " .. why .. ". CareerMP stays as it was and the next start tries again")
+			return "failed"
+		end
+		moveLog("copied the settings in " .. OLD_CONFIG .. " to " .. newConfig)
 	end
-	return restart
+
+	local newClient = CLIENT_PATH .. CLIENT_FILE
+	local removedCareerMP = false
+	if FS.Exists(OLD_CLIENT) then
+		if not FS.Exists(newClient) and fileSize(HELD_CLIENT) == 0 then
+			if not downloadFile(CLIENT_URL, HELD_CLIENT) or fileSize(HELD_CLIENT) == 0 then
+				moveLog("could not download Mileage's client mod. CareerMP stays as it was and the next start tries again")
+				return "failed"
+			end
+		end
+		os.remove(SET_ASIDE_CLIENT)
+		if not os.rename(OLD_CLIENT, SET_ASIDE_CLIENT) then
+			moveLog("could not remove " .. OLD_CLIENT .. ". CareerMP stays as it was and the next start tries again")
+			return "failed"
+		end
+		if FS.Exists(OLD_PLUGIN) and not os.remove(OLD_PLUGIN) then
+			if not os.rename(SET_ASIDE_CLIENT, OLD_CLIENT) then
+				moveLog("could not put " .. OLD_CLIENT .. " back from " .. SET_ASIDE_CLIENT .. "; move it back by hand")
+			end
+			moveLog("could not remove " .. OLD_PLUGIN .. ". CareerMP stays as it was; delete the file by hand, or the next start tries again")
+			return "failed"
+		end
+		moveLog("removed the old client mod " .. OLD_CLIENT .. " and the CareerMP plugin")
+		removedCareerMP = true
+	elseif FS.Exists(OLD_PLUGIN) then
+		-- CareerMP.zip is already gone, so CareerMP serves no players; this plugin is only
+		-- left over, and a restart is needed only when it might have run this start.
+		removedCareerMP = removeAll({OLD_PLUGIN})
+	end
+
+	if FS.Exists(HELD_CLIENT) then
+		if FS.Exists(newClient) then
+			os.remove(HELD_CLIENT)
+		elseif os.rename(HELD_CLIENT, newClient) then
+			moveLog("put Mileage's client mod in place at " .. newClient)
+		else
+			moveLog("could not move " .. HELD_CLIENT .. " to " .. newClient .. "; Mileage's update check downloads it instead")
+		end
+	end
+	local leftovers = {SET_ASIDE_CLIENT}
+	for _, path in ipairs(OLD_VERSION_FILES) do table.insert(leftovers, path) end
+	removeAll(leftovers)
+
+	if removedCareerMP and FS.Exists(OLD_CONFIG) then
+		moveLog("the old settings stay in " .. OLD_CONFIG .. "; delete " .. OLD_SERVER_PATH .. " once you no longer need them")
+	end
+	return removedCareerMP and "done" or "none"
 end
 
 local function prepareConfig()
@@ -622,6 +698,27 @@ function onInit()
 
 	print("[Mileage] ---------- Mileage Loading...")
 
+	-- While CareerMP is still installed it serves players, so a handoff start runs none
+	-- of Mileage's features, writes no settings and checks for no update.
+	local handoff = moveFromCareerMP()
+	if handoff == "failed" then
+		moveLog("Mileage did not start, CareerMP keeps serving players until the move succeeds on a later start")
+		return
+	end
+	if handoff == "done" then
+		local settings = ReadJson(configPath .. "config.json")
+		if not (settings and settings.server and settings.server.autoExit == false) then
+			moveLog("restarting to finish the move")
+			willExit = true
+			-- tick is what shuts the server down.
+			MP.RegisterEvent("tick","tick")
+			MP.CreateEventTimer("tick", 1000)
+		else
+			moveLog("restart the server to finish the move")
+		end
+		return
+	end
+
 	MP.RegisterEvent("perPartPainting","perPartPaintingHandler")
 	MP.RegisterEvent("requestPartPaints","requestPartPaintsHandler")
 
@@ -664,18 +761,7 @@ function onInit()
 	MP.RegisterEvent("tick","tick")
 	MP.CreateEventTimer("tick", 1000)
 
-	local movedFromCareerMP = moveFromCareerMP()
-
 	prepareConfig()
-
-	if movedFromCareerMP then
-		if Config.server.autoExit then
-			print("[Mileage] ---------- Moving from CareerMP: restarting to finish the move")
-			willExit = true
-		else
-			print("[Mileage] ---------- Moving from CareerMP: restart the server to finish the move")
-		end
-	end
 
 	if Config.server.autoUpdate then
 		checkForUpdates()

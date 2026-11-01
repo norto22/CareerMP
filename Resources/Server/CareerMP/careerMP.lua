@@ -3,10 +3,11 @@
 --Thanks to Bouboule, and Lion and Luuk from BeamPaint, for http request examples
 --
 --CareerMP is now Mileage. This is the last CareerMP plugin: CareerMP 0.2.0 plus
---moveToMileage, which installs the Mileage plugin on a server that updates from here.
---Mileage then carries the settings over and removes CareerMP on its first start. Until
---the move succeeds this plugin keeps running as CareerMP 0.2.0. Fresh installs never
---get this file; the release package ships Mileage only.
+--moveToMileage, which installs Mileage on a server that updates from here: its client
+--mod, held in Mileage's server folder, then its plugin. Mileage then carries the settings
+--over and removes CareerMP on its first start. Until Mileage has removed CareerMP.zip
+--this plugin keeps running as CareerMP 0.2.0. Fresh installs never get this file; the
+--release package ships Mileage only.
 --
 --This file touches no game Lua -- it is pure BeamMP API (MP.*, Util.*, FS.*) -- so it
 --does not depend on the BeamNG.drive version. The drag relay carries BeamNG's own
@@ -44,7 +45,11 @@ local MILEAGE_DIR = "Resources/Server/Mileage"
 local MILEAGE_PATH = MILEAGE_DIR .. "/"
 local MILEAGE_PLUGIN = MILEAGE_PATH .. "mileage.lua"
 local MILEAGE_SERVER_VERSION = MILEAGE_PATH .. "versions/server.json"
+-- Mileage's client mod waits here, outside Resources/Client/, so BeamMP never offers it
+-- to players beside CareerMP.zip. Mileage's handoff moves it into place.
+local MILEAGE_HELD_CLIENT = MILEAGE_PATH .. "Mileage.zip"
 local MILEAGE_PLUGIN_URL = MILEAGE_RAW .. MILEAGE_PLUGIN
+local MILEAGE_CLIENT_URL = MILEAGE_RAW .. CLIENT_PATH .. "Mileage.zip"
 local MILEAGE_VERSION_URL = MILEAGE_RAW .. MILEAGE_SERVER_VERSION
 
 local willExit = false
@@ -565,9 +570,10 @@ local function prepareConfig()
 	print("[CareerMP] ---------- CareerMP Config Loaded!")
 end
 
--- Installs the Mileage plugin and restarts into it, when autoExit allows. Only the plugin
--- and its server version are fetched: Mileage downloads its own client mod, copies the
--- CareerMP settings and removes CareerMP's files on its first start. Anything that fails
+-- Installs Mileage and restarts into it, when autoExit allows. Mileage's client mod is
+-- held in Mileage's server folder and its plugin installed last, so a plugin on disk
+-- always has its client mod beside it. Mileage copies the CareerMP settings, moves the
+-- client mod into place and removes CareerMP on its first start. Anything that fails
 -- leaves the server as it was, still running CareerMP, and the next start tries again.
 local function moveToMileage()
 	print("[CareerMP] ---------- CareerMP is now Mileage, installing Mileage...")
@@ -586,9 +592,11 @@ local function moveToMileage()
 			FS.CreateDirectory(dir)
 		end
 	end
-	if not downloadFile(MILEAGE_PLUGIN_URL, MILEAGE_PLUGIN) then
-		print("[CareerMP] ---------- Moving to Mileage: could not download " .. MILEAGE_PLUGIN_URL .. ", staying on CareerMP until the next start")
-		return false
+	for _, download in ipairs({{MILEAGE_CLIENT_URL, MILEAGE_HELD_CLIENT}, {MILEAGE_PLUGIN_URL, MILEAGE_PLUGIN}}) do
+		if not downloadFile(download[1], download[2]) then
+			print("[CareerMP] ---------- Moving to Mileage: could not download " .. download[1] .. ", staying on CareerMP until the next start")
+			return false
+		end
 	end
 	WriteJson(MILEAGE_SERVER_VERSION, remote)
 	print("[CareerMP] ---------- Moving to Mileage: installed Mileage " .. describeVersion(remote) .. " in " .. MILEAGE_PATH)
@@ -603,9 +611,11 @@ end
 
 function onInit()
 
-	-- On the first start with Mileage installed, Mileage removes this file. Until then
-	-- this plugin does nothing, so CareerMP never runs beside Mileage.
-	if FS.Exists(MILEAGE_PLUGIN) then
+	-- Mileage's handoff removes CareerMP.zip only once Mileage's settings and client mod
+	-- are in place, and Mileage starts nothing while CareerMP.zip is there. So CareerMP
+	-- serves players until then, and stays off after, never beside Mileage.
+	local mileageInstalled = FS.Exists(MILEAGE_PLUGIN)
+	if mileageInstalled and not FS.Exists(CLIENT_PATH .. CLIENT_FILE) then
 		print("[CareerMP] ---------- CareerMP is now Mileage, which is installed; this old plugin stays off and Mileage removes it")
 		return
 	end
@@ -657,7 +667,9 @@ function onInit()
 	prepareConfig()
 
 	-- Updates now come only as Mileage, so the move takes the update check's place.
-	if Config.server.autoUpdate then
+	if mileageInstalled then
+		print("[CareerMP] ---------- CareerMP is now Mileage, which is installed and takes over on its next start")
+	elseif Config.server.autoUpdate then
 		moveToMileage()
 	end
 
