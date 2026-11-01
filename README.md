@@ -11,7 +11,7 @@ CareerMP does not change the base game's career or replace it with a multiplayer
 - Local saves: continue on any CareerMP server, or take an online save offline and back
 - Mod vehicles the base game supports in career can appear in traffic and at dealerships
 - Longer vehicle render distance, so players show on the big map
-- Road traffic with police, and parked cars, as in the single-player career: each player spawns the server's amount, every player sees everyone's traffic, and missions, challenges and scenarios add their own
+- Road traffic with police, and parked cars, as in the single-player career: each player spawns a share of the server's traffic total, every player sees everyone's traffic, and missions, challenges and scenarios add their own
 - Traffic signals synced for every player
 - Red-light camera and speed trap announcements for cars that players drive
 - Head-to-head drag racing between players on one synchronised tree, using the game's own multiplayer drag code (`client.nativeDragSyncEnabled`, on by default)
@@ -49,14 +49,21 @@ Edit `Resources/Server/CareerMP/config/config.json`, or use the server console. 
 
 <img width="1098" height="155" alt="image" src="https://github.com/user-attachments/assets/ffe64e84-09db-4894-8338-3835dbad39ac" />
 
-`CareerMP SetConfig <section> <key> <value>` changes one setting, saves the file and sends the `client` section to every connected player; traffic amounts take effect at a player's next career start. On every start the server adds any setting missing from the file with its default and removes settings it does not know. It never changes a value you set, so an update does not switch traffic on or off on an existing server.
+`CareerMP SetConfig <section> <key> <value>` changes one setting, saves the file and sends the `client` section to every connected player. A changed traffic amount, switch or total changes each player's share within a few seconds; a share that grows only brings back cars that player's game spawned at its career start, and the rest arrive at their next career start. On every start the server adds any setting missing from the file with its default and removes settings it does not know. It never changes a value you set, so an update does not switch traffic on or off on an existing server.
 
 ### Traffic
-Every player spawns their own road and parked traffic, and every other player sees and can hit those same cars. Players therefore see the sum of everyone's traffic: with the defaults, two players share 12 road cars and 16 parked cars. Raise the amounts carefully on busy servers; three or more players have not been tried yet.
+Every player spawns their own road and parked traffic, and every other player sees and can hit those same cars. Players therefore see the sum of everyone's traffic, and every traffic car is a multiplayer car the server passes on to everyone, so traffic is most of what a busy server carries.
 
-Each amount is a whole number from 0 to 50. A value outside that range, or not a number, is held to 0 or 50 and the game console logs a warning. When road traffic has at least 3 cars, about a quarter of them are police, with the pursuits and fines of the single-player career. A new server starts with road traffic on at 6 and parked traffic on at 8. On joining, the game console logs `careerMP.traffic: applying server traffic` with the amounts used and `careerMP.traffic: traffic ready` with the cars the game spawned.
+The server therefore keeps the traffic of all players near one total, `server.roadTrafficTotal` driving and `server.parkedTrafficTotal` parked cars (18 and 24 on a new server, and added at those values to an existing server's config). Each player spawns `client.roadTrafficAmount` and `parkedTrafficAmount` until the players together would pass the total; from then on the total is split evenly between them, one spare car each to the lowest player ids. With the defaults one to three players see today's 6 driving and 8 parked cars each; four players get 5, 5, 4 and 4 driving and 6 parked each; eight get 2 or 3 driving and 3 parked each. When someone joins, the others' shares shrink at once and some of their traffic cars quietly disappear; when someone leaves, the shares grow again after 3 seconds, up to the cars each game spawned at its career start. A total of 0 means no limit, as before this setting. The game console logs `careerMP: traffic share from the server` and `careerMP.traffic: traffic share changed` when a share changes.
+
+Each amount is a whole number from 0 to 50, and each total from 0 to 400. A value outside that range is held to the nearest end, and one that is not a number counts as 0. When road traffic has at least 3 cars, about a quarter of them are police, with the pursuits and fines of the single-player career. On joining, the game console logs `careerMP.traffic: applying server traffic` with the amounts used and `careerMP.traffic: traffic ready` with the cars the game spawned.
+
+To save more, CareerMP's game files send the position of a parked car standing still once a second instead of up to 50 times, and of driving traffic more than 500 m from every other player's car twice a second. Hidden cars send none. The car a player drives, the player's other cars, traffic near other players and a parked car that moves are sent as often as BeamMP sends them. The game console logs `careerMP.positionRate: position check active` once the check is in place, or that `positionGE.sendVehiclePosRot` is missing, in which case BeamMP sends every position as before.
 
 Every traffic car counts against BeamMP's `MaxCars`, so set it to at least `roadTrafficAmount + parkedTrafficAmount` plus the player's own cars; 100 leaves plenty of room with the defaults.
+
+### What the server sends
+`CareerMP Stats` in the server console shows where the server's effort goes. For each part of CareerMP (`damage`, `carStates`, `trafficMarks`, `trafficShare`, `paint`, `prefabs`, `drag`, `payments`, `alive`, `trafficLights`, `notifications`, `config`) it lists the messages received, the messages sent, how many players they reached and the bytes sent, for the last 60 seconds and since the server started. Below that it lists the players, the cars on the server with how many are traffic or parked, the traffic totals and each player's share. `CareerMP Stats reset` starts the since-start counts again, for example before and after a change. The positions of cars are BeamMP's own and are not counted; the number of cars stands in for them.
 
 The `extraTrafficAmount` and `extraTrafficEnabled` settings of earlier versions were never used by the game. The server removes them from the file on its next start and logs that it did; `SetConfig` no longer accepts them.
 
@@ -66,9 +73,9 @@ Sent to every player when they join.
 | Setting | Default | What it does for players |
 |---|---|---|
 | `roadTrafficEnabled` | `true` | Road traffic, police included, on or off. Off spawns none. |
-| `roadTrafficAmount` | `6` | Road cars each player spawns, 0 to 50. |
+| `roadTrafficAmount` | `6` | Road cars each player spawns, 0 to 50, until the players together reach `server.roadTrafficTotal`. |
 | `parkedTrafficEnabled` | `true` | Parked cars in car parks and at the roadside on or off. Off spawns none. |
-| `parkedTrafficAmount` | `8` | Parked cars each player spawns, 0 to 50. |
+| `parkedTrafficAmount` | `8` | Parked cars each player spawns, 0 to 50, until the players together reach `server.parkedTrafficTotal`. |
 | `trafficSimpleVehicles` | `true` | Traffic uses the game's simple, lighter car models. |
 | `trafficAllowMods` | `false` | Mod vehicles may appear in traffic. |
 | `trafficSmartSelections` | `true` | The game picks traffic models that suit the map, as in single player. |
@@ -101,6 +108,8 @@ Used by the server only.
 | `longWindowSeconds` | `300` | Length of the long sending window, in seconds. |
 | `sessionSendingMax` | `100000` | Most money a player may send in one server session. |
 | `sessionReceiveMax` | `200000` | Most money a player may receive in one server session. |
+| `roadTrafficTotal` | `18` | Road cars across the whole server, 0 to 400, split between players once they would pass it; 0 means no limit (see [Traffic](#traffic)). |
+| `parkedTrafficTotal` | `24` | Parked cars across the whole server, 0 to 400, split the same way; 0 means no limit. |
 
 ## Notes
 CareerMP uses the base game's career, so it runs on West Coast, USA only.
