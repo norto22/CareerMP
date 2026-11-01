@@ -199,6 +199,19 @@ test("the server plugin sends nothing except through its counting helpers", func
 	same(direct, 2, "direct sends in the plugin")
 end)
 
+-- Lua allows 200 local names in a function at once, the plugin's main chunk included,
+-- and the plugin must stay one file for the updater. Its sections keep their names in
+-- blocks; this keeps room for more.
+test("the server plugin's main chunk leaves room for 40 more local names", function()
+	local file = assert(io.open(SOURCE, "r"))
+	local text = file:read("*a")
+	file:close()
+	local names = {}
+	for i = 1, 40 do names[i] = "spare" .. i end
+	local chunk, err = (loadstring or load)("local " .. table.concat(names, ", ") .. "\n" .. text)
+	expect(chunk ~= nil, "plugin with 40 more locals does not load: " .. tostring(err))
+end)
+
 --== the readout =============================================================
 
 test("Stats prints the 60 s window and the since-start totals, and older counts leave the window only", function()

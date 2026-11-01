@@ -171,6 +171,38 @@ mileageOffersApp.controller('MileageOffers', ['$scope', function ($scope) {
 		$scope.race = null;
 	};
 
+	//== the server leaderboard =================================================
+
+	$scope.leaderboard = null;
+
+	$scope.$on('MileageLeaderboard', function (event, data) {
+		if (!data) return;
+		$scope.$evalAsync(function () {
+			var wins = (Array.isArray(data.wins) ? data.wins : []).map(function (entry, i) {
+				return {place: i + 1, name: String(entry.name), value: String(Number(entry.wins) || 0)};
+			});
+			var strips = Object.keys(data.drag || {}).sort().map(function (stripId) {
+				var runs = Array.isArray(data.drag[stripId]) ? data.drag[stripId] : [];
+				return {
+					name: String(stripId),
+					rows: runs.map(function (run, i) {
+						return {place: i + 1, name: String(run.name), value: (Number(run.et) || 0).toFixed(2) + " s",
+							extra: Math.round((Number(run.trap) || 0) * 3.6) + " km/h"};
+					}),
+				};
+			});
+			$scope.leaderboard = {tab: $scope.leaderboard ? $scope.leaderboard.tab : "wins", wins: wins, strips: strips};
+		});
+	});
+
+	$scope.showTab = function (tab) {
+		if ($scope.leaderboard) $scope.leaderboard.tab = tab;
+	};
+
+	$scope.closeLeaderboard = function () {
+		$scope.leaderboard = null;
+	};
+
 	// Redraws the time bars.
 	var ticker = setInterval(function () {
 		if ($scope.offers.length > 0) $scope.$evalAsync(function () {});

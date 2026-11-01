@@ -164,7 +164,7 @@ local ledger = {
 
 local STATS_SECONDS = 60
 local STATS_FEATURES = {"damage", "carStates", "trafficMarks", "trafficShare", "paint", "prefabs", "drag",
-	"payments", "transfers", "offers", "races", "alive", "trafficLights", "notifications", "config"}
+	"payments", "transfers", "offers", "races", "leaderboard", "alive", "trafficLights", "notifications", "config"}
 
 -- totals[feature] and slots[second % STATS_SECONDS].counts[feature]:
 -- {received, sent, recipients, bytes}.
@@ -748,12 +748,18 @@ local function serverSwitch(key)
 	return Config ~= nil and Config.server ~= nil and Config.server[key] == true
 end
 
+-- The money, racing, leaderboard and event sections below each sit in their own block and
+-- share only what they must through this table, which keeps the plugin's main chunk
+-- under Lua's limit of 200 local names. Money.start loads their data on a server start.
+local Money = {}
+
 --== Data files ==============================================================
 -- What Mileage keeps about players between server starts: unfinished money transfers,
 -- races holding stakes, the leaderboard and a scheduled event. Each file is written to
 -- <name>.tmp and renamed over <name>, so a crash mid-write never leaves a half-written
 -- file in place. A file that does not read is moved aside and never overwritten.
 
+do
 local DATA_PATH = SERVER_PATH .. "data/"
 
 -- Names whose file could not be read nor moved aside: never written, so it is kept.
@@ -824,8 +830,8 @@ local function writeData(name, value)
 	return true
 end
 
--- Set by the sections below the handlers: each loads its data file and its state.
-local startMoneyFeatures
+Money.readData, Money.writeData = readData, writeData
+end
 
 function onInit()
 
@@ -860,6 +866,8 @@ function onInit()
 	MP.RegisterEvent("mileageOffer","mileageOffer")
 	MP.RegisterEvent("mileageOfferAnswer","mileageOfferAnswer")
 	MP.RegisterEvent("mileageRaceReport","mileageRaceReport")
+	MP.RegisterEvent("mileageDragTime","mileageDragTime")
+	MP.RegisterEvent("mileageLeaderboard","mileageLeaderboard")
 
 	MP.RegisterEvent("careerPrefabSync","careerPrefabSync")
 	MP.RegisterEvent("careerSyncRequested","careerSyncRequested")
@@ -895,12 +903,13 @@ function onInit()
 	MP.RegisterEvent("Help","Help")
 	MP.RegisterEvent("Stats","Stats")
 	MP.RegisterEvent("Transfers","Transfers")
+	MP.RegisterEvent("Leaderboard","Leaderboard")
 
 	MP.RegisterEvent("tick","tick")
 	MP.CreateEventTimer("tick", 1000)
 
 	prepareConfig()
-	startMoneyFeatures()
+	Money.start()
 
 	if Config.server.autoUpdate then
 		checkForUpdates()
@@ -1028,6 +1037,9 @@ end
 -- transferData = {seq, transfers = {[id] = transfer}, settled = {[name] = {id, ...}}}
 -- transfer = {id, kind, from, to, amount, labels = {take, give}, state, created, race, role}
 -- state: "taking" (waiting for the payer's receipt) or "giving" (for the receiver's).
+
+do
+local readData, writeData = Money.readData, Money.writeData
 
 local SERVER_PARTY = "server"
 local TRANSFER_RESEND_SECONDS = 10
@@ -1232,9 +1244,6 @@ local function ageText(seconds)
 	return math.floor(seconds / 86400) .. " days"
 end
 
--- Set by the race section: prints the races still holding stakes.
-local printRaces
-
 function Transfers(arguments)
 	local ids = {}
 	for id in pairs(transferData.transfers) do table.insert(ids, id) end
@@ -1249,13 +1258,30 @@ function Transfers(arguments)
 			transfer.state == "taking" and "waiting to take from" or "waiting to give to",
 			consoleText(waitingOn(transfer))))
 	end
-	if printRaces then printRaces() end
+	-- Set by the race section: the races still holding stakes.
+	if Money.printRaces then Money.printRaces() end
+end
+
+Money.SERVER = SERVER_PARTY
+Money.transferOwners = transferOwners
+Money.startTransfer = startTransfer
+Money.playerIdByName = playerIdByName
+Money.careerStarted = careerStarted
+Money.transfersCareerStarted = transfersCareerStarted
+Money.transfersTick = transfersTick
+Money.loadTransfers = loadTransfers
+Money.ageText = ageText
+-- The unfinished transfers by id, as they stand now.
+Money.openTransfers = function() return transferData.transfers end
 end
 
 --== Payments ================================================================
 -- A player pays another from the player list. The server checks the amount, the target
 -- and the sender's limits, then pays it as a transfer. A payment the server turns down
 -- bounces (rxBounce) or is denied (rxDeny) before any money moves.
+
+do
+local startTransfer, playerIdByName = Money.startTransfer, Money.playerIdByName
 
 -- The sender's game shows why a payment did not go: why is "limit" (the default), or
 -- "money" when the sender's game refused to take it.
@@ -1289,12 +1315,13 @@ function payPlayer(player_id, data)
 	})
 end
 
-function transferOwners.payment(transfer, event)
+function Money.transferOwners.payment(transfer, event)
 	if event ~= "refused" then return end
 	local id = playerIdByName(transfer.from)
 	if id then
 		bounce(id, {money = transfer.amount, target_player_name = transfer.to}, "money")
 	end
+end
 end
 
 --== Offers ==================================================================
@@ -1306,6 +1333,9 @@ end
 --
 -- offers[id] = {id, kind, from, to (player ids), fromName, toName, amount, finish, start,
 -- expires}
+
+do
+local startTransfer, careerStarted = Money.startTransfer, Money.careerStarted
 
 local OFFER_SECONDS = 60
 local offers = {}
@@ -1380,10 +1410,8 @@ local function refuseOffer(player_id, offer, why)
 		why = why, text = OFFER_TEXT[why] or why})
 end
 
--- Set by the race section: whether a player is in a race (or holding stakes for one),
--- and how a race starts from an accepted challenge.
-local inRace
-local startRace
+-- Money.inRace(name) and Money.startRace(offer) are set by the race section: whether a
+-- player is in a race, and how a race starts from an accepted challenge.
 
 -- Why player_id may not make this offer, or nil.
 local function offerProblem(player_id, offer)
@@ -1411,6 +1439,7 @@ local function offerProblem(player_id, offer)
 	if offer.amount > serverNumber("raceStakeMax", 0, 1000000) then return "stakeMax" end
 	if not isPoint(offer.finish) or not isPoint(offer.start) then return "finish" end
 	if distance(offer.start, offer.finish) < serverNumber("raceMinDistance", 0, 20000) then return "distance" end
+	local inRace = Money.inRace
 	if inRace and (inRace(MP.GetPlayerName(player_id)) or inRace(MP.GetPlayerName(target))) then return "busy" end
 	return nil
 end
@@ -1450,16 +1479,14 @@ function mileageOffer(player_id, data)
 		amount = open.amount, expires = OFFER_SECONDS})
 end
 
--- Set by the events section: answers to an event invitation, which carry the event id.
-local answerEvent
-
--- The target answers {id, accept}. A request accepted is paid by the answering player
+-- The target answers {id, accept}. Money.answerEvent, set by the events section, takes
+-- the answers to an event invitation, which carry the event id. A request accepted is paid by the answering player
 -- through a transfer, within their sending limits; a challenge accepted starts the race.
 function mileageOfferAnswer(player_id, data)
 	received("offers")
 	local answer = decodeTable(data)
 	if not answer or type(answer.id) ~= "string" then return end
-	if answerEvent and answerEvent(player_id, answer) then return end
+	if Money.answerEvent and Money.answerEvent(player_id, answer) then return end
 	local offer = offers[answer.id]
 	if not offer or offer.to ~= player_id then return end
 	if answer.accept ~= true then
@@ -1489,7 +1516,7 @@ function mileageOfferAnswer(player_id, data)
 		return
 	end
 	closeOffer(offer, "accepted")
-	if startRace then startRace(offer) end
+	if Money.startRace then Money.startRace(offer) end
 end
 
 -- Offers past their time, and offers of a feature the owner switched off.
@@ -1514,6 +1541,13 @@ local function offersPlayerLeft(player_id)
 	end
 end
 
+Money.sendFeatures = sendFeatures
+Money.isPoint = isPoint
+Money.offersTick = offersTick
+Money.offersPlayerLeft = offersPlayerLeft
+Money.clearOffers = function() offers = {} end
+end
+
 --== Races ===================================================================
 -- A street race between two players, from an accepted challenge to its payout.
 --
@@ -1536,6 +1570,11 @@ end
 -- Leaving or giving up before the countdown calls the race off (stakes back); from the
 -- countdown on it loses the stake to the other racer, and both leaving returns both.
 
+do
+local readData, writeData, startTransfer = Money.readData, Money.writeData, Money.startTransfer
+local playerIdByName, ageText, isPoint = Money.playerIdByName, Money.ageText, Money.isPoint
+local SERVER_PARTY = Money.SERVER
+
 local RACES_FILE = "races.json"
 local STAKE_SECONDS = 15
 local START_SECONDS = 15
@@ -1548,9 +1587,6 @@ local racesData = {seq = 0, races = {}}
 local liveRaces = {}
 -- When each pair of players last earned the server prize, by "a|b" in name order.
 local prizeEarnedAt = {}
-
--- Set by the leaderboard section: counts a race win.
-local leaderboardWin
 
 local function saveRaces()
 	return writeData(RACES_FILE, racesData)
@@ -1610,7 +1646,7 @@ end
 -- transfer being finished right now.
 local function openRaceTransfers(race, skip)
 	local open = {}
-	for id, transfer in pairs(transferData.transfers) do
+	for id, transfer in pairs(Money.openTransfers()) do
 		if transfer.race == race.id and id ~= skip then open[transfer.role or id] = transfer end
 	end
 	return open
@@ -1681,7 +1717,8 @@ local function finishRace(race, winner, why, finished)
 	end
 	race.prize = prize
 	decide(race, winner and ("winner:" .. winner) or "refund")
-	if winner and finished and leaderboardWin then leaderboardWin(winner) end
+	-- Set by the leaderboard section: counts a race win.
+	if winner and finished and Money.leaderboardWin then Money.leaderboardWin(winner) end
 	for _, name in ipairs({race.a, race.b}) do
 		sendRace(name, {race = race.id, phase = "result", winner = winner, why = why, times = live.reports,
 			stake = race.stake, pot = race.pot, prize = prize, you = name, other = otherRacer(race, name),
@@ -1691,7 +1728,7 @@ local function finishRace(race, winner, why, finished)
 end
 
 -- Whether name is in a race that has not ended.
-inRace = function(name)
+Money.inRace = function(name)
 	for id, live in pairs(liveRaces) do
 		local race = racesData.races[id]
 		if race and (race.a == name or race.b == name) then return true end
@@ -1708,7 +1745,7 @@ local function beginStart(race)
 	sendRace(race.a, {race = race.id, phase = "pose", other = race.b})
 end
 
-startRace = function(offer)
+Money.startRace = function(offer)
 	racesData.seq = racesData.seq + 1
 	local race = {
 		id = "r" .. racesData.seq,
@@ -1739,7 +1776,7 @@ startRace = function(offer)
 end
 
 -- Stakes and payouts of a race report here, before the transfer itself moves on.
-function transferOwners.race(transfer, event)
+function Money.transferOwners.race(transfer, event)
 	local race = racesData.races[transfer.race]
 	if not race then return end
 	if transfer.kind == "stake" then
@@ -1767,9 +1804,6 @@ function transferOwners.race(transfer, event)
 	end
 end
 
--- Set by the events section: reports about an event's race.
-local eventRaceReport
-
 -- A racer's game reports: {race, pose = {pos, dir, up}} (the challenger, for the start),
 -- {race, ready = true} (the challenged, beside it), {race, failed = why},
 -- {race, finished = seconds} or {race, gaveUp = true}.
@@ -1777,7 +1811,8 @@ function mileageRaceReport(player_id, data)
 	received("races")
 	local report = decodeTable(data)
 	if not report or type(report.race) ~= "string" then return end
-	if eventRaceReport and eventRaceReport(player_id, report) then return end
+	-- Set by the events section: reports about an event's race.
+	if Money.eventRaceReport and Money.eventRaceReport(player_id, report) then return end
 	local race = racesData.races[report.race]
 	local live = liveRaces[report.race]
 	local name = MP.GetPlayerName(player_id)
@@ -1881,7 +1916,7 @@ local function loadRaces()
 	for _, race in pairs(racesData.races) do settleRace(race) end
 end
 
-printRaces = function()
+Money.printRaces = function()
 	local ids = {}
 	for id in pairs(racesData.races) do table.insert(ids, id) end
 	table.sort(ids)
@@ -1894,10 +1929,142 @@ printRaces = function()
 	end
 end
 
-startMoneyFeatures = function()
-	loadTransfers()
-	offers = {}
-	loadRaces()
+Money.racesTick = racesTick
+Money.racesPlayerLeft = racesPlayerLeft
+Money.loadRaces = loadRaces
+end
+
+--== Leaderboard =============================================================
+-- Race wins counted by the server, and each player's best drag run per strip, reported
+-- by the racer's own game once the game's drag result is in. Kept in
+-- data/leaderboard.json: {wins = {[name] = count}, drag = {[stripId] = {[name] = {et,
+-- trap, at}}}}. Any player can ask for the top LEADERBOARD_TOP of each.
+
+do
+local readData, writeData = Money.readData, Money.writeData
+
+local LEADERBOARD_FILE = "leaderboard.json"
+local LEADERBOARD_TOP = 10
+local LEADERBOARD_STRIPS_MAX = 50
+local DRAG_ET_MIN, DRAG_ET_MAX = 3, 60
+local DRAG_TRAP_MAX = 200
+
+local leaderboard = {wins = {}, drag = {}}
+
+local function saveLeaderboard()
+	return writeData(LEADERBOARD_FILE, leaderboard)
+end
+
+Money.leaderboardWin = function(name)
+	leaderboard.wins[name] = (tonumber(leaderboard.wins[name]) or 0) + 1
+	saveLeaderboard()
+end
+
+local function validStripId(strip)
+	return type(strip) == "string" and #strip >= 1 and #strip <= 64 and strip:match("^[%w_%-%. ]+$") ~= nil
+end
+
+-- A racer's game reports its own finished drag run: {strip, et, trap}. Only a faster
+-- run than the player's best on that strip is kept.
+function mileageDragTime(player_id, data)
+	received("leaderboard")
+	local run = decodeTable(data)
+	if not run or not validStripId(run.strip) then return end
+	local et, trap = run.et, run.trap
+	if type(et) ~= "number" or et ~= et or et < DRAG_ET_MIN or et > DRAG_ET_MAX then return end
+	if type(trap) ~= "number" or trap ~= trap or trap < 0 or trap > DRAG_TRAP_MAX then trap = 0 end
+	local name = MP.GetPlayerName(player_id)
+	if not name then return end
+	local strip = leaderboard.drag[run.strip]
+	if not strip then
+		local count = 0
+		for _ in pairs(leaderboard.drag) do count = count + 1 end
+		if count >= LEADERBOARD_STRIPS_MAX then return end
+		strip = {}
+		leaderboard.drag[run.strip] = strip
+	end
+	local best = strip[name]
+	if best and tonumber(best.et) and best.et <= et then return end
+	strip[name] = {et = et, trap = trap, at = os.time()}
+	saveLeaderboard()
+end
+
+-- {wins = {{name, wins}...}, drag = {[stripId] = {{name, et, trap}...}}}, each sorted and
+-- cut to LEADERBOARD_TOP.
+local function leaderboardTop()
+	local wins = {}
+	for name, count in pairs(leaderboard.wins) do table.insert(wins, {name = name, wins = tonumber(count) or 0}) end
+	table.sort(wins, function(a, b)
+		if a.wins ~= b.wins then return a.wins > b.wins end
+		return a.name < b.name
+	end)
+	for i = #wins, LEADERBOARD_TOP + 1, -1 do wins[i] = nil end
+	local drag = {}
+	for stripId, runs in pairs(leaderboard.drag) do
+		local list = {}
+		for name, run in pairs(runs) do
+			if tonumber(run.et) then table.insert(list, {name = name, et = run.et, trap = tonumber(run.trap) or 0}) end
+		end
+		table.sort(list, function(a, b)
+			if a.et ~= b.et then return a.et < b.et end
+			return a.name < b.name
+		end)
+		for i = #list, LEADERBOARD_TOP + 1, -1 do list[i] = nil end
+		if #list > 0 then drag[stripId] = list end
+	end
+	return {wins = wins, drag = drag}
+end
+
+function mileageLeaderboard(player_id)
+	received("leaderboard")
+	sendJson("leaderboard", player_id, "rxMileageLeaderboard", leaderboardTop())
+end
+
+local function loadLeaderboard()
+	local stored = readData(LEADERBOARD_FILE)
+	leaderboard = {wins = {}, drag = {}}
+	if stored then
+		leaderboard.wins = type(stored.wins) == "table" and stored.wins or {}
+		leaderboard.drag = type(stored.drag) == "table" and stored.drag or {}
+	end
+end
+
+function Leaderboard(arguments)
+	local argument = arguments and arguments[1]
+	if argument == "reset" then
+		leaderboard = {wins = {}, drag = {}}
+		saveLeaderboard()
+		print("[Mileage] Leaderboard reset")
+		return
+	elseif argument ~= nil then
+		print("Usage: Mileage Leaderboard [reset]")
+		return
+	end
+	local top = leaderboardTop()
+	print("[Mileage] Leaderboard - race wins")
+	for i, entry in ipairs(top.wins) do
+		print(string.format("  %2d. %s: %d", i, consoleText(entry.name), entry.wins))
+	end
+	local strips = {}
+	for stripId in pairs(top.drag) do table.insert(strips, stripId) end
+	table.sort(strips)
+	for _, stripId in ipairs(strips) do
+		print("[Mileage] Leaderboard - best drag times at " .. consoleText(stripId))
+		for i, entry in ipairs(top.drag[stripId]) do
+			print(string.format("  %2d. %s: %.3f s, %.0f km/h", i, consoleText(entry.name), entry.et, entry.trap * 3.6))
+		end
+	end
+end
+
+Money.loadLeaderboard = loadLeaderboard
+end
+
+-- Loads what the money, racing, leaderboard and event sections keep between starts.
+Money.start = function()
+	Money.loadTransfers()
+	Money.clearOffers()
+	Money.loadRaces()
+	Money.loadLeaderboard()
 end
 
 --== Drag racing relay =======================================================
@@ -2304,7 +2471,7 @@ function careerSyncRequested(player_id, data)
 	local joined = counted and not counted.counted
 	if joined then counted.counted = true end
 	sendJson("config", player_id, "rxCareerSync", settingsFor(player_id))
-	sendFeatures(player_id)
+	Money.sendFeatures(player_id)
 	if joined then
 		sendShares(true)
 		sharesChanged()
@@ -2318,7 +2485,7 @@ function careerSyncRequested(player_id, data)
 		entry.settingsRequestedAt = signalTimer:GetCurrent()
 	else
 		entry.careerActive = true
-		transfersCareerStarted(player_id)
+		Money.transfersCareerStarted(player_id)
 	end
 end
 
@@ -2334,7 +2501,7 @@ function careerStartResult(player_id, data)
 	if result.started == true then
 		entry.careerActive = true
 		print("[Mileage] " .. describePlayer(player_id) .. " started their career")
-		transfersCareerStarted(player_id)
+		Money.transfersCareerStarted(player_id)
 	elseif result.started == false then
 		dropUnstartedPlayer(player_id, "career start failed: " .. consoleText(result.reason or "no reason given"))
 	end
@@ -2512,9 +2679,9 @@ function tick()
 	validateMileageActivation()
 	sendWantedVehicleLists()
 	sendChangedShares()
-	transfersTick()
-	offersTick()
-	racesTick()
+	Money.transfersTick()
+	Money.offersTick()
+	Money.racesTick()
 	ticksSinceAlive = ticksSinceAlive + 1
 	if ticksSinceAlive >= ALIVE_EVERY_TICKS then
 		ticksSinceAlive = 0
@@ -2559,10 +2726,10 @@ function onPlayerDisconnectHandler(player_id)
 	-- Release their strip presence first: if they held a strip, someone still standing
 	-- there has to inherit it or an in-progress race loses its authority.
 	releaseDragPresence(player_id)
-	offersPlayerLeft(player_id)
+	Money.offersPlayerLeft(player_id)
 	local entry = pendingActivation[player_id]
 	local name = entry and entry.name or MP.GetPlayerName(player_id)
-	if name then racesPlayerLeft(name) end
+	if name then Money.racesPlayerLeft(name) end
 	loadedPrefabs[player_id] = nil
 	ledger.send[player_id] = nil
 	ledger.receive[player_id] = nil
@@ -2652,7 +2819,7 @@ function SetConfig(arguments)
 	print("[Mileage] ---------- Config:    " .. section .. " " .. tostring(key) .. " set to " .. tostring(Config[section][key]))
 	WriteJson(configPath .. "config.json", Config)
 	sendJson("config", -1, "rxClientConfigUpdate", Config.client)
-	sendFeatures(-1)
+	Money.sendFeatures(-1)
 	-- Offers of a feature switched off close on the next tick.
 	-- An amount, a switch or a total may have changed everyone's share.
 	sharesChanged()

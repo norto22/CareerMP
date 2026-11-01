@@ -14,12 +14,17 @@ local function upvalue(fn, name)
 	end
 end
 
+-- The table the plugin's money sections share their helpers through.
+local function money()
+	local Money = upvalue(onInit, "Money")
+	assert(type(Money) == "table", "Money not found in onInit")
+	return Money
+end
+
 local function dataHelpers()
-	local readData = upvalue(upvalue(onInit, "startMoneyFeatures"), "loadTransfers")
-	readData = upvalue(readData, "readData")
-	local writeData = upvalue(upvalue(mileageReceipt, "saveTransfers"), "writeData")
-	assert(type(readData) == "function" and type(writeData) == "function", "data helpers not found")
-	return readData, writeData
+	local Money = money()
+	assert(type(Money.readData) == "function" and type(Money.writeData) == "function", "data helpers not found")
+	return Money.readData, Money.writeData
 end
 
 local DATA = "Resources/Server/Mileage/data/"
@@ -33,7 +38,7 @@ local function pay(world, from, to, amount)
 end
 
 local function startTransfer(world, spec)
-	local start = upvalue(payPlayer, "startTransfer")
+	local start = money().startTransfer
 	local id
 	world:serverOutput(function() id = start(spec) end)
 	world:pump()

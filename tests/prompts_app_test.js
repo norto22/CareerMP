@@ -167,6 +167,29 @@ test("nobody finishing in time says the stake is back; a called-off race says wh
 	assert.strictEqual(scope.race.view.close, true, "can be closed");
 });
 
+//== the leaderboard ===============================================================
+
+test("the leaderboard lists race wins and each strip's best drag times, names as text", () => {
+	const {scope} = load();
+	scope.emit("MileageLeaderboard", {
+		wins: [{name: "norto22", wins: 31}, {name: "<b>Sam</b>", wins: 27}],
+		drag: {alder_dragway: [{name: "Alex_Rivera", et: 10.84, trap: 56.4}, {name: "norto22", et: 11.37, trap: 52.5}]},
+	});
+	const board = scope.leaderboard;
+	assert.strictEqual(board.tab, "wins", "opens on race wins");
+	assert.deepStrictEqual([...board.wins].map((r) => r.place + " " + r.name + " " + r.value),
+		["1 norto22 31", "2 <b>Sam</b> 27"]);
+	assert.strictEqual(board.strips[0].name, "alder_dragway");
+	assert.deepStrictEqual([...board.strips[0].rows].map((r) => r.name + " " + r.value + " " + r.extra),
+		["Alex_Rivera 10.84 s 203 km/h", "norto22 11.37 s 189 km/h"]);
+	scope.showTab("drag");
+	assert.strictEqual(scope.leaderboard.tab, "drag");
+	scope.emit("MileageLeaderboard", {wins: [], drag: {}});
+	assert.strictEqual(scope.leaderboard.tab, "drag", "an update keeps the tab");
+	scope.closeLeaderboard();
+	assert.strictEqual(scope.leaderboard, null);
+});
+
 //== the template ================================================================
 
 test("the template binds every text as text, never as markup", () => {

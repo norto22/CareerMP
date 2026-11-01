@@ -15,6 +15,33 @@
 		</div>
 	</div>
 
+	<div class="mo-card" ng-if="leaderboard">
+		<div class="mo-title">Leaderboard</div>
+		<div class="mo-tabs">
+			<button ng-class="{'mo-tab-on': leaderboard.tab == 'wins'}" ng-click="showTab('wins')">Race wins</button>
+			<button ng-class="{'mo-tab-on': leaderboard.tab == 'drag'}" ng-click="showTab('drag')">Drag times</button>
+		</div>
+		<table class="mo-table" ng-if="leaderboard.tab == 'wins'">
+			<tr><th>#</th><th>Player</th><th>Wins</th></tr>
+			<tr ng-repeat="row in leaderboard.wins">
+				<td ng-bind="row.place"></td><td ng-bind="row.name"></td><td ng-bind="row.value"></td>
+			</tr>
+		</table>
+		<div class="mo-note" ng-if="leaderboard.tab == 'wins' && leaderboard.wins.length == 0">No race wins yet.</div>
+		<div ng-if="leaderboard.tab == 'drag'" ng-repeat="strip in leaderboard.strips">
+			<div class="mo-note" ng-bind="strip.name"></div>
+			<table class="mo-table">
+				<tr><th>#</th><th>Player</th><th>ET</th><th>Trap</th></tr>
+				<tr ng-repeat="row in strip.rows">
+					<td ng-bind="row.place"></td><td ng-bind="row.name"></td><td ng-bind="row.value"></td>
+					<td ng-bind="row.extra"></td>
+				</tr>
+			</table>
+		</div>
+		<div class="mo-note" ng-if="leaderboard.tab == 'drag' && leaderboard.strips.length == 0">No drag times yet.</div>
+		<div class="mo-actions"><button ng-click="closeLeaderboard()">Close</button></div>
+	</div>
+
 	<div class="mo-card" ng-repeat="offer in offers track by offer.id">
 		<div class="mo-title" ng-bind="offer.view.title"></div>
 		<div class="mo-row" ng-repeat="row in offer.view.rows">

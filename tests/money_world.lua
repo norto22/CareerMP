@@ -443,6 +443,8 @@ function World:loadGame(p)
 	p.globals.quatFromDir = function(dir, up) return {dir = dir, up = up} end
 	p.globals.core_groundMarkers = {getTargetPos = function() return p.route end}
 	p.globals.gameplay_missions_missionManager = {getForegroundMissionId = function() return p.mission end}
+	p.globals.MPCoreNetwork = {isMPSession = function() return true end}
+	p.globals.gameplay_drag_core = {getData = function() return p.dragData end}
 	p.globals.spawn = {safeTeleport = function(veh, pos, rot)
 		table.insert(p.teleports, {pos = copy(pos), rot = copy(rot)})
 		veh.pos = {x = pos.x, y = pos.y, z = pos.z}
