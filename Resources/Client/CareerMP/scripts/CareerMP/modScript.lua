@@ -5,7 +5,8 @@
 --   2. patches       - installs the runtime wrappers that publish the enriched
 --                      *MP hooks the feature extensions listen for
 --   3. careerPatches - neutralises career activation's vehicle cleanup before
---                      any career can start
+--                      any career can start, and keeps one failing career-start
+--                      handler from skipping the rest
 --   4. traffic       - hands the server's traffic amounts to the game's career
 --                      traffic setup
 --   5. insuranceRestore - loads the game's insurance records when a join's career
