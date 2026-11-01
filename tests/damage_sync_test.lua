@@ -962,3 +962,114 @@ test("a copy only answers requests for this game's own owner cars", function()
 	step(1)
 	same(#sentToServer("careerDamage", 1) - before, 0, "messages from the copy's game")
 end)
+
+--== limits, bad input and lifecycle =======================================
+
+test("the server passes at most 4 full-damage requests a second from one player", function()
+	threeGames()
+	for _ = 1, 6 do careerDamageRequest(1, '{"v":"2-5"}') end
+	same(#serverSends("rxCareerDamageRequest"), 4, "requests passed on")
+	world.now = (world.now or 0) + 1
+	careerDamageRequest(1, '{"v":"2-5"}')
+	same(#serverSends("rxCareerDamageRequest"), 5, "a second later")
+end)
+
+test("the server drops a full-damage request over 256 bytes", function()
+	threeGames()
+	careerDamageRequest(1, '{"v":"2-5","x":"' .. string.rep("a", 260) .. '"}')
+	same(#serverSends("rxCareerDamageRequest"), 0, "requests passed on")
+end)
+
+test("a damage message over 32 KB is not sent, and that is logged once", function()
+	local owner, copy, owners = twoGames()
+	step(4)
+	local before = #sentToServer("careerDamage", 0)
+	local big = '{"c":0,"b":[' .. string.rep("1,", 17000) .. '1],"n":[]}'
+	as(owners, owners.ge.onLocalDamage, owner.gid, big)
+	as(owners, owners.ge.onLocalDamage, owner.gid, big)
+	step(2)
+	same(#sentToServer("careerDamage", 0) - before, 0, "messages sent")
+	same(countLines(logs, "was not sent (limit 32768)"), 1, "warnings")
+end)
+
+test("more than 30 queued messages are dropped and the owner car sends its full damage again", function()
+	local owner, copy, owners = twoGames()
+	step(2.5)
+	local before = #sentToServer("careerDamage", 0)
+	for _ = 1, 31 do as(owners, owners.ge.onLocalDamage, owner.gid, '{"c":0,"b":[],"n":[]}') end
+	same(countLines(owner.vehicleQueue, "careerMPDamage.sendFull()"), 1, "full-damage requests to the owner car")
+	same(countLines(logs, "full damage sent again"), 1, "warnings")
+	step(15)
+	local sent = #sentToServer("careerDamage", 0) - before
+	expect(sent >= 1 and sent <= 3, "messages sent after the queue was dropped: " .. sent)
+end)
+
+test("a reset request for a car that is not a copy changes nothing", function()
+	local owner, copy, owners = twoGames()
+	step(2.5)
+	as(owners, owners.ge.resetCopy, owner.gid, 1)
+	as(owners, owners.ge.resetCopy, 999, 1)
+	same(owner.veh.resets, 0, "resets of the player's own car")
+end)
+
+test("a respawned copy asks its owner for full damage again", function()
+	local owner, copy, owners, copies = twoGames()
+	step(3)
+	same(#sentToServer("careerDamageRequest", 1), 1, "requests before the respawn")
+	as(copies, copies.ge.onVehicleSpawned, copy.gid)
+	step(1.5)
+	same(#sentToServer("careerDamageRequest", 1), 2, "requests after the respawn")
+end)
+
+test("leaving the server drops the damage messages still queued", function()
+	local owner, copy, owners = twoGames()
+	step(2.5)
+	local before = #sentToServer("careerDamage", 0)
+	for _ = 1, 5 do as(owners, owners.ge.onLocalDamage, owner.gid, '{"c":0,"b":[],"n":[]}') end
+	as(owners, owners.ge.onBeamMPServerLeave)
+	for _ = 1, 4 do as(owners, owners.ge.onUpdate, 0.2); pump() end
+	same(#sentToServer("careerDamage", 0) - before, 0, "messages sent after leaving")
+end)
+
+test("a full-damage request for this game's own traffic car is not answered", function()
+	newWorld()
+	local game = addGame(0)
+	local traffic = addCar(game, 0, 1, {isTraffic = "true"})
+	step(3)
+	as(game, game.handlers.rxCareerDamageRequest, '{"v":"' .. traffic.sid .. '"}')
+	same(countLines(traffic.vehicleQueue, "sendFull"), 0, "full-damage answers queued")
+end)
+
+test("a copy applies a rest length of 100 m and offsets of 20 m, and refuses 0 m and just past 20 m", function()
+	local copy = copyCar()
+	inVehicle(copy, copy.ext.applyDamage, 0, {7, 100, 0, 0, 8, 0, 0, 0}, {4, 20, -20, 20, 5, 20.01, 0, 0})
+	same(copy.restLen[7], 100, "beam 7 at 100 m")
+	same(copy.restLen[8], 1, "beam 8 left alone")
+	local x, y, z = toCarFrame(copy, copy.nodePos[4])
+	expect(math.abs(x - 20) < 1e-6 and math.abs(y + 20) < 1e-6 and math.abs(z - 20) < 1e-6, "point 4 placed at the limit")
+	local fx = toCarFrame(copy, copy.nodePos[5])
+	expect(math.abs(fx - 20.01) > 1e-3, "point 5 left alone")
+end)
+
+test("a copy given no beam or point lists changes nothing and does not raise", function()
+	local copy = copyCar()
+	inVehicle(copy, copy.ext.applyDamage, 0, nil, nil)
+	inVehicle(copy, copy.ext.applyDamage, 0, {7, 0.5, 0, 0}, nil)
+	same(copy.restLen[7], 1, "beam 7")
+end)
+
+test("an owner whose direction cannot be read keeps its changes and sends them once it can", function()
+	local car = ownerCar()
+	tick(car)
+	takeMessages(car)
+	local fwd = car.fwd
+	car.fwd = {x = 0, y = 0, z = 0}
+	dent(car, 7, 0.8)
+	tick(car)
+	same(#takeMessages(car), 0, "messages without a frame")
+	car.fwd = fwd
+	tick(car)
+	local m = takeMessages(car)
+	same(#m, 1, "messages once the frame is back")
+	same(table.concat(beamIds(m[1]), ","), "7", "beams")
+end)

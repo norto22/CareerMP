@@ -240,3 +240,19 @@ test("leaving the server forgets the ghost settings, so a rejoin sends them agai
 	enabler.onUpdate(0.016)
 	same(ghostCommands(objects[9]), 2, "setGhost commands on car 9")
 end)
+
+test("spectating after this player's own car was removed pins nothing", function()
+	local enabler, objects = setup()
+	objects[1] = nil
+	enabler.onVehicleSwitched(1, 9)
+	same(#focusCalls, 0, "setFocus calls")
+end)
+
+test("a destroyed car's ghost setting is forgotten, so a new car under that id gets it", function()
+	local enabler, objects = startedEnabler()
+	enabler.onUpdate(0.016)
+	enabler.onVehicleDestroyed(9)
+	enabler.onUpdate(0.016)
+	same(ghostCommands(objects[9]), 2, "setGhost commands on car 9")
+	same(ghostCommands(objects[10]), 1, "setGhost commands on car 10")
+end)
