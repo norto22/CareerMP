@@ -1152,3 +1152,110 @@ for name, prepare in pairs({
 		same(game.cancelled, 1, "Parts sessions cancelled")
 	end)
 end
+
+--== more edges: the car the player sits in, a plain cancel, a failed cancel ==
+
+-- Rejects passing a rebuild through when the named car is the one the player sits in: BeamMP
+-- finds no entry for it and spawns a brand-new car instead of rebuilding it.
+test("seated in an unlinked car A, fitting a part to car A rebuilds nothing and spawns no car", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	game.player = game.carA
+	unlink(game.carA)
+	local before = game.nextId
+	local back = core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA)
+	same(back, nil, "what the rebuild returned")
+	same(game.nextId, before, "cars spawned")
+	same(pickups(), 1, "copies of car A")
+	same(game.beamMPCalls, 0, "BeamMP's rebuild calls")
+	same(#toasts, 1, "messages shown")
+	same(#game.sentSpawns, 1, "spawns sent")
+end)
+
+-- Rejects refusing every rebuild while Parts cancels: an ordinary cancel on a linked car must
+-- still put car A back in place.
+test("leaving Parts on a linked car A puts car A back in place and shows nothing", function()
+	partsSessionOn(CAR_A)
+	career_modules_partShopping.cancelShopping()
+	same(game.cancelled, 1, "Parts sessions cancelled")
+	expect(rebuiltOnly(game.carA.id), "only car A was rebuilt")
+	same(game.walker.JBeam, "unicycle", "the walking avatar")
+	same(pickups(), 1, "copies of car A")
+	same(#toasts, 0, "messages shown")
+	same(game.bought, 0, "purchases made")
+end)
+
+-- Rejects a cancel marker that is only cleared when the cancel returns: after a cancel that
+-- raised, a later rebuild with no car named must reach BeamMP again.
+test("a cancel that raises hands its error on and leaves later rebuilds unrefused", function()
+	partsSessionOn(CAR_A)
+	career_modules_partShopping.cancelShopping = function() error("cancel broke") end
+	patches.revert()
+	patches.apply()
+	local ok, err = pcall(career_modules_partShopping.cancelShopping)
+	expect(not ok, "the cancel raised")
+	expect(string.find(tostring(err), "cancel broke", 1, true), "the caller got the cancel's error: " .. tostring(err))
+	game.player = game.carB
+	core_vehicles.replaceVehicle("sedan", {}, nil)
+	same(game.beamMPCalls, 1, "BeamMP's rebuild calls")
+	expect(rebuiltOnly(game.carB.id), "BeamMP rebuilt the car the player is in")
+	same(countLines(logs, "while Parts was cancelling"), 0, "rebuilds refused as part of a cancel")
+end)
+
+-- Rejects falling back to the game's Buy when Parts cannot be cancelled.
+test("Buy for a refused car with no way to cancel Parts charges nothing and logs it", function()
+	partsSessionOn(CAR_A)
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	career_modules_partShopping.cancelShopping = nil
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 0, "purchases made")
+	same(announced("onPartShoppingTransactionCompleteMP"), nil, "transaction complete announced")
+	same(countLines(logs, "E mileage.patches: partShopping.cancelShopping is missing"), 1, "the missing cancel logged")
+end)
+
+-- Rejects treating a BeamMP without its session module as a server session.
+test("with BeamMP's car list but no session module, a rebuild of an unlinked car is handed on", function()
+	setup()
+	installBeamMP()
+	patches.apply()
+	MPCoreNetwork = nil
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	same(game.beamMPCalls, 1, "BeamMP's rebuild calls")
+	same(#toasts, 0, "messages shown")
+	same(#game.sentSpawns, 0, "spawns sent")
+end)
+
+-- Rejects clearing a refusal on any rebuild that returns a car: one that landed on another car
+-- did not give car A the parts, so Buy must still cancel.
+test("after the link, a rebuild of car A that lands on another car still keeps Buy stopped", function()
+	setup()
+	installBeamMP({decidesByPlayerId = true})
+	patches.apply()
+	clickAt("partShopping", CAR_A)
+	unlink(game.carA)
+	core_vehicles.replaceVehicle("pickup", {}, game.carA)
+	serverAnswers("accept")
+	local back = core_vehicles.replaceVehicle("pickup", {config = "A with new part"}, game.carA)
+	expect(back ~= game.carA, "the rebuild landed on another car")
+	career_modules_partShopping.applyShopping()
+	same(game.bought, 0, "purchases made")
+	same(game.cancelled, 1, "Parts sessions cancelled")
+end)
+
+-- Rejects an unprotected transaction-complete hook: a listener that raises must not undo or
+-- break a purchase that has already been charged.
+test("a transaction-complete listener that raises leaves Buy charged once and is logged", function()
+	partsSessionOn(CAR_A)
+	local hook = extensions.hook
+	extensions.hook = function(name, ...)
+		if name == "onPartShoppingTransactionCompleteMP" then error("listener broke") end
+		return hook(name, ...)
+	end
+	local ok, err = pcall(career_modules_partShopping.applyShopping)
+	expect(ok, "Buy did not raise: " .. tostring(err))
+	same(game.bought, 1, "purchases made")
+	same(countLines(logs, "listener broke"), 1, "the failed listener logged")
+end)
