@@ -9,6 +9,9 @@
 -- Why any of this matters: career activation assumes a single-player world and
 -- clears the level of vehicles it does not recognise. In multiplayer that means
 -- deleting every other player's car.
+--
+-- It also keeps one failing career-start handler from leaving the rest of the career
+-- unset (see "career-active handlers" below).
 
 local M = {}
 
@@ -16,6 +19,110 @@ local logTag = "careerMP.careerPatches"
 
 local applied = false
 local originals = {}
+
+--== career-active handlers ==================================================
+-- The career starts every module by firing the onCareerActive hook. The game's hook
+-- (lua/common/extensions.lua, hookFast) calls each extension's handler in turn with no
+-- protection, so the first handler that raises an error skips every handler after it:
+-- insurance, for one, then runs without its saved data. The hook also caches the list
+-- it built while running, so the skipped handlers stay skipped for later calls too.
+--
+-- From onBeforeCareerActivate until the career-active hook has run, extensions.hook is
+-- replaced. When it is asked for onCareerActive, every loaded extension's handler is
+-- swapped for one that runs it under xpcall, the hook's cache is dropped, and the game's
+-- own hook runs them in its own order. A failure is logged with its traceback and the
+-- next handler still runs. Afterwards the handlers and the hook are put back.
+local GUARD_MAX_SECONDS = 120 -- longer than any career start, level change included
+
+-- {originalHook, guardedHook, installedAt, wrapped = {[module] = {original, wrapper}}}
+local guard = nil
+
+-- Handlers that failed in the last guarded onCareerActive, as extension names.
+local careerActiveFailures = {}
+
+local GUARD_NEEDS = {"hook", "hookUpdate", "getLoadedExtensionsNames"}
+
+local function wrapCareerActiveHandlers(ext)
+	for _, name in ipairs(ext.getLoadedExtensionsNames() or {}) do
+		-- rawget: a plain lookup on extensions loads a missing extension.
+		local m = rawget(ext, name) or rawget(_G, name)
+		local original = type(m) == "table" and rawget(m, "onCareerActive")
+		if type(original) == "function" and not guard.wrapped[m] then
+			local wrapper = function(...)
+				local ok, err = xpcall(original, debug.traceback, ...)
+				if not ok then
+					table.insert(careerActiveFailures, name)
+					log("E", logTag, "career start: " .. name .. ".onCareerActive failed, the other handlers " ..
+						"still run: " .. tostring(err))
+				end
+			end
+			guard.wrapped[m] = {original = original, wrapper = wrapper}
+			m.onCareerActive = wrapper
+		end
+	end
+	ext.hookUpdate("onCareerActive")
+end
+
+local function unwrapCareerActiveHandlers(ext)
+	for m, entry in pairs(guard.wrapped) do
+		if rawget(m, "onCareerActive") == entry.wrapper then m.onCareerActive = entry.original end
+	end
+	guard.wrapped = {}
+	ext.hookUpdate("onCareerActive")
+end
+
+local function removeGuard(why)
+	if not guard then return end
+	local ext = extensions
+	unwrapCareerActiveHandlers(ext)
+	if ext.hook == guard.guardedHook then
+		ext.hook = guard.originalHook
+	else
+		log("W", logTag, "career start: extensions.hook was replaced by someone else - left as it is")
+	end
+	guard = nil
+	log("D", logTag, "career-active handler guard removed (" .. why .. ")")
+end
+
+local function installGuard()
+	if guard then return end
+	local ext = extensions
+	local missing = {}
+	for _, name in ipairs(GUARD_NEEDS) do
+		if type(ext) ~= "table" or type(ext[name]) ~= "function" then table.insert(missing, "extensions." .. name) end
+	end
+	if #missing > 0 then
+		log("W", logTag, "career start: missing " .. table.concat(missing, ", ") ..
+			" - a failing onCareerActive handler will skip the ones after it")
+		return
+	end
+
+	guard = {originalHook = ext.hook, installedAt = os.clockhp(), wrapped = {}}
+	local current = guard
+	guard.guardedHook = function(funcName, ...)
+		if funcName ~= "onCareerActive" or guard ~= current then return current.originalHook(funcName, ...) end
+		careerActiveFailures = {}
+		wrapCareerActiveHandlers(ext)
+		local ok, err = pcall(current.originalHook, funcName, ...)
+		local active = ...
+		if #careerActiveFailures > 0 then
+			log("E", logTag, "career start: onCareerActive(" .. tostring(active) .. ") failed in " ..
+				table.concat(careerActiveFailures, ", ") .. "; every other handler ran")
+		else
+			log("I", logTag, "career start: every onCareerActive(" .. tostring(active) .. ") handler ran")
+		end
+		if active then removeGuard("career active") else unwrapCareerActiveHandlers(ext) end
+		if not ok then error(err, 0) end
+	end
+	ext.hook = guard.guardedHook
+end
+
+--- Extension names whose onCareerActive failed in the last guarded career start.
+function M.getCareerActiveFailures()
+	local list = {}
+	for i, name in ipairs(careerActiveFailures) do list[i] = name end
+	return list
+end
 
 --== protecting remote vehicles ==============================================
 -- 0.39 career.lua:
@@ -133,6 +240,7 @@ end
 --- Fired by career.lua at the top of activateCareer, before either removal path.
 function M.onBeforeCareerActivate()
 	installProtection()
+	installGuard()
 end
 
 --- Fired once the career is up. On the level-change path this is deferred, so onUpdate
@@ -196,6 +304,7 @@ end
 
 function M.revert()
 	removeProtection()
+	removeGuard("reverted")
 	applied = false
 end
 
@@ -211,6 +320,11 @@ local function onUpdate()
 	if protection and (os.clockhp() - protection.installedAt) > PROTECTION_MAX_SECONDS then
 		log("W", logTag, "vehicle protection timed out - releasing")
 		removeProtection()
+	end
+	if guard and (os.clockhp() - guard.installedAt) > GUARD_MAX_SECONDS then
+		log("W", logTag, string.format("career start: onCareerActive did not fire within %ds - " ..
+			"handler guard removed", GUARD_MAX_SECONDS))
+		removeGuard("timed out")
 	end
 end
 
