@@ -729,3 +729,55 @@ test("a full-damage request reaches the car's owner only", function()
 	careerDamageRequest(1, '{"v":5}')
 	same(#serverSends("rxCareerDamageRequest"), 1, "requests passed on after bad ones")
 end)
+
+--== phantom damage, resets and late joiners ================================
+
+-- Two games where the copy has heard from its owner: the owner dented beam 7.
+local function syncedGames()
+	local owner, copy, owners, copies = twoGames()
+	step(2.5)
+	dent(owner, 7, 0.8)
+	step(1.5)
+	same(copy.restLen[7], 0.8, "the owner's dent on the copy")
+	return owner, copy, owners, copies
+end
+
+-- Damage only the copy's game simulated: n beams from `first` broken on the copy.
+local function phantomBreaks(copy, first, n)
+	for cid = first, first + n - 1 do
+		copy.broken[cid] = true
+		copy.beamstate.deformedBeams[cid] = 1
+	end
+	copy.beamstate.damage = copy.beamstate.damage + 1000
+end
+
+test("a copy with 25 beams of damage its owner never reported is reset and given the owner's damage", function()
+	local owner, copy, owners, copies = syncedGames()
+	local requestsBefore = #sentToServer("careerDamageRequest", 1)
+	phantomBreaks(copy, 20, 25)
+	step(2.5)
+	expect(copy.veh.resets >= 1, "the copy was reset in place")
+	same(#sentToServer("careerDamageRequest", 1) - requestsBefore, 1, "full-damage requests")
+	same(copy.broken[30], nil, "a phantom break undone")
+	same(copy.restLen[7], 0.8, "the owner's dent applied again")
+end)
+
+test("an owner's reset clears the dents and breaks on every copy", function()
+	local owner, copy = syncedGames()
+	owner.broken[9] = true
+	owner.beamstate.damage = owner.beamstate.damage + 100
+	step(1.5)
+	same(copy.broken[9], true, "the owner's break on the copy")
+	owner.reset()
+	step(1.5)
+	same(copy.restLen[7], 1, "the copy's beam 7")
+	same(copy.broken[9], nil, "the copy's beam 9 whole again")
+end)
+
+test("a player who joins after a crash sees the car's dents", function()
+	local owner, copy, owners, copies = syncedGames()
+	local late = addGame(2)
+	local lateCopy = addCar(late, 0, 0, {fwd = {x = 0, y = -1, z = 0}})
+	step(3)
+	same(lateCopy.restLen[7], 0.8, "the late joiner's beam 7")
+end)
