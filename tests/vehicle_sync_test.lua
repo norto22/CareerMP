@@ -563,3 +563,73 @@ test("a car BeamMP gives a used server id is marked afresh", function()
 	frames(friend, 1)
 	same(nametag(me, "1-2"), true, "the new parked car")
 end)
+
+--== one-car updates =========================================================
+
+local function rows(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	return n
+end
+
+local function toEveryone()
+	local list = {}
+	for _, m in ipairs(world.broadcasts) do
+		if m.target == -1 then table.insert(list, m) end
+	end
+	return list
+end
+
+local function listRequests(p) return count(p.serverRequests, "careerVehSyncRequested") end
+
+-- My friend with 16 cars: the one they drive and 15 traffic and parked cars.
+local function busyFriend()
+	local me, friend = twoPlayers()
+	for vid = 3, 15 do spawn(1, vid, {JBeam = "covet", isParked = "true"}) end
+	frames(friend, 1)
+	world.broadcasts = {}
+	me.serverRequests, friend.serverRequests = {}, {}
+	return me, friend
+end
+
+local function hide14(friend)
+	as(friend, function()
+		for vid = 1, 14 do friend.objects[gameId(1, vid)]:setActive(0) end
+	end)
+	pump()
+end
+
+test("hiding 14 cars sends 14 one-car updates", function()
+	local _, friend = busyFriend()
+	hide14(friend)
+	local updates = toEveryone()
+	same(#updates, 14, "updates to every player")
+	for i, update in ipairs(updates) do
+		same(rows(update.table), 1, "cars in update " .. i)
+	end
+end)
+
+test("my game applies the 14 hides without asking for the list", function()
+	local me, friend = busyFriend()
+	hide14(friend)
+	same(listRequests(me), 0, "list requests from my game")
+	for vid = 1, 14 do same(me.objects[gameId(1, vid)].active, false, "car 1-" .. vid .. " on my game") end
+	same(me.objects[gameId(1, 15)].active, true, "car 1-15 on my game")
+end)
+
+test("a spawn sends every player that car alone", function()
+	busyFriend()
+	spawn(1, 16, {JBeam = "pickup"})
+	local updates = toEveryone()
+	same(#updates, 1, "updates to every player")
+	same(rows(updates[1].table), 1, "cars in the update")
+	expect(updates[1].table["1-16"] ~= nil, "the spawned car is the one sent")
+end)
+
+test("a player cannot hide another player's car", function()
+	local me, friend = busyFriend()
+	as(me, TriggerServerEvent, "careerVehicleActiveHandler", encode({serverVehicleID = "1-0", active = false}))
+	pump()
+	same(#toEveryone(), 0, "updates sent")
+	same(me.objects[gameId(1, 0)].active, true, "my friend's car on my game")
+end)
