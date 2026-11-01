@@ -156,3 +156,30 @@ test("SetConfig refuses the removed extra-traffic settings and still sets road t
 		same(sentToClients and sentToClients.event, "rxClientConfigUpdate", "players told")
 	end)
 end)
+
+--== alive message ==========================================================
+
+test("every second tick sends each connected player one alive message", function()
+	run(function()
+		loadPlugin()
+		local sent = {}
+		MP.GetPlayers = function() return {[0] = "Ann", [1] = "Bob", [2] = "Cy"} end
+		MP.IsPlayerConnected = function(id) return id ~= 2 end
+		MP.TriggerClientEvent = function(id, event, data) table.insert(sent, {id = id, event = event, data = data}) end
+		tick()
+		tick()
+		local to = {}
+		for _, s in ipairs(sent) do
+			same(s.event, "rxCareerMPAlive", "event")
+			same(s.data, "", "alive content")
+			to[s.id] = (to[s.id] or 0) + 1
+		end
+		same(#sent, 2, "alive messages in two ticks")
+		same(to[0], 1, "to player 0")
+		same(to[1], 1, "to player 1")
+		same(to[2], nil, "to the player who is not connected")
+		tick()
+		tick()
+		same(#sent, 4, "messages after four ticks")
+	end)
+end)
