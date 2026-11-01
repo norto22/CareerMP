@@ -8,7 +8,7 @@ The title is read from the TITLE environment variable, never from the command li
 it is only ever data. Rules:
   - the title is vMAJOR.MINOR.REVISION;
   - versions/client.json and versions/server.json both carry that version and the
-    norto22/CareerMP lineage;
+    norto22/Mileage lineage;
   - with --base, the version is strictly higher than the base server.json, because
     installed servers refuse to downgrade.
 Exits non-zero naming every rule that failed.
@@ -20,10 +20,10 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LINEAGE = "norto22/CareerMP"
+LINEAGE = "norto22/Mileage"
 VERSION_FILES = [
-    "Resources/Server/CareerMP/versions/client.json",
-    "Resources/Server/CareerMP/versions/server.json",
+    "Resources/Server/Mileage/versions/client.json",
+    "Resources/Server/Mileage/versions/server.json",
 ]
 TITLE_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 

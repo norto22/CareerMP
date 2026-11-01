@@ -2,6 +2,12 @@
 --Created by Dudekahedron
 --Thanks to Bouboule, and Lion and Luuk from BeamPaint, for http request examples
 --
+--CareerMP is now Mileage. This is the last CareerMP plugin: CareerMP 0.2.0 plus
+--moveToMileage, which installs the Mileage plugin on a server that updates from here.
+--Mileage then carries the settings over and removes CareerMP on its first start. Until
+--the move succeeds this plugin keeps running as CareerMP 0.2.0. Fresh installs never
+--get this file; the release package ships Mileage only.
+--
 --This file touches no game Lua -- it is pure BeamMP API (MP.*, Util.*, FS.*) -- so it
 --does not depend on the BeamNG.drive version. The drag relay carries BeamNG's own
 --multiplayer drag protocol between clients without interpreting it.
@@ -13,7 +19,7 @@
 local LINEAGE = "norto22/CareerMP"
 
 local HARD_CLIENT_VERSION = {major = 0, minor = 2, revision = 0, lineage = LINEAGE}
-local HARD_SERVER_VERSION = {major = 0, minor = 2, revision = 0, lineage = LINEAGE}
+local HARD_SERVER_VERSION = {major = 0, minor = 3, revision = 0, lineage = LINEAGE}
 
 local RAW = "https://raw.githubusercontent.com/"
 local GITHUB_REPO = "norto22/CareerMP/"
@@ -30,6 +36,16 @@ local CLIENT_UPDATE_URL = RAW .. GITHUB_REPO .. BRANCH .. SERVER_PATH .. CLIENT_
 local SERVER_UPDATE_URL = RAW .. GITHUB_REPO .. BRANCH .. SERVER_PATH .. SERVER_VERSION_FILE
 
 local configPath = "Resources/Server/CareerMP/config/"
+
+-- Where Mileage comes from and goes. See moveToMileage.
+local MILEAGE_LINEAGE = "norto22/Mileage"
+local MILEAGE_RAW = RAW .. "norto22/Mileage/" .. BRANCH
+local MILEAGE_DIR = "Resources/Server/Mileage"
+local MILEAGE_PATH = MILEAGE_DIR .. "/"
+local MILEAGE_PLUGIN = MILEAGE_PATH .. "mileage.lua"
+local MILEAGE_SERVER_VERSION = MILEAGE_PATH .. "versions/server.json"
+local MILEAGE_PLUGIN_URL = MILEAGE_RAW .. MILEAGE_PLUGIN
+local MILEAGE_VERSION_URL = MILEAGE_RAW .. MILEAGE_SERVER_VERSION
 
 local willExit = false
 
@@ -549,7 +565,50 @@ local function prepareConfig()
 	print("[CareerMP] ---------- CareerMP Config Loaded!")
 end
 
+-- Installs the Mileage plugin and restarts into it, when autoExit allows. Only the plugin
+-- and its server version are fetched: Mileage downloads its own client mod, copies the
+-- CareerMP settings and removes CareerMP's files on its first start. Anything that fails
+-- leaves the server as it was, still running CareerMP, and the next start tries again.
+local function moveToMileage()
+	print("[CareerMP] ---------- CareerMP is now Mileage, installing Mileage...")
+	local remote = fetchRemoteVersion(MILEAGE_VERSION_URL)
+	os.remove(SERVER_PATH .. "versions/.remote.json")
+	if not remote then
+		print("[CareerMP] ---------- Moving to Mileage: could not fetch " .. MILEAGE_VERSION_URL .. ", staying on CareerMP until the next start")
+		return false
+	end
+	if remote.lineage ~= MILEAGE_LINEAGE then
+		print("[CareerMP] ---------- Moving to Mileage REFUSED: " .. MILEAGE_VERSION_URL .. " has lineage " .. tostring(remote.lineage) .. ", expected " .. MILEAGE_LINEAGE)
+		return false
+	end
+	for _, dir in ipairs({MILEAGE_DIR, MILEAGE_PATH .. "versions"}) do
+		if not FS.IsDirectory(dir) then
+			FS.CreateDirectory(dir)
+		end
+	end
+	if not downloadFile(MILEAGE_PLUGIN_URL, MILEAGE_PLUGIN) then
+		print("[CareerMP] ---------- Moving to Mileage: could not download " .. MILEAGE_PLUGIN_URL .. ", staying on CareerMP until the next start")
+		return false
+	end
+	WriteJson(MILEAGE_SERVER_VERSION, remote)
+	print("[CareerMP] ---------- Moving to Mileage: installed Mileage " .. describeVersion(remote) .. " in " .. MILEAGE_PATH)
+	if Config.server.autoExit then
+		print("[CareerMP] ---------- Moving to Mileage: restarting into Mileage")
+		willExit = true
+	else
+		print("[CareerMP] ---------- Moving to Mileage: restart the server to finish the move")
+	end
+	return true
+end
+
 function onInit()
+
+	-- On the first start with Mileage installed, Mileage removes this file. Until then
+	-- this plugin does nothing, so CareerMP never runs beside Mileage.
+	if FS.Exists(MILEAGE_PLUGIN) then
+		print("[CareerMP] ---------- CareerMP is now Mileage, which is installed; this old plugin stays off and Mileage removes it")
+		return
+	end
 
 	print("[CareerMP] ---------- CareerMP Loading...")
 
@@ -597,8 +656,9 @@ function onInit()
 
 	prepareConfig()
 
+	-- Updates now come only as Mileage, so the move takes the update check's place.
 	if Config.server.autoUpdate then
-		checkForUpdates()
+		moveToMileage()
 	end
 
 	print("[CareerMP] ---------- CareerMP Loaded!")

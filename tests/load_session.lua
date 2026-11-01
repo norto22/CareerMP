@@ -1,4 +1,4 @@
--- A scripted session of 8 players on one CareerMP server, played against the CareerMP
+-- A scripted session of 8 players on one Mileage server, played against the Mileage
 -- files of any checkout, to compare what the server passes on before and after a change.
 --
 --   local runSession = dofile("tests/load_session.lua")
@@ -157,12 +157,12 @@ local FEATURES = {
 	rxCareerDamage = "damage", rxCareerDamageRequest = "damage",
 	rxCareerVehSync = "carStates", rxCareerTrafficShare = "trafficShare",
 	rxRemotePartPaint = "paint", rxRequestPartPaints = "paint", rxPrefabSync = "prefabs",
-	rxDragMP = "drag", rxDragAuthority = "drag", rxCareerMPAlive = "alive",
+	rxDragMP = "drag", rxDragAuthority = "drag", rxMileageAlive = "alive",
 	rxTrafficSignalTimer = "trafficLights", rxCareerSync = "config", rxClientConfigUpdate = "config",
 	rxPayment = "payments", rxConfirmation = "payments", rxBounce = "payments", rxDeny = "payments",
 }
 
--- Server events whose handler has another name (careerMP.lua onInit).
+-- Server events whose handler has another name (mileage.lua onInit).
 local HANDLERS = {
 	perPartPainting = "perPartPaintingHandler", requestPartPaints = "requestPartPaintsHandler",
 }
@@ -185,9 +185,9 @@ end
 
 local function runSession(root)
 	root = root or "."
-	local SERVER = root .. "/Resources/Server/CareerMP/careerMP.lua"
-	local GE = root .. "/Resources/Client/CareerMP/lua/ge/extensions/"
-	local POSITION_RATE = GE .. "careerMP/positionRate.lua"
+	local SERVER = root .. "/Resources/Server/Mileage/mileage.lua"
+	local GE = root .. "/Resources/Client/Mileage/lua/ge/extensions/"
+	local POSITION_RATE = GE .. "mileage/positionRate.lua"
 	local hasPositionRate = exists(POSITION_RATE)
 
 	local world = {now = 0, players = {}, joined = {}, toServer = {}, toClients = {}, later = {},
@@ -202,7 +202,7 @@ local function runSession(root)
 	local function enter(p)
 		current = p
 		MPVehicleGE, be, gameplay_traffic, gameplay_parking = p.MPVehicleGE, p.be, p.traffic, p.parking
-		positionGE, careerMPEnabler, careerMP_damageSync, extensions = p.positionGE, p.enabler, p.damage, p.extensions
+		positionGE, mileageEnabler, mileage_damageSync, extensions = p.positionGE, p.enabler, p.damage, p.extensions
 		career_modules_inventory = p.inventory
 		worldReadyState = 2
 		TriggerServerEvent = p.triggerServerEvent
@@ -305,13 +305,13 @@ local function runSession(root)
 		function veh:setDynDataFieldbyName(name, _, value) self[name] = value end
 		function veh:queueLuaCommand(cmd)
 			if p.id ~= car.owner then return end
-			local role = cmd:match('^careerMPDamage%.setRole%("(%w+)"%)')
+			local role = cmd:match('^mileageDamage%.setRole%("(%w+)"%)')
 			if role then
 				car.role = role
 				if role == "owner" then sendDents(p, car, false) end
-			elseif cmd:find("^careerMPDamage%.sendFull%(") then
+			elseif cmd:find("^mileageDamage%.sendFull%(") then
 				sendDents(p, car, false)
-			elseif cmd == "careerMPDamage.answerFull()" then
+			elseif cmd == "mileageDamage.answerFull()" then
 				sendDents(p, car, true)
 			end
 		end
@@ -456,18 +456,18 @@ local function runSession(root)
 			return true
 		end
 		p.extensions = {
-			careerMP_compat = compat,
+			mileage_compat = compat,
 			core_input_actionFilter = {setGroup = function() end, addAction = function() end},
-			careerMP_careerPatches = {ensure = function() return true end,
+			mileage_careerPatches = {ensure = function() return true end,
 				withRemoteVehiclesProtected = function(fn) return pcall(fn) end},
-			careerMP_insuranceRestore = {ensureLoaded = function() end},
+			mileage_insuranceRestore = {ensureLoaded = function() end},
 		}
 		as(p, function()
-			p.meter = dofile(GE .. "careerMP/traffic.lua")
-			p.extensions.careerMP_traffic = p.meter
-			p.enabler = dofile(GE .. "careerMPEnabler.lua")
-			p.damage = dofile(GE .. "careerMP/damageSync.lua")
-			p.paint = dofile(GE .. "careerMPPerPartPaint.lua")
+			p.meter = dofile(GE .. "mileage/traffic.lua")
+			p.extensions.mileage_traffic = p.meter
+			p.enabler = dofile(GE .. "mileageEnabler.lua")
+			p.damage = dofile(GE .. "mileage/damageSync.lua")
+			p.paint = dofile(GE .. "mileagePerPartPaint.lua")
 			if hasPositionRate then p.positionRate = dofile(POSITION_RATE) end
 			p.enabler.onExtensionLoaded()
 			p.damage.onExtensionLoaded()
@@ -608,9 +608,9 @@ if arg and arg[0] and arg[0]:match("load_session%.lua$") then
 	for _, kind in ipairs({"player", "road", "parked"}) do
 		print(string.format("  %-7s %d", kind, counts.positionsBy[kind] or 0))
 	end
-	print(string.format("CareerMP bytes sent by the server: %d (%d messages)", counts.bytes, counts.messages))
+	print(string.format("Mileage bytes sent by the server: %d (%d messages)", counts.bytes, counts.messages))
 	for _, feature in ipairs(features) do print(string.format("  %-14s %d", feature, counts.byFeature[feature])) end
-	print(string.format("CareerMP bytes sent by the games: %d", counts.toServerBytes))
+	print(string.format("Mileage bytes sent by the games: %d", counts.toServerBytes))
 	local names = {}
 	for name in pairs(counts.toServerBy) do table.insert(names, name) end
 	table.sort(names)

@@ -1,7 +1,7 @@
--- careerMPEnabler.lua: speed-trap and red-light announcements go out for cars players
+-- mileageEnabler.lua: speed-trap and red-light announcements go out for cars players
 -- drive and never for a player's AI traffic, which BeamMP counts as their own.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
 
 local sent
 

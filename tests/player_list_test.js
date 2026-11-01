@@ -1,4 +1,4 @@
-// CareerMP-PlayerList/app.js: the lost-connection banner, and the player rows it keeps
+// Mileage-PlayerList/app.js: the lost-connection banner, and the player rows it keeps
 // empty while it shows. Runs the real app script against small stand-ins for the
 // game's UI (Angular scope, bngApi, the page), with Node's standard library only.
 //
@@ -8,7 +8,7 @@ const fs = require("fs");
 const vm = require("vm");
 const assert = require("assert");
 
-const SOURCE = "Resources/Client/CareerMP/ui/modules/apps/CareerMP-PlayerList/app.js";
+const SOURCE = "Resources/Client/Mileage/ui/modules/apps/Mileage-PlayerList/app.js";
 
 function element(id) {
 	const el = {
@@ -71,7 +71,7 @@ test("a player list update fills the table", () => {
 test("losing the connection empties the list and keeps it empty through BeamMP's updates", () => {
 	const {scope, table} = load();
 	scope.emit("onBeamMPPlayerList", PLAYERS);
-	scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: "saved", saved: true});
+	scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: "saved", saved: true});
 	assert.strictEqual(table.rows.length, 1, "rows after the loss");
 	scope.emit("onBeamMPPlayerList", PLAYERS);
 	assert.strictEqual(table.rows.length, 1, "rows after a later update");
@@ -82,8 +82,8 @@ test("losing the connection empties the list and keeps it empty through BeamMP's
 
 test("being heard again shows the players again", () => {
 	const {scope, table, lua} = load();
-	scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: "saved"});
-	scope.emit("careerMPConnectionRestored");
+	scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: "saved"});
+	scope.emit("mileageConnectionRestored");
 	assert.strictEqual(scope.connection.lost, false, "banner hidden");
 	assert.ok(lua.some((cmd) => cmd.includes("UI.updatePlayersList()")), "list asked for again");
 	scope.emit("onBeamMPPlayerList", PLAYERS);
@@ -92,7 +92,7 @@ test("being heard again shows the players again", () => {
 
 test("the save line follows the save state and never claims an unconfirmed save", () => {
 	const {scope} = load();
-	const line = (data) => { scope.emit("careerMPConnectionLost", data); return scope.saveText(); };
+	const line = (data) => { scope.emit("mileageConnectionLost", data); return scope.saveText(); };
 	assert.strictEqual(line({saveState: "saving", saved: false}), "Saving your career...");
 	assert.strictEqual(line({saveState: "failed", saved: false}), "Your career could not be saved.");
 	assert.strictEqual(line({saveState: "saved", saved: true}), "Your career was saved.");
@@ -103,17 +103,17 @@ test("the buttons ask the game to try the save again and to return to the menu",
 	const {scope, lua} = load();
 	scope.retrySave();
 	scope.returnToMenu();
-	assert.ok(lua.includes("if careerMP_connectionWatch then careerMP_connectionWatch.retrySave() end"), "retry");
+	assert.ok(lua.includes("if mileage_connectionWatch then mileage_connectionWatch.retrySave() end"), "retry");
 	assert.ok(lua.includes("MPCoreNetwork.leaveServer(true)"), "return to menu");
 });
 
 test("the app asks for the current state when it loads", () => {
 	const {lua} = load();
-	assert.ok(lua.includes("if careerMP_connectionWatch then careerMP_connectionWatch.sendState() end"));
+	assert.ok(lua.includes("if mileage_connectionWatch then mileage_connectionWatch.sendState() end"));
 });
 
 // The banner's template, from the real app.html.
-const TEMPLATE = fs.readFileSync("Resources/Client/CareerMP/ui/modules/apps/CareerMP-PlayerList/app.html", "utf8");
+const TEMPLATE = fs.readFileSync("Resources/Client/Mileage/ui/modules/apps/Mileage-PlayerList/app.html", "utf8");
 
 // The markup of the element opened at `start`, up to its matching </div>.
 function divBlock(start) {
@@ -137,7 +137,7 @@ test("an update that arrives after the loss but before the screen redraws is ign
 	const pending = [];
 	scope.$evalAsync = (fn) => pending.push(fn);
 	scope.emit("onBeamMPPlayerList", PLAYERS);
-	scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: "saving"});
+	scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: "saving"});
 	scope.emit("onBeamMPPlayerList", PLAYERS);
 	assert.strictEqual(table.rows.length, 1, "rows before the redraw");
 	pending.forEach((fn) => fn());
@@ -166,7 +166,7 @@ test("Try saving again shows only after a failed save; Return to menu always", (
 	const retry = banner.match(/<button[^>]*ng-show="([^"]*)"[^>]*ng-click="retrySave\(\)"[^>]*>Try saving again</);
 	assert.ok(retry, "Try saving again button with ng-show");
 	const shown = (state) => {
-		scope.emit("careerMPConnectionLost", {message: "Lost connection to the server", saveState: state, saved: state === "saved"});
+		scope.emit("mileageConnectionLost", {message: "Lost connection to the server", saveState: state, saved: state === "saved"});
 		return Boolean(evalExpr(retry[1], scope));
 	};
 	assert.strictEqual(shown("saving"), false, "while saving");

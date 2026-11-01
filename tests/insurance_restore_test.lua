@@ -1,12 +1,12 @@
--- careerMP/insuranceRestore.lua: after a join, insurance records that never loaded are
+-- mileage/insuranceRestore.lua: after a join, insurance records that never loaded are
 -- loaded through the game's own insurance load, an empty saved insurance file is reset
 -- only after a verified backup, and owned cars without a record are added as uninsured.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/insuranceRestore.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileage/insuranceRestore.lua"
 
 local SAVE = "/settings/cloud/saves/player/autosave1"
 local FILE = SAVE .. "/career/insurance.json"
-local BACKUP = SAVE .. "/career/insurance.careermp-backup.json"
+local BACKUP = SAVE .. "/career/insurance.mileage-backup.json"
 
 local DEFAULT_INSURERS = {[1] = {id = 1, name = "Default insurer"}}
 
@@ -92,7 +92,7 @@ test("records already loaded with every owned car insured are left alone", funct
 	same(summary.loaded, true, "loaded")
 	same(summary.reloaded, false, "reloaded")
 	same(summary.added, 0, "added")
-	same(countLines(logs, "I careerMP.insurance: loaded=true reloaded=false backedUp=false added=0"), 1, "summary line")
+	same(countLines(logs, "I mileage.insurance: loaded=true reloaded=false backedUp=false added=0"), 1, "summary line")
 end)
 
 --== records missing =========================================================
@@ -142,7 +142,7 @@ test("a backup that fails to write leaves insurance.json untouched", function()
 	same(files[FILE].driverScore, 100, "insurance.json content")
 	same(summary.backedUp, false, "backedUp")
 	same(ins.loads, 1, "the game's load still runs")
-	expect(countLines(logs, "E careerMP.insurance:") >= 1, "error logged")
+	expect(countLines(logs, "E mileage.insurance:") >= 1, "error logged")
 end)
 
 test("a backup that reads back different leaves insurance.json untouched", function()
@@ -152,7 +152,7 @@ test("a backup that reads back different leaves insurance.json untouched", funct
 	expect(not contains(writes, FILE), "insurance.json written")
 	same(files[FILE].driverScore, 100, "insurance.json content")
 	same(summary.backedUp, false, "backedUp")
-	expect(countLines(logs, "E careerMP.insurance:") >= 1, "error logged")
+	expect(countLines(logs, "E mileage.insurance:") >= 1, "error logged")
 end)
 
 test("a file with car records but no insurers is never blanked", function()
@@ -161,7 +161,7 @@ test("a file with car records but no insurers is never blanked", function()
 	restore.ensureLoaded()
 	same(#writes, 0, "file writes")
 	same(files[FILE].invVehs[1].insuranceId, 2, "car record kept")
-	same(countLines(logs, "W careerMP.insurance:"), 1, "warning")
+	same(countLines(logs, "W mileage.insurance:"), 1, "warning")
 	same(countLines(logs, FILE), 1, "warning names the file")
 end)
 
@@ -194,7 +194,7 @@ test("a car the game fails to register is logged and the others still go through
 	end
 	local summary = restore.ensureLoaded()
 	same(summary.added, 1, "added")
-	expect(countLines(logs, "E careerMP.insurance:") >= 1, "error logged")
+	expect(countLines(logs, "E mileage.insurance:") >= 1, "error logged")
 end)
 
 --== failures ================================================================
@@ -216,7 +216,7 @@ test("missing game functions are named and nothing is called", function()
 	local summary = restore.ensureLoaded()
 	same(ins.loads, 0, "game loads")
 	same(summary.loaded, false, "loaded")
-	same(countLines(logs, "W careerMP.insurance: missing getInvVehs, onVehicleAddedToInventory"), 1, "warning")
+	same(countLines(logs, "W mileage.insurance: missing getInvVehs, onVehicleAddedToInventory"), 1, "warning")
 end)
 
 test("a missing insurance module is reported", function()
@@ -224,7 +224,7 @@ test("a missing insurance module is reported", function()
 	career_modules_insurance_insurance = nil
 	local summary = restore.ensureLoaded()
 	same(summary.loaded, false, "loaded")
-	same(countLines(logs, "W careerMP.insurance: missing career_modules_insurance_insurance"), 1, "warning")
+	same(countLines(logs, "W mileage.insurance: missing career_modules_insurance_insurance"), 1, "warning")
 end)
 
 --== edges of the contract ===================================================
@@ -244,7 +244,7 @@ end)
 test("the summary line reports a reload that added a car, once", function()
 	local restore = setup()
 	restore.ensureLoaded()
-	same(countLines(logs, "I careerMP.insurance: loaded=true reloaded=true backedUp=false added=1"), 1, "summary line")
+	same(countLines(logs, "I mileage.insurance: loaded=true reloaded=true backedUp=false added=1"), 1, "summary line")
 	same(countLines(logs, "loaded="), 1, "one summary line")
 end)
 
@@ -290,7 +290,7 @@ test("a backup write that reports failure without raising leaves insurance.json 
 	expect(not contains(writes, FILE), "insurance.json written")
 	same(files[FILE].driverScore, 100, "insurance.json content")
 	same(summary.backedUp, false, "backedUp")
-	expect(countLines(logs, "E careerMP.insurance:") >= 1, "error logged")
+	expect(countLines(logs, "E mileage.insurance:") >= 1, "error logged")
 end)
 
 test("a reset write that fails is logged, not counted as backed up, and the game's load still runs", function()
@@ -302,7 +302,7 @@ test("a reset write that fails is logged, not counted as backed up, and the game
 	same(files[FILE].driverScore, 100, "insurance.json content")
 	same(files[BACKUP].driverScore, 100, "backup kept")
 	same(ins.loads, 1, "game loads")
-	same(countLines(logs, "E careerMP.insurance: could not reset"), 1, "error logged")
+	same(countLines(logs, "E mileage.insurance: could not reset"), 1, "error logged")
 end)
 
 test("a load that leaves the records empty is reported and no cars are added", function()
@@ -312,7 +312,7 @@ test("a load that leaves the records empty is reported and no cars are added", f
 	same(summary.loaded, false, "loaded")
 	same(#ins.added, 0, "cars added")
 	expect(summary.error ~= nil, "summary carries the error")
-	same(countLines(logs, "E careerMP.insurance:"), 1, "error logged")
+	same(countLines(logs, "E mileage.insurance:"), 1, "error logged")
 end)
 
 test("records the game returns as nil count every owned car as missing", function()
@@ -329,7 +329,7 @@ test("a game without the inventory module is reported and the check still return
 	local ok, summary = pcall(restore.ensureLoaded)
 	expect(ok, "ensureLoaded raised: " .. tostring(summary))
 	same(summary.added, 0, "added")
-	same(countLines(logs, "W careerMP.insurance: missing career_modules_inventory.getVehicles"), 1, "warning")
+	same(countLines(logs, "W mileage.insurance: missing career_modules_inventory.getVehicles"), 1, "warning")
 end)
 
 --== records loaded from an empty save ======================================
@@ -375,7 +375,7 @@ test("a backup that reads back with changed values leaves insurance.json untouch
 	expect(not contains(writes, FILE), "insurance.json written")
 	same(files[FILE].driverScore, 100, "insurance.json content")
 	same(summary.backedUp, false, "backedUp")
-	same(countLines(logs, "E careerMP.insurance: could not back up"), 1, "error logged")
+	same(countLines(logs, "E mileage.insurance: could not back up"), 1, "error logged")
 end)
 
 test("a reset write that returns without writing is not counted as backed up", function()
@@ -390,7 +390,7 @@ test("a reset write that returns without writing is not counted as backed up", f
 	local summary = restore.ensureLoaded()
 	same(summary.backedUp, false, "backedUp")
 	same(files[FILE].driverScore, 100, "insurance.json content")
-	same(countLines(logs, "E careerMP.insurance: could not reset"), 1, "error logged")
+	same(countLines(logs, "E mileage.insurance: could not reset"), 1, "error logged")
 	same(countLines(logs, "reset, original kept"), 0, "success logged")
 	same(ins.loads, 1, "game loads")
 end)
@@ -401,6 +401,6 @@ test("an inventory that fails to list its cars is logged and the summary still w
 	local ok, summary = pcall(restore.ensureLoaded)
 	expect(ok, "ensureLoaded raised: " .. tostring(summary))
 	same(summary.added, 0, "added")
-	same(countLines(logs, "E careerMP.insurance: could not list the inventory: "), 1, "error logged")
-	same(countLines(logs, "I careerMP.insurance: loaded=true"), 1, "summary line")
+	same(countLines(logs, "E mileage.insurance: could not list the inventory: "), 1, "error logged")
+	same(countLines(logs, "I mileage.insurance: loaded=true"), 1, "summary line")
 end)

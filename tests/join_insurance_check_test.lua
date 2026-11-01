@@ -1,14 +1,14 @@
--- careerMPEnabler.lua: a join whose career start settles runs the insurance check
--- (careerMP_insuranceRestore.ensureLoaded) before the server is told the career started,
+-- mileageEnabler.lua: a join whose career start settles runs the insurance check
+-- (mileage_insuranceRestore.ensureLoaded) before the server is told the career started,
 -- and a failing or missing check never stops the join.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
-local COMPAT = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/compat.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
+local COMPAT = "Resources/Client/Mileage/lua/ge/extensions/mileage/compat.lua"
 
 local logs, events, handlers, checks
 
 -- A fresh game and BeamMP client, the real compat layer and the real enabler. restore is
--- what stands in for careerMP_insuranceRestore (nil: the extension is not loaded).
+-- what stands in for mileage_insuranceRestore (nil: the extension is not loaded).
 local function setup(restore)
 	logs, events, handlers, checks = {}, {}, {}, 0
 
@@ -39,14 +39,14 @@ local function setup(restore)
 	worldReadyState = 0
 
 	extensions = {
-		careerMP_compat = dofile(COMPAT),
-		careerMP_careerPatches = {
+		mileage_compat = dofile(COMPAT),
+		mileage_careerPatches = {
 			ensure = function() return true end,
 			withRemoteVehiclesProtected = function(fn) return true, fn() end,
 		},
 		core_input_actionFilter = {setGroup = function() end, addAction = function() end},
 		ui_router = {navigate = function() end},
-		careerMP_insuranceRestore = restore,
+		mileage_insuranceRestore = restore,
 	}
 
 	local enabler = dofile(SOURCE)
@@ -85,18 +85,18 @@ test("the check runs once per join, not on every frame", function()
 	same(checks, 1, "insurance checks")
 end)
 
-test("a check that raises is logged under careerMP and the join still reports success", function()
+test("a check that raises is logged under mileage and the join still reports success", function()
 	setup(restoreThat(function() error("insuranceRestore.lua:1: boom", 0) end))
 	local ok, err = pcall(handlers.rxCareerSync, "{}")
 	expect(ok, "join raised: " .. tostring(err))
 	expect(indexOf(events, STARTED) ~= nil, "career start not confirmed")
-	same(countLines(logs, "E careerMP: join: insurance check failed: insuranceRestore.lua:1: boom"), 1, "error logged")
+	same(countLines(logs, "E mileage: join: insurance check failed: insuranceRestore.lua:1: boom"), 1, "error logged")
 end)
 
-test("a missing insurance extension is logged under careerMP and the join still reports success", function()
+test("a missing insurance extension is logged under mileage and the join still reports success", function()
 	setup(nil)
 	local ok, err = pcall(handlers.rxCareerSync, "{}")
 	expect(ok, "join raised: " .. tostring(err))
 	expect(indexOf(events, STARTED) ~= nil, "career start not confirmed")
-	same(countLines(logs, "E careerMP: join: careerMP_insuranceRestore is not loaded"), 1, "error logged")
+	same(countLines(logs, "E mileage: join: mileage_insuranceRestore is not loaded"), 1, "error logged")
 end)

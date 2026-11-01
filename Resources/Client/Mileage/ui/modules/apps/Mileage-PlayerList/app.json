@@ -1,0 +1,18 @@
+{
+  "domElement": "<mileageplayerlist></mileageplayerlist>",
+  "name": "Mileage Player List",
+  "types": [
+    "ui.apps.categories.beammp"
+  ],
+  "css": {
+  	"right": "0px",
+  	"top": "90px",
+    "min-width": "300px",
+  	"width": "auto",
+    "height": "530px"
+  },
+  "description": "The playerlist for the Mileage session.",
+  "author": "BeamMP Team",
+  "version": "1.0",
+  "directive": "mileageplayerlist"
+}

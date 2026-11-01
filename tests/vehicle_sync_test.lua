@@ -1,9 +1,9 @@
 -- Vehicle sync between players: a mission start hides the starter's traffic instead of
--- deleting it (careerMP/traffic.lua), traffic and parked cars carry no nametag, and a
--- hide, show or spawn sends one small update (careerMPEnabler.lua and the server plugin).
+-- deleting it (mileage/traffic.lua), traffic and parked cars carry no nametag, and a
+-- hide, show or spawn sends one small update (mileageEnabler.lua and the server plugin).
 
-local TRAFFIC = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/traffic.lua"
-local COMPAT = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/compat.lua"
+local TRAFFIC = "Resources/Client/Mileage/lua/ge/extensions/mileage/traffic.lua"
+local COMPAT = "Resources/Client/Mileage/lua/ge/extensions/mileage/compat.lua"
 
 --== a stand-in game =========================================================
 
@@ -91,8 +91,8 @@ local function setupTraffic(opts)
 	function setExtensionUnloadMode() end
 	os.clockhp = function() return 0 end
 	MPCoreNetwork = {isMPSession = function() return mp end}
-	extensions = {careerMP_compat = dofile(COMPAT)}
-	careerMPEnabler = {getClientConfig = function() return {roadTrafficEnabled = true, roadTrafficAmount = 6,
+	extensions = {mileage_compat = dofile(COMPAT)}
+	mileageEnabler = {getClientConfig = function() return {roadTrafficEnabled = true, roadTrafficAmount = 6,
 		parkedTrafficEnabled = true, parkedTrafficAmount = 8} end}
 	career_modules_playerDriving = {
 		restoreTrafficAfterTutorialPhase = function() end,
@@ -287,8 +287,8 @@ end)
 -- Each player runs the real enabler on their own stand-in game, the server runs the
 -- real plugin, and messages between them queue until pump() delivers them.
 
-local ENABLER = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
-local SERVER = "Resources/Server/CareerMP/careerMP.lua"
+local ENABLER = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
+local SERVER = "Resources/Server/Mileage/mileage.lua"
 
 -- Payloads travel as text, like BeamMP's JSON: Lua table syntax read back with load.
 local function encode(v)
@@ -338,7 +338,7 @@ local function newWorld()
 	jsonEncode, jsonDecode = encode, tryDecode
 	settings = {getValue = function() return nil end, setValue = function() end}
 	extensions = {
-		careerMP_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
+		mileage_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
 		core_input_actionFilter = {setGroup = function() end, addAction = function() end},
 	}
 	MPConfig = {getNickname = function() return "player" end}
@@ -1040,9 +1040,9 @@ test("isRemoteTraffic is true only for another player's car the server marked as
 	same(me.enabler.isRemoteTraffic("1-99"), false, "a car the server never sent")
 end)
 
-local PAINT = "Resources/Client/CareerMP/lua/ge/extensions/careerMPPerPartPaint.lua"
+local PAINT = "Resources/Client/Mileage/lua/ge/extensions/mileagePerPartPaint.lua"
 
--- The paint requests careerMPPerPartPaint sends when cars 1-0 and 1-1 of another player
+-- The paint requests mileagePerPartPaint sends when cars 1-0 and 1-1 of another player
 -- are ready on this game, with the server's traffic marks as `traffic` says.
 local function paintRequests(traffic, withCheck)
 	local sent = {}
@@ -1054,9 +1054,9 @@ local function paintRequests(traffic, withCheck)
 		getServerVehicleID = function(gid) return "1-" .. gid end,
 		isOwn = function() return false end,
 	}
-	careerMPEnabler = {}
+	mileageEnabler = {}
 	if withCheck ~= false then
-		careerMPEnabler.isRemoteTraffic = function(sid) return traffic[sid] == true end
+		mileageEnabler.isRemoteTraffic = function(sid) return traffic[sid] == true end
 	end
 	local paint = dofile(PAINT)
 	paint.onVehicleReady(0)

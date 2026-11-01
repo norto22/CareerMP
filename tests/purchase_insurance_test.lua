@@ -1,8 +1,8 @@
--- careerMP/purchaseInsurance.lua: a purchase screen opened without an insurance choice gets
+-- mileage/purchaseInsurance.lua: a purchase screen opened without an insurance choice gets
 -- the game's default policy when one exists, reloads the insurance records once when none
 -- does, and otherwise opens with "no insurance" (-1) and a warning instead of failing.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/purchaseInsurance.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileage/purchaseInsurance.lua"
 
 local SHOP_ID = 7
 
@@ -42,7 +42,7 @@ local function setup(o)
 	end
 	extensions = {}
 	if not opts.noRestore then
-		extensions.careerMP_insuranceRestore = {
+		extensions.mileage_insuranceRestore = {
 			ensureLoaded = function()
 				game.reloads = game.reloads + 1
 				if opts.reloadFails then error("insurance.lua:682: attempt to compare nil with number\nstack") end
@@ -71,7 +71,7 @@ test("a private listing with no policies loaded opens with no insurance and a wa
 	same(calls[1].purchaseType, "inspect", "purchase type")
 	same(calls[1].shopId, SHOP_ID, "shop id")
 	same(calls[1].insuranceId, -1, "insurance choice")
-	same(countLines(logs, "W careerMP.purchase:"), 1, "one warning")
+	same(countLines(logs, "W mileage.purchase:"), 1, "one warning")
 	same(countLines(logs, "shop " .. SHOP_ID), 1, "the warning names the car")
 end)
 
@@ -104,7 +104,7 @@ test("missing policies are reloaded once, and the game picks the default when th
 	same(picked, nil, "insurance choice left to the game")
 	same(reason, nil, "reason")
 	same(game.reloads, 1, "reloads")
-	same(countLines(logs, "W careerMP.purchase:"), 0, "warnings")
+	same(countLines(logs, "W mileage.purchase:"), 0, "warnings")
 end)
 
 test("policies still missing after one reload give no insurance and say why", function()
@@ -122,7 +122,7 @@ test("a listing with no insurance class opens with no insurance and no reload", 
 	purchase.openPurchaseMenu(original, "inspect", SHOP_ID)
 	same(calls[1].insuranceId, -1, "insurance choice")
 	same(game.reloads, 0, "reloads")
-	same(countLines(logs, "W careerMP.purchase:"), 1, "one warning")
+	same(countLines(logs, "W mileage.purchase:"), 1, "one warning")
 	same(countLines(logs, "no insurance class"), 1, "the warning says why")
 end)
 
@@ -130,7 +130,7 @@ test("a missing insurance restore extension gives no insurance and says so", fun
 	local purchase = setup({noRestore = true})
 	purchase.openPurchaseMenu(original, "inspect", SHOP_ID)
 	same(calls[1].insuranceId, -1, "insurance choice")
-	same(countLines(logs, "careerMP_insuranceRestore"), 1, "the warning names the missing extension")
+	same(countLines(logs, "mileage_insuranceRestore"), 1, "the warning names the missing extension")
 end)
 
 test("a reload that raises gives no insurance with the error's first line logged", function()
@@ -149,7 +149,7 @@ test("a missing listing leaves the choice to the game with a warning", function(
 	purchase.openPurchaseMenu(original, "inspect", SHOP_ID)
 	same(calls[1].insuranceId, nil, "insurance choice left to the game")
 	same(game.reloads, 0, "reloads")
-	same(countLines(logs, "W careerMP.purchase:"), 1, "one warning")
+	same(countLines(logs, "W mileage.purchase:"), 1, "one warning")
 	same(countLines(logs, "no listing for shop " .. SHOP_ID), 1, "the warning says why")
 end)
 
@@ -157,7 +157,7 @@ test("a missing game function leaves the choice to the game with a warning", fun
 	local purchase = setup({noDefaultLookup = true})
 	purchase.openPurchaseMenu(original, "inspect", SHOP_ID)
 	same(calls[1].insuranceId, nil, "insurance choice left to the game")
-	same(countLines(logs, "W careerMP.purchase: missing career_modules_insurance_insurance.getDefaultInsuranceForClassId"),
+	same(countLines(logs, "W mileage.purchase: missing career_modules_insurance_insurance.getDefaultInsuranceForClassId"),
 		1, "the warning names the function")
 end)
 
@@ -168,7 +168,7 @@ test("a pick that raises falls back to the caller's arguments with an error line
 	same(calls[1].purchaseType, "inspect", "purchase type")
 	same(calls[1].shopId, SHOP_ID, "shop id")
 	same(calls[1].insuranceId, nil, "insurance choice left to the game")
-	same(countLines(logs, "E careerMP.purchase:"), 1, "one error line")
+	same(countLines(logs, "E mileage.purchase:"), 1, "one error line")
 	same(countLines(logs, "bad shop list"), 1, "the error is logged")
 end)
 
@@ -188,7 +188,7 @@ test("the purchase data wrapper logs a failure and raises it again", function()
 	local ok, err = pcall(purchase.sendPurchaseDataToUi, function() error(failure, 0) end)
 	same(ok, false, "the failure is raised again")
 	same(err, failure, "the same error")
-	same(countLines(logs, "E careerMP.purchase: purchase screen data failed: vehicleShopping.lua:793: attempt to index a nil value"),
+	same(countLines(logs, "E mileage.purchase: purchase screen data failed: vehicleShopping.lua:793: attempt to index a nil value"),
 		1, "the failure is logged")
 	same(countLines(logs, "stack"), 0, "only the first line")
 end)

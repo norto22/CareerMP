@@ -1,8 +1,8 @@
--- Resources/Server/CareerMP/careerMP.lua: every message the server sends is counted by
--- feature, and `CareerMP Stats` prints what each part of CareerMP received and sent in
+-- Resources/Server/Mileage/mileage.lua: every message the server sends is counted by
+-- feature, and `Mileage Stats` prints what each part of Mileage received and sent in
 -- the last 60 seconds and since the server started.
 
-local SOURCE = "Resources/Server/CareerMP/careerMP.lua"
+local SOURCE = "Resources/Server/Mileage/mileage.lua"
 
 --== a stand-in BeamMP server ================================================
 
@@ -226,7 +226,7 @@ test("Stats reset starts the since-start counts again", function()
 	newServer({0, 1})
 	onVehicleSpawnHandler(0, 0, "")
 	local lines = statsLines({"reset"})
-	same(countLines(lines, "[CareerMP] Stats reset"), 1, "reset line")
+	same(countLines(lines, "[Mileage] Stats reset"), 1, "reset line")
 	local r = row(statsLines(), "carStates")
 	same(r.total.sent, 0, "messages since the reset")
 	same(r.window.sent, 0, "messages in the window after the reset")
@@ -234,7 +234,7 @@ end)
 
 test("Stats with an unknown argument prints its usage", function()
 	newServer({0})
-	same(countLines(statsLines({"bogus"}), "Usage: CareerMP Stats [reset]"), 1, "usage line")
+	same(countLines(statsLines({"bogus"}), "Usage: Mileage Stats [reset]"), 1, "usage line")
 end)
 
 test("Help lists the Stats command", function()
@@ -244,7 +244,7 @@ test("Help lists the Stats command", function()
 	print = function(line) table.insert(server.printed, tostring(line)) end
 	Help({})
 	print = realPrint
-	same(countLines(server.printed, "CareerMP Stats"), 1, "Stats in the help")
+	same(countLines(server.printed, "Mileage Stats"), 1, "Stats in the help")
 end)
 
 -- BeamMP drops a leaving player from its list before the plugin hears of the leave.

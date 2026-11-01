@@ -1,7 +1,7 @@
--- Resources/Server/CareerMP/careerMP.lua: the config a new server writes, what an
+-- Resources/Server/Mileage/mileage.lua: the config a new server writes, what an
 -- existing config keeps, and the retired extra-traffic settings.
 
-local SOURCE = "Resources/Server/CareerMP/careerMP.lua"
+local SOURCE = "Resources/Server/Mileage/mileage.lua"
 
 local printed, stored, written, sentToClients
 
@@ -97,8 +97,8 @@ test("an existing config keeps the owner's traffic values and loses only extra t
 		same(written.client.parkedTrafficAmount, 20, "parkedTrafficAmount")
 		same(written.client.extraTrafficAmount, nil, "extraTrafficAmount")
 		same(written.client.extraTrafficEnabled, nil, "extraTrafficEnabled")
-		same(countLines(printed, "[CareerMP] ---------- CareerMP Config client extraTrafficAmount removed: extra traffic was never used by the game"), 1, "removal line for the amount")
-		same(countLines(printed, "[CareerMP] ---------- CareerMP Config client extraTrafficEnabled removed: extra traffic was never used by the game"), 1, "removal line for the switch")
+		same(countLines(printed, "[Mileage] ---------- Mileage Config client extraTrafficAmount removed: extra traffic was never used by the game"), 1, "removal line for the amount")
+		same(countLines(printed, "[Mileage] ---------- Mileage Config client extraTrafficEnabled removed: extra traffic was never used by the game"), 1, "removal line for the switch")
 		same(countLines(printed, "extraTraffic"), 2, "no other line names extra traffic")
 	end)
 end)
@@ -167,8 +167,8 @@ test("an unknown setting in the server section is still called invalid", functio
 		stored.server.extraTrafficAmount = 5
 		stored.client.somethingElse = 1
 		prepareConfig()
-		same(countLines(printed, "CareerMP Config server extraTrafficAmount is invalid, removing"), 1, "server section line")
-		same(countLines(printed, "CareerMP Config client somethingElse is invalid, removing"), 1, "client section line")
+		same(countLines(printed, "Mileage Config server extraTrafficAmount is invalid, removing"), 1, "server section line")
+		same(countLines(printed, "Mileage Config client somethingElse is invalid, removing"), 1, "client section line")
 		same(written.server.extraTrafficAmount, nil, "removed from server")
 	end)
 end)
@@ -192,7 +192,7 @@ test("SetConfig refuses the removed extra-traffic settings and still sets road t
 		prepareConfig()
 		stored, written, printed = written, nil, {}
 		SetConfig({"client", "extraTrafficAmount", "10"})
-		same(countLines(printed, "[CareerMP] ---------- Unknown key: client extraTrafficAmount"), 1, "unknown key line")
+		same(countLines(printed, "[Mileage] ---------- Unknown key: client extraTrafficAmount"), 1, "unknown key line")
 		same(written, nil, "file written for a refused key")
 		SetConfig({"client", "roadTrafficEnabled", "true"})
 		expect(written ~= nil, "file written")
@@ -214,7 +214,7 @@ test("every second tick sends each connected player one alive message", function
 		tick()
 		local to = {}
 		for _, s in ipairs(sent) do
-			same(s.event, "rxCareerMPAlive", "event")
+			same(s.event, "rxMileageAlive", "event")
 			same(s.data, "", "alive content")
 			to[s.id] = (to[s.id] or 0) + 1
 		end

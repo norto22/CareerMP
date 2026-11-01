@@ -1,14 +1,14 @@
 -- Damage between players: each player's game sends the dents of the cars it owns
--- (lua/vehicle/extensions/auto/careerMPDamage.lua and careerMP/damageSync.lua), the
--- server relays them from the car's owner only (careerMP.lua), and every other game
+-- (lua/vehicle/extensions/auto/mileageDamage.lua and mileage/damageSync.lua), the
+-- server relays them from the car's owner only (mileage.lua), and every other game
 -- applies them to its copy of the car.
 --
 -- Two stand-in games and the real server plugin. Commands one side of a game queues for
 -- the other (queueGameEngineLua, queueLuaCommand) run as Lua text, as the game runs them.
 
-local VEHICLE = "Resources/Client/CareerMP/lua/vehicle/extensions/auto/careerMPDamage.lua"
-local GE = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/damageSync.lua"
-local SERVER = "Resources/Server/CareerMP/careerMP.lua"
+local VEHICLE = "Resources/Client/Mileage/lua/vehicle/extensions/auto/mileageDamage.lua"
+local GE = "Resources/Client/Mileage/lua/ge/extensions/mileage/damageSync.lua"
+local SERVER = "Resources/Server/Mileage/mileage.lua"
 
 --== text, vectors and JSON ==================================================
 
@@ -82,18 +82,18 @@ local world, logs
 
 -- Runs fn inside a car's vehicle Lua: obj, v, beamstate and the extension are its own.
 local function inVehicle(car, fn, ...)
-	obj, v, beamstate, careerMPDamage = car.obj, car.v, car.beamstate, car.ext
+	obj, v, beamstate, mileageDamage = car.obj, car.v, car.beamstate, car.ext
 	return fn(...)
 end
 
 -- The enabler's traffic test, from the real enabler (loaded once per world).
-local ENABLER = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
+local ENABLER = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
 local enabler
 
 -- Runs fn with the globals of a game's game-engine Lua.
 local function as(game, fn, ...)
 	MPVehicleGE, be, gameplay_traffic = game.MPVehicleGE, game.be, game.traffic
-	careerMP_damageSync, careerMPEnabler = game.ge, enabler
+	mileage_damageSync, mileageEnabler = game.ge, enabler
 	function TriggerServerEvent(name, data)
 		table.insert(world.toServer, {from = game.id, name = name, data = data})
 	end
@@ -157,7 +157,7 @@ local function addGame(id)
 	world.games[id] = game
 	as(game, function()
 		game.ge = dofile(GE)
-		careerMP_damageSync = game.ge
+		mileage_damageSync = game.ge
 		if game.ge.onExtensionLoaded then game.ge.onExtensionLoaded() end
 	end)
 	return game
@@ -356,7 +356,7 @@ local function takeMessages(car)
 	local queue = car.game.geQueue
 	car.game.geQueue = {}
 	for _, cmd in ipairs(queue) do
-		careerMP_damageSync = {onLocalDamage = function(id, json)
+		mileage_damageSync = {onLocalDamage = function(id, json)
 			same(id, car.gid, "vehicle id in the command")
 			table.insert(messages, jsonToLua(json))
 		end}
@@ -594,7 +594,7 @@ test("without the enabler's traffic test no car sends damage, and that is logged
 	enabler = nil
 	step(3)
 	same(#roleCommands(car), 0, "roles")
-	same(countLines(logs, "careerMPEnabler.isTrafficCar missing"), 1, "warnings")
+	same(countLines(logs, "mileageEnabler.isTrafficCar missing"), 1, "warnings")
 end)
 
 test("the car the player drives sends its damage even when it came from traffic", function()
@@ -855,7 +855,7 @@ local function rawMessages(car)
 	local queue = car.game.geQueue
 	car.game.geQueue = {}
 	for _, cmd in ipairs(queue) do
-		careerMP_damageSync = {onLocalDamage = function(_, json) table.insert(messages, json) end}
+		mileage_damageSync = {onLocalDamage = function(_, json) table.insert(messages, json) end}
 		assert(compile(cmd))()
 	end
 	return messages
@@ -1020,7 +1020,7 @@ end)
 local function resetRequests(car)
 	local counts = {resync = 0, cleared = 0}
 	for _, cmd in ipairs(car.game.geQueue) do
-		local id, wantFull = cmd:match("^careerMP_damageSync%.resetCopy%((%d+),(%d)%)$")
+		local id, wantFull = cmd:match("^mileage_damageSync%.resetCopy%((%d+),(%d)%)$")
 		if id then
 			same(tonumber(id), car.gid, "car in the reset request")
 			if wantFull == "1" then counts.resync = counts.resync + 1 else counts.cleared = counts.cleared + 1 end
@@ -1213,7 +1213,7 @@ test("more than 30 queued messages are dropped and the owner car sends its full 
 	step(2.5)
 	local before = #sentToServer("careerDamage", 0)
 	for _ = 1, 31 do as(owners, owners.ge.onLocalDamage, owner.gid, '{"c":0,"b":[],"n":[]}') end
-	same(countLines(owner.vehicleQueue, "careerMPDamage.sendFull(1)"), 1, "cleared-then-full requests to the owner car")
+	same(countLines(owner.vehicleQueue, "mileageDamage.sendFull(1)"), 1, "cleared-then-full requests to the owner car")
 	same(countLines(logs, "full damage sent again"), 1, "warnings")
 	step(15)
 	local all = sentToServer("careerDamage", 0)
@@ -1334,7 +1334,7 @@ end)
 test("a full-damage request with no answer is asked again, at most four times", function()
 	newWorld()
 	local owners, copies = addGame(0), addGame(1)
-	-- An owner on an older CareerMP: its game has no damage module answering.
+	-- An owner on an older Mileage: its game has no damage module answering.
 	owners.handlers.rxCareerDamageRequest = nil
 	addCar(owners, 0, 0)
 	addCar(copies, 0, 0)
@@ -1483,7 +1483,7 @@ local function requestsFor(sid)
 	return n
 end
 
--- Player 0 on an older CareerMP (nothing answers a request), and player 1's copies of
+-- Player 0 on an older Mileage (nothing answers a request), and player 1's copies of
 -- player 0's cars 0-0 to 0-(n-1).
 local function silentOwner(n)
 	newWorld()

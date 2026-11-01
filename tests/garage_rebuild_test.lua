@@ -1,17 +1,17 @@
--- Garage rebuilds on a CareerMP server: fitting parts, tuning, painting or repairing one car
+-- Garage rebuilds on a Mileage server: fitting parts, tuning, painting or repairing one car
 -- at the garage computer must rebuild that car and nothing else, and the computer must seat
 -- the player in the car they clicked.
 --
--- Loads the real careerMP/patches.lua and a stand-in for the game's own garage computer
--- (tests/game_computer.lua), which CareerMP patches at runtime. BeamMP's rebuild is a
+-- Loads the real mileage/patches.lua and a stand-in for the game's own garage computer
+-- (tests/game_computer.lua), which Mileage patches at runtime. BeamMP's rebuild is a
 -- stand-in that follows MPVehicleGE.replaceRequest line for line: it decides the car from the
 -- global getPlayerVehicle(0), ignores the car the caller named, marks that entry as edited and
 -- calls the game's rebuild without a car. The game's rebuild (core/vehicles.lua) rebuilds the
 -- car it is given, or getPlayerVehicle(0) when given none, in place.
 
-local PATCHES = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/patches.lua"
+local PATCHES = "Resources/Client/Mileage/lua/ge/extensions/mileage/patches.lua"
 local COMPUTER = "tests/game_computer.lua"
-local COMPUTER_COPY = "Resources/Client/CareerMP/lua/ge/extensions/career/modules/computer.lua"
+local COMPUTER_COPY = "Resources/Client/Mileage/lua/ge/extensions/career/modules/computer.lua"
 
 local CAR_A, CAR_B = 1, 2 -- inventory ids: A is the car the player picks, B their other car
 
@@ -197,7 +197,7 @@ local function setup()
 
 	career_modules_computer = dofile(COMPUTER)
 	patches = dofile(PATCHES)
-	extensions.careerMP_patches = patches
+	extensions.mileage_patches = patches
 	return patches
 end
 
@@ -299,7 +299,7 @@ test("a rebuild that raises is logged with the line it came from", function()
 	pcall(core_vehicles.replaceVehicle, "pickup", {}, game.carA)
 	local logged
 	for _, line in ipairs(logs) do
-		if string.find(line, "E careerMP.patches:", 1, true) and string.find(line, "rebuild broke", 1, true) then
+		if string.find(line, "E mileage.patches:", 1, true) and string.find(line, "rebuild broke", 1, true) then
 			logged = line
 		end
 	end
@@ -325,7 +325,7 @@ test("a rebuild that raises hands the caller the very error it raised, not the l
 	same(err, errObj, "the error object the caller sees")
 	local logged
 	for _, line in ipairs(logs) do
-		if string.find(line, "E careerMP.patches: garage rebuild of vehicle " .. game.carA.id .. " failed", 1, true)
+		if string.find(line, "E mileage.patches: garage rebuild of vehicle " .. game.carA.id .. " failed", 1, true)
 			and string.find(line, "stack traceback", 1, true) then
 			logged = (logged or 0) + 1
 		end
@@ -375,7 +375,7 @@ test("a BeamMP that picks the car another way is logged as an error and shown", 
 	game.player = game.carB
 	local back = core_vehicles.replaceVehicle("pickup", {}, game.carA)
 	same(back, game.carB, "what the rebuild returned is passed back unchanged")
-	same(countLines(logs, "E careerMP.patches: "), 1, "error lines")
+	same(countLines(logs, "E mileage.patches: "), 1, "error lines")
 	same(#toasts, 1, "messages shown")
 	same(toasts[1].type, "error", "message type")
 	same(getPlayerVehicle(0), game.carB, "the player's car")
@@ -577,7 +577,7 @@ test("outside multiplayer a rebuild naming car A goes straight to the game's reb
 	expect(rebuiltOnly(game.carA.id), "only car A was rebuilt")
 	same(seen, game.realGetPlayerVehicle, "the game's getPlayerVehicle during the rebuild")
 	same(#toasts, 0, "messages shown")
-	same(countLines(logs, "E careerMP.patches: "), 0, "error lines")
+	same(countLines(logs, "E mileage.patches: "), 0, "error lines")
 end)
 
 test("a rebuild that returns nothing is not reported as a wrong car", function()
@@ -589,7 +589,7 @@ test("a rebuild that returns nothing is not reported as a wrong car", function()
 	local back = core_vehicles.replaceVehicle("pickup", {}, game.carA)
 	same(back, nil, "what the rebuild returned")
 	same(#toasts, 0, "messages shown")
-	same(countLines(logs, "E careerMP.patches: "), 0, "error lines")
+	same(countLines(logs, "E mileage.patches: "), 0, "error lines")
 	same(getPlayerVehicle(0), game.carB, "the player's car")
 end)
 
@@ -640,7 +640,7 @@ end)
 
 --== the garage computer, edges ===============================================
 
-test("CareerMP ships no copy of the game's garage computer module", function()
+test("Mileage ships no copy of the game's garage computer module", function()
 	same(loadfile(COMPUTER_COPY), nil, "a loadable " .. COMPUTER_COPY)
 end)
 

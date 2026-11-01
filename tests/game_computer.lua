@@ -1,5 +1,5 @@
 -- A stand-in for the game's own garage computer module (career/modules/computer.lua), which
--- CareerMP no longer ships a copy of. It keeps the parts CareerMP's patches depend on: the
+-- Mileage no longer ships a copy of. It keeps the parts Mileage's patches depend on: the
 -- menu range is 1 m from the computer's door, or 4 m around it when there is no door; the
 -- garage's cars are listed and each gets its buttons from onComputerAddFunctions; and a
 -- button runs its callback through computerButtonCallback, called from the UI by name.

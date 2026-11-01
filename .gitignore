@@ -1,4 +1,5 @@
 # Scratch file written by the updater when checking the remote version
+Resources/Server/Mileage/versions/.remote.json
 Resources/Server/CareerMP/versions/.remote.json
 
 # Release packages written by tools/build.py --package

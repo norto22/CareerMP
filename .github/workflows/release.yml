@@ -36,7 +36,9 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git show "origin/$BASE_REF:Resources/Server/CareerMP/versions/server.json" > "$RUNNER_TEMP/base-server.json"
+          # Before the rename the base kept its version under CareerMP.
+          git show "origin/$BASE_REF:Resources/Server/Mileage/versions/server.json" > "$RUNNER_TEMP/base-server.json" 2>/dev/null \
+            || git show "origin/$BASE_REF:Resources/Server/CareerMP/versions/server.json" > "$RUNNER_TEMP/base-server.json"
           python3 tools/release_check.py --base "$RUNNER_TEMP/base-server.json"
 
       - name: Tag is free
@@ -61,7 +63,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: CareerMP-package
+          name: Mileage-package
           path: dist/*.zip
           if-no-files-found: error
 
@@ -110,7 +112,7 @@ jobs:
             printf '%s\n' "$BODY" > "$RUNNER_TEMP/notes.md"
             notes=(--notes-file "$RUNNER_TEMP/notes.md")
           fi
-          gh release create "$TITLE" "dist/CareerMP-${TITLE#v}.zip" \
+          gh release create "$TITLE" "dist/Mileage-${TITLE#v}.zip" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TITLE" \
             --target "$MERGE_SHA" \

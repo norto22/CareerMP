@@ -1,8 +1,8 @@
--- careerMP/traffic.lua: the server's traffic amounts replace the career's own for one
+-- mileage/traffic.lua: the server's traffic amounts replace the career's own for one
 -- career start, and the tutorial restore uses them for the whole server session.
 
-local SOURCE = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/traffic.lua"
-local COMPAT = "Resources/Client/CareerMP/lua/ge/extensions/careerMP/compat.lua"
+local SOURCE = "Resources/Client/Mileage/lua/ge/extensions/mileage/traffic.lua"
+local COMPAT = "Resources/Client/Mileage/lua/ge/extensions/mileage/compat.lua"
 
 local logs, calls, clock, mp, config
 
@@ -18,8 +18,8 @@ local function setup(opts)
 	function setExtensionUnloadMode() end
 	os.clockhp = function() return clock end
 	MPCoreNetwork = {isMPSession = function() return mp end}
-	extensions = {careerMP_compat = dofile(COMPAT)}
-	careerMPEnabler = {getClientConfig = function() return config end}
+	extensions = {mileage_compat = dofile(COMPAT)}
+	mileageEnabler = {getClientConfig = function() return config end}
 
 	local meter
 	local traffic, parking = {state = "off", spawned = 0}, {spawned = 0}
@@ -99,8 +99,8 @@ test("just outside the range is held to 0 or 50 with a warning naming the settin
 		parkedTrafficEnabled = true, parkedTrafficAmount = -1})
 	same(road, 50, "road 51")
 	same(parked, 0, "parked -1")
-	same(countLines(logs, "W careerMP.traffic: roadTrafficAmount = 51 is out of range, using 50"), 1, "road warning")
-	same(countLines(logs, "W careerMP.traffic: parkedTrafficAmount = -1 is out of range, using 0"), 1, "parked warning")
+	same(countLines(logs, "W mileage.traffic: roadTrafficAmount = 51 is out of range, using 50"), 1, "road warning")
+	same(countLines(logs, "W mileage.traffic: parkedTrafficAmount = -1 is out of range, using 0"), 1, "parked warning")
 end)
 
 test("a missing, empty or non-number amount gives 0 and a warning", function()
@@ -157,7 +157,7 @@ test("a switched-off kind passes 0 and the log says off", function()
 	careerSetup(20, 20)
 	same(find("helper")[2], 0, "road")
 	same(find("trafficActive")[2], 0, "active road")
-	same(countLines(logs, "I careerMP.traffic: applying server traffic - road 0 (off), parked 8 (on)"), 1, "applying line")
+	same(countLines(logs, "I mileage.traffic: applying server traffic - road 0 (off), parked 8 (on)"), 1, "applying line")
 end)
 
 test("police are asked for on a copy of the options whenever road traffic is above 0", function()
@@ -234,7 +234,7 @@ test("a game without setupTrafficHelper is reported and nothing is armed", funct
 	meter.onBeforeCareerActivate()
 	same(countLines(logs, "setupTrafficHelper missing - server traffic amounts not applied"), 1, "warning")
 	meter.onTrafficOrParkingReady()
-	same(countLines(logs, "set up traffic without CareerMP"), 0, "no ready warning for an unarmed start")
+	same(countLines(logs, "set up traffic without Mileage"), 0, "no ready warning for an unarmed start")
 end)
 
 test("an error while working out the amounts still spawns the game's own amounts", function()
@@ -248,7 +248,7 @@ test("an error while working out the amounts still spawns the game's own amounts
 	same(h[4], 15, "parked")
 	same(h[3].police, nil, "options untouched")
 	same(find("trafficActive")[2], 20, "active road")
-	same(countLines(logs, "E careerMP.traffic: server traffic amounts not applied"), 1, "error logged")
+	same(countLines(logs, "E mileage.traffic: server traffic amounts not applied"), 1, "error logged")
 	expect(countLines(logs, "stack traceback") == 1, "traceback logged")
 	expect(traffic.setupTrafficHelper == helper and traffic.setActiveAmount == tActive
 		and parking.setActiveAmount == pActive, "every game function is back")
@@ -261,7 +261,7 @@ test("ready logs the counts the game reports", function()
 	meter.onBeforeCareerActivate()
 	careerSetup(20, 20)
 	meter.onTrafficOrParkingReady()
-	same(countLines(logs, "I careerMP.traffic: traffic ready - 6 road, 8 parked"), 1, "ready line")
+	same(countLines(logs, "I mileage.traffic: traffic ready - 6 road, 8 parked"), 1, "ready line")
 	meter.onTrafficOrParkingReady()
 	same(countLines(logs, "traffic ready"), 1, "a later ready is not logged again")
 end)
@@ -291,7 +291,7 @@ test("ready before the setup went through the meter warns and restores", functio
 	local helper = traffic.setupTrafficHelper
 	meter.onBeforeCareerActivate()
 	meter.onTrafficOrParkingReady()
-	same(countLines(logs, "W careerMP.traffic: the career set up traffic without CareerMP - server traffic amounts not applied"), 1, "warning")
+	same(countLines(logs, "W mileage.traffic: the career set up traffic without Mileage - server traffic amounts not applied"), 1, "warning")
 	expect(traffic.setupTrafficHelper == helper, "setup restored")
 end)
 
@@ -306,7 +306,7 @@ test("the safety net restores after 60 seconds, not before", function()
 	clock = 60.5
 	meter.onUpdate()
 	expect(traffic.setupTrafficHelper == helper, "restored after 60 s")
-	same(countLines(logs, "set up traffic without CareerMP"), 1, "warning")
+	same(countLines(logs, "set up traffic without Mileage"), 1, "warning")
 	meter.onBeforeCareerActivate()
 	expect(traffic.setupTrafficHelper ~= helper, "a later career start arms again")
 end)
@@ -320,8 +320,8 @@ test("traffic that is not ready after 60 seconds is reported with the amounts as
 	meter.onUpdate()
 	clock = 60.5
 	meter.onUpdate()
-	same(countLines(logs, "W careerMP.traffic: traffic not ready 60s after the career start - asked for road 6, parked 8"), 1, "warning")
-	same(countLines(logs, "set up traffic without CareerMP"), 0, "not the missed-meter warning")
+	same(countLines(logs, "W mileage.traffic: traffic not ready 60s after the career start - asked for road 6, parked 8"), 1, "warning")
+	same(countLines(logs, "set up traffic without Mileage"), 0, "not the missed-meter warning")
 	meter.onTrafficOrParkingReady()
 	same(countLines(logs, "traffic ready -"), 0, "a late ready is not logged as this start's")
 end)
@@ -404,7 +404,7 @@ test("an error in the tutorial restore is logged, not raised", function()
 	meter.onCareerActive(true)
 	local ok = pcall(driving.restoreTrafficAfterTutorialPhase)
 	expect(ok, "did not raise")
-	same(countLines(logs, "E careerMP.traffic: tutorial traffic restore failed"), 1, "error logged")
+	same(countLines(logs, "E mileage.traffic: tutorial traffic restore failed"), 1, "error logged")
 end)
 
 test("a career module without the restore is reported once and left alone", function()
@@ -414,20 +414,20 @@ test("a career module without the restore is reported once and left alone", func
 	meter.onCareerActive(true)
 	meter.onCareerActive(true)
 	expect(driving.restoreTrafficAfterTutorialPhase == original, "untouched")
-	same(countLines(logs, "E careerMP.compat: career_modules_playerDriving.setTrafficAfterTutorial missing - " ..
+	same(countLines(logs, "E mileage.compat: career_modules_playerDriving.setTrafficAfterTutorial missing - " ..
 		"the tutorial traffic restore keeps the player's own amounts"), 1, "one warning, through compat")
 end)
 
 -- Reading the module's functions before checking the module exists would raise inside
--- the career start; logging under careerMP.traffic would hide it from the compat filter.
+-- the career start; logging under mileage.traffic would hide it from the compat filter.
 test("a game without the career traffic module is reported through compat, not raised", function()
 	local meter = setup()
 	career_modules_playerDriving = nil
 	local ok, err = pcall(meter.onCareerActive, true)
 	expect(ok, "did not raise: " .. tostring(err))
-	same(countLines(logs, "E careerMP.compat: career_modules_playerDriving.restoreTrafficAfterTutorialPhase missing - " ..
+	same(countLines(logs, "E mileage.compat: career_modules_playerDriving.restoreTrafficAfterTutorialPhase missing - " ..
 		"the tutorial traffic restore keeps the player's own amounts"), 1, "reported through compat")
-	same(countLines(logs, "careerMP.traffic: career_modules_playerDriving"), 0, "not under the meter's own tag")
+	same(countLines(logs, "mileage.traffic: career_modules_playerDriving"), 0, "not under the meter's own tag")
 	meter.onBeamMPServerLeave()
 end)
 
@@ -528,7 +528,7 @@ test("a game without setActiveAmount reports it once and nothing else changes", 
 	local ok, err = pcall(meter.onTrafficShare)
 	expect(ok, "did not raise: " .. tostring(err))
 	meter.onTrafficShare()
-	same(countLines(logs, "E careerMP.compat: gameplay_traffic.setActiveAmount missing"), 1, "reported once")
+	same(countLines(logs, "E mileage.compat: gameplay_traffic.setActiveAmount missing"), 1, "reported once")
 	same(find("parkingActive")[2], 5, "the parked amount still set")
 end)
 
@@ -541,7 +541,7 @@ end)
 
 --== the enabler keeps the share =============================================
 
-local ENABLER = "Resources/Client/CareerMP/lua/ge/extensions/careerMPEnabler.lua"
+local ENABLER = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
 
 -- The real enabler with the settings handlers it registers.
 local function enablerWithHandlers()
@@ -561,7 +561,7 @@ local function enablerWithHandlers()
 	jsonDecode = function(text) return (loadstring or load)("return " .. text)() end
 	settings = {getValue = function() return nil end, setValue = function() end}
 	extensions = {
-		careerMP_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
+		mileage_compat = {report = function() end, targetGameVersion = "test", isMPSession = function() return true end},
 		core_input_actionFilter = {setGroup = function() end, addAction = function() end},
 	}
 	MPConfig = {getNickname = function() return "player" end}
@@ -573,7 +573,7 @@ end
 test("the enabler keeps the share with the settings, through a settings update, and hands a new share on", function()
 	local enabler, handlers, luaText = enablerWithHandlers()
 	local applied = 0
-	extensions.careerMP_traffic = {onTrafficShare = function() applied = applied + 1 end}
+	extensions.mileage_traffic = {onTrafficShare = function() applied = applied + 1 end}
 	handlers.rxClientConfigUpdate(luaText({consoleEnabled = true, trafficShare = {road = 3, parked = 4}}))
 	same(enabler.getClientConfig().trafficShare.road, 3, "share kept with the settings")
 	handlers.rxClientConfigUpdate(luaText({consoleEnabled = true}))
