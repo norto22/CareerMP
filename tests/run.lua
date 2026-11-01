@@ -9,6 +9,7 @@ local files = {
 	"tests/traffic_meter_test.lua",
 	"tests/server_config_test.lua",
 	"tests/announcements_test.lua",
+	"tests/insurance_restore_test.lua",
 }
 
 local passed, failed = 0, 0
