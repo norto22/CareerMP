@@ -21,10 +21,15 @@ local logTag = "careerMP.parkingChallenge"
 
 local active = false
 
+-- FS is an object of the engine called with a colon, not necessarily a Lua table, so it
+-- is called under pcall; a missing or failing FS counts as no layout.
 local function hasClutterLayout(folder)
-	if type(folder) ~= "string" or type(FS) ~= "table" then return false end
+	if type(folder) ~= "string" or FS == nil then return false end
 	local base = folder .. "/parkingLotClutter"
-	return FS:fileExists(base .. ".prefab.json") or FS:fileExists(base .. ".prefab") or false
+	local ok, found = pcall(function()
+		return FS:fileExists(base .. ".prefab.json") or FS:fileExists(base .. ".prefab")
+	end)
+	return ok and found and true or false
 end
 
 local function isParkingChallenge(mission)

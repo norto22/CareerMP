@@ -11,7 +11,7 @@ CareerMP does not change the base game's career or replace it with a multiplayer
 - Local saves: continue on any CareerMP server, or take an online save offline and back
 - Mod vehicles the base game supports in career can appear in traffic and at dealerships
 - Longer vehicle render distance, so players show on the big map
-- Road traffic with police, and parked cars, as in the single-player career: each player spawns a share of the server's traffic total, every player sees everyone's traffic, and missions, challenges and scenarios add their own
+- Road traffic with police, and parked cars, as in the single-player career: each player spawns a share of the server's traffic total, every player sees everyone's traffic, and missions, challenges and scenarios add their own. While you run a parking challenge, other players' traffic and parked cars are hidden on your game only, so the spaces are clear, and they come back when it ends; the cars other players drive stay shown
 - Traffic signals synced for every player
 - Red-light camera and speed trap announcements for cars that players drive
 - Head-to-head drag racing between players on one synchronised tree, using the game's own multiplayer drag code (`client.nativeDragSyncEnabled`, on by default)

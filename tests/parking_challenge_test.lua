@@ -269,6 +269,18 @@ test("a mission whose folder ships the parking-lot clutter layout counts", funct
 	end
 end)
 
+test("a game whose FS is an engine object, not a Lua table, still finds the clutter layout", function()
+	local me = twoPlayers()
+	-- The game's FS is an object of the engine called with a colon, like be; a userdata
+	-- with methods stands in for it.
+	local proxy = newproxy(true)
+	getmetatable(proxy).__index = {fileExists = function(_, path) return path == "/m/challenge/parkingLotClutter.prefab.json" end}
+	me.FS = proxy
+	startMission(me, {id = "challenge", missionType = "timeTrial", missionFolder = "/m/challenge"})
+	same(active(me, 1, 2), false, "my friend's parked car")
+	same(countLines(logs, "mission start: type=timeTrial parking=true"), 1, "log lines")
+end)
+
 test("a mission start with no mission table changes nothing", function()
 	local me = twoPlayers()
 	hook(me, "onAnyMissionChanged", "started", nil)
@@ -379,4 +391,77 @@ test("leaving the server mid-challenge ends it, and my friend's updates apply ag
 	as(friend, function() friend.objects[gameId(1, 2)]:setActive(1) end)
 	pump()
 	same(active(me, 1, 2), true, "my friend's parked car")
+end)
+
+--== edges past the script ===================================================
+
+test("a mission start with no type and no folder hides nothing and logs it as not parking", function()
+	local me = twoPlayers()
+	startMission(me, {id = "x"})
+	same(me.parking.isActive(), false, "parking challenge mode")
+	same(active(me, 1, 2), true, "my friend's parked car")
+	same(countLines(logs, "I careerMP.parkingChallenge: mission start: type=nil parking=false"), 1, "log lines")
+end)
+
+test("my own parked car stays showing on my game and is not reported hidden during my challenge", function()
+	local me, friend = twoPlayers()
+	spawn(0, 1, {JBeam = "etk800", isParked = "true"})
+	frames(me, 1)
+	me.serverRequests = {}
+	startMission(me, PARKING_MISSION)
+	same(active(me, 0, 1), true, "my own parked car on my game")
+	same(active(friend, 0, 1), true, "my own parked car on my friend's game")
+	same(count(me.serverRequests, "careerVehicleActiveHandler"), 0, "hide updates from my game")
+end)
+
+test("a third player still sees my friend's traffic and parked cars during my challenge", function()
+	local me, friend = twoPlayers()
+	local third = addPlayer(2, "Third")
+	-- The third player joins late: their game gets the cars from the server's full map.
+	for vid = 0, 2 do
+		local gid = gameId(1, vid)
+		local veh = {owner = 1, serverVehicleID = "1-" .. vid, JBeam = "pickup", active = true}
+		function veh:setActive(on)
+			local now = on == 1
+			if now == self.active then return end
+			self.active = now
+			as(third, third.enabler.onVehicleActiveChanged, gid, now)
+		end
+		function veh:getActive() return self.active end
+		function veh:queueLuaCommand() end
+		function veh:setField() end
+		function veh:setDynDataFieldbyName() end
+		third.objects[gid] = veh
+		third.vehicles["1-" .. vid] = {gameVehicleID = gid, jbeam = "pickup", isLocal = false}
+		as(third, third.enabler.onVehicleSpawned, gid)
+	end
+	frames(third, 1)
+	startMission(me, PARKING_MISSION)
+	frames(friend, 1)
+	frames(third, 1)
+	for vid = 0, 2 do same(active(third, 1, vid), true, "car 1-" .. vid .. " on the third player's game") end
+	same(active(me, 1, 2), false, "my friend's parked car on my game")
+end)
+
+test("starting the parking challenge again after abandoning it hides the cars again", function()
+	local me = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	hook(me, "onMissionAbandoned", PARKING_MISSION)
+	same(active(me, 1, 2), true, "my friend's parked car after abandoning")
+	startMission(me, PARKING_MISSION)
+	same(me.parking.isActive(), true, "parking challenge mode on the second start")
+	same(active(me, 1, 2), false, "my friend's parked car on the second start")
+	same(active(me, 1, 1), false, "my friend's police car on the second start")
+	stopMission(me, PARKING_MISSION)
+	same(active(me, 1, 2), true, "my friend's parked car after passing")
+end)
+
+test("unloading the parking challenge extension mid-challenge shows the cars again", function()
+	local me = twoPlayers()
+	startMission(me, PARKING_MISSION)
+	hook(me, "onExtensionUnloaded")
+	me.extensions.careerMP_parkingChallenge = nil
+	same(active(me, 1, 2), true, "my friend's parked car")
+	same(active(me, 1, 1), true, "my friend's police car")
+	same(listRequests(me), 0, "list requests from my game")
 end)
