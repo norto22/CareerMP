@@ -5,23 +5,21 @@ local EXT = "Resources/Client/Mileage/lua/ge/extensions/"
 
 local logs
 
--- Loads a client file with the global unpack removed, the way Lua 5.4 has it.
-local function loadWithoutUnpack(path)
-	local saved = rawget(_G, "unpack")
+-- Runs fn on a Lua where unpack lives only in table, the way Lua 5.2 and later have it.
+-- A LuaJIT built without 5.2 compatibility has no table.unpack, so it is put there.
+local function withoutUnpack(fn)
+	local saved, savedTable = rawget(_G, "unpack"), table.unpack
+	table.unpack = savedTable or saved
 	unpack = nil
-	local ok, result = pcall(dofile, path)
-	unpack = saved
+	local ok, result = pcall(fn)
+	unpack, table.unpack = saved, savedTable
 	if not ok then error(result, 0) end
-	return result, saved
+	return result
 end
 
--- Runs fn with the global unpack removed.
-local function withoutUnpack(fn)
-	local saved = rawget(_G, "unpack")
-	unpack = nil
-	local ok, err = pcall(fn)
-	unpack = saved
-	if not ok then error(err, 0) end
+-- Loads a client file on such a Lua.
+local function loadWithoutUnpack(path)
+	return withoutUnpack(function() return dofile(path) end)
 end
 
 local function setup()
