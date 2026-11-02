@@ -10,14 +10,6 @@ local function setGhost(enabled)
 	obj:setGhostEnabled(enabled)
 end
 
-local function onConditionCheck()
-	if partCondition and partCondition.getConditions() then
-		obj:queueGameEngineLua("mileagePerPartPaint.onConditionCheckCallback(" .. obj:getID() .. ") ")
-	end
-end
-
-M.onConditionCheck = onConditionCheck
-
 M.setGhost = setGhost
 
 M.onVehicleReady = onVehicleReady

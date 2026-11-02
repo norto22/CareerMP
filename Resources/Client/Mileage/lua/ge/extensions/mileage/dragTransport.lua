@@ -68,12 +68,22 @@ end
 --== sending =================================================================
 -- One enveloped event. `to` is "all", "host", or a list of player ids; the server
 -- routes it without interpreting the payload.
+--
+-- A message for the strip's leader also carries the strip we are at, on the envelope and
+-- never in the game's data. Some of the game's messages name no strip or race (the
+-- finish time carries only its time), and with several strips busy the server could not
+-- tell whose leader should get them.
 local function send(msgName, to, data)
 	if type(TriggerServerEvent) ~= "function" then
 		log("E", logTag, "TriggerServerEvent unavailable - BeamMP not loaded")
 		return
 	end
-	TriggerServerEvent("dragMP", jsonEncode({ msg = msgName, to = to, data = data }))
+	local envelope = { msg = msgName, to = to, data = data }
+	if to == "host" then
+		local stripId = localStripId()
+		if type(stripId) == "string" then envelope.stripId = stripId end
+	end
+	TriggerServerEvent("dragMP", jsonEncode(envelope))
 end
 
 M.send = send

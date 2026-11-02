@@ -256,11 +256,11 @@ app.controller("PlayerList", ['$scope', '$filter', 'Settings', function ($scope,
 				// Insert a cell containing the player ping
 				var pingCell = row.insertCell(2);
 	
-				// Insert the button inside the cell
+				// Insert the button inside the cell. It only shows the ping; clicking it
+				// does nothing.
 				var btn = document.createElement("BUTTON");
 				var pingText = pingList[parsedList[i].name] || "?";
 				btn.appendChild(document.createTextNode(pingText+='ms'));
-				btn.setAttribute("onclick","teleportToPlayer('"+parsedList[i]+"')");
 				btn.setAttribute("class", "tp-button buttons");
 				pingCell.appendChild(btn);
 

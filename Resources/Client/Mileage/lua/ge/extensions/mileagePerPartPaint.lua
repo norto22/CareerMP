@@ -15,9 +15,19 @@ local logTag = "mileage.paint"
 
 -- inventoryIds whose vehicle had no serverVehicleID yet; retried in onUpdate.
 local pendingPaints = {}
--- gameVehicleID -> paintData waiting on the vehicle's partConditions to init.
-local pendingRemotePaints = {}
 local ensuredPartConditionsByVeh = {}
+
+-- Paints received for another player's car before it is ready on this game: not in
+-- BeamMP's list yet, or listed but not built. Keyed by the car's server id, the id both
+-- games know; applied in onVehicleReady and dropped after HOLD_SECONDS, so a car that
+-- never appears does not keep them. A car sends one paint per part, so they are held
+-- per part, and a later paint of the same part replaces the earlier one.
+--   heldPaints[serverVehicleID] = {at = <first held>, parts = {[partPath] = paintData}}
+local heldPaints = {}
+local heldCars = 0
+local HOLD_SECONDS = 60
+local HOLD_MAX_CARS = 64
+local HOLD_MAX_PARTS = 512
 
 local function clampHelper(value)
 	return clamp(tonumber(value) or 0, 0, 1)
@@ -150,21 +160,72 @@ local function queuePartPaintCommands(vehObj, identifiers, paints)
 	))
 end
 
+-- true when the paint was queued on the car, false when the car has no engine object
+-- yet (so the paint can wait for it), nil when the paint itself cannot be used.
 local function setPartPaintRemote(gameVehicleID, partPath, paints, partName, slotPath)
-	if not gameVehicleID or not paints then return end
-	local vehObj = be:getObjectByID(gameVehicleID)
-	if not vehObj then return end
+	if not paints then return nil end
+	local vehObj = gameVehicleID and gameVehicleID ~= -1 and be:getObjectByID(gameVehicleID)
+	if not vehObj then return false end
 	paints = sanitizePaints(paints)
-	if not paints then return end
+	if not paints then return nil end
 	local identifiers = buildIdentifiers(partPath, partName, slotPath)
-	if #identifiers == 0 then return end
+	if #identifiers == 0 then return nil end
 	ensureVehiclePartConditionInitialized(vehObj, gameVehicleID)
 	queuePartPaintCommands(vehObj, identifiers, paints)
+	return true
 end
 
 local function applyPartPaintRemote(data)
-	if not data then return end
-	setPartPaintRemote(data.gameVehicleID, data.partPath, data.paints, data.partName, data.slotPath)
+	if not data then return nil end
+	return setPartPaintRemote(data.gameVehicleID, data.partPath, data.paints, data.partName, data.slotPath)
+end
+
+local function holdPaint(paintData)
+	local serverVehicleID = paintData.serverVehicleID
+	local entry = heldPaints[serverVehicleID]
+	if not entry then
+		if heldCars >= HOLD_MAX_CARS then return end
+		entry = {at = os.clockhp(), parts = {}, count = 0}
+		heldPaints[serverVehicleID] = entry
+		heldCars = heldCars + 1
+	end
+	local part = tostring(paintData.partPath)
+	if not entry.parts[part] then
+		if entry.count >= HOLD_MAX_PARTS then return end
+		entry.count = entry.count + 1
+	end
+	entry.parts[part] = paintData
+end
+
+local function dropHeld(serverVehicleID)
+	if heldPaints[serverVehicleID] then
+		heldPaints[serverVehicleID] = nil
+		heldCars = heldCars - 1
+	end
+end
+
+local function forgetHeldPart(serverVehicleID, partPath)
+	local entry = heldPaints[serverVehicleID]
+	local part = tostring(partPath)
+	if not entry or not entry.parts[part] then return end
+	entry.parts[part] = nil
+	entry.count = entry.count - 1
+	if entry.count == 0 then dropHeld(serverVehicleID) end
+end
+
+-- Applies what was held for a car that is now ready; anything that still finds no
+-- engine object stays held.
+local function applyHeldPaints(serverVehicleID, gameVehicleID)
+	local entry = heldPaints[serverVehicleID]
+	if not entry then return end
+	for part, paintData in pairs(entry.parts) do
+		paintData.gameVehicleID = gameVehicleID
+		if applyPartPaintRemote(paintData) ~= false then
+			entry.parts[part] = nil
+			entry.count = entry.count - 1
+		end
+	end
+	if entry.count == 0 then dropHeld(serverVehicleID) end
 end
 
 local function sendPartPaints(inventoryId, serverVehicleID, originID)
@@ -197,15 +258,21 @@ local function onInventorySpawnVehicleMP(inventoryId, gameVehicleID)
 	table.insert(pendingPaints, inventoryId)
 end
 
+-- A paint for a car this game has not got yet, or has listed but not built, is held
+-- until the car is ready (onVehicleReady). The paint can arrive first: the owner sends it
+-- as soon as the car spawns on their game.
 local function rxRemotePartPaint(data)
 	local paintData = jsonDecode(data)
-	if not paintData or not paintData.serverVehicleID then return end
+	if type(paintData) ~= "table" or type(paintData.serverVehicleID) ~= "string" then return end
+	paintData.gameVehicleID = nil
 	if MPVehicleGE.getVehicles()[paintData.serverVehicleID] then
 		paintData.gameVehicleID = MPVehicleGE.getGameVehicleID(paintData.serverVehicleID)
-		applyPartPaintRemote(paintData)
-	elseif paintData.gameVehicleID then
-		pendingRemotePaints[paintData.gameVehicleID] = paintData
+		local applied = applyPartPaintRemote(paintData)
+		-- An older paint of this part still held must not be applied over this one later.
+		if applied then forgetHeldPart(paintData.serverVehicleID, paintData.partPath) end
+		if applied ~= false then return end
 	end
+	holdPaint(paintData)
 end
 
 local function rxRequestPartPaints(data)
@@ -222,6 +289,7 @@ local function onVehicleReady(gameVehicleID)
 	local serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
 	if not serverVehicleID then return end
 	if not MPVehicleGE.isOwn(gameVehicleID) then
+		applyHeldPaints(serverVehicleID, gameVehicleID)
 		-- Someone else's vehicle appeared; ask its owner for the part paints. Their
 		-- traffic and parked cars have none.
 		local enabler = mileageEnabler
@@ -238,7 +306,6 @@ end
 
 local function onVehicleDestroyed(vehId)
 	ensuredPartConditionsByVeh[vehId] = nil
-	pendingRemotePaints[vehId] = nil
 end
 
 -- Re-broadcast after anything that can change a part's paint.
@@ -262,16 +329,12 @@ local function onPartShoppingTransactionCompleteMP(inventoryId)
 	broadcastForInventoryId(inventoryId)
 end
 
--- pendingRemotePaints is keyed by gameVehicleID and each entry IS the paintData,
--- so it is read directly and cleared by assigning nil (it is not an array).
-local function onConditionCheckCallback(gameVehicleID)
-	local paintData = pendingRemotePaints[gameVehicleID]
-	if not paintData then return end
-	applyPartPaintRemote(paintData)
-	pendingRemotePaints[gameVehicleID] = nil
-end
-
 local function onUpdate()
+	local now = os.clockhp()
+	for serverVehicleID, entry in pairs(heldPaints) do
+		if now - entry.at > HOLD_SECONDS then dropHeld(serverVehicleID) end
+	end
+
 	if worldReadyState ~= 2 then return end
 
 	for i = #pendingPaints, 1, -1 do
@@ -285,22 +348,11 @@ local function onUpdate()
 			end
 		end
 	end
+end
 
-	-- Paints that arrived before the vehicle's partConditions existed: poke the
-	-- vehicle, and onConditionCheckCallback applies them once it reports ready.
-	for gameVehicleID, paintData in pairs(pendingRemotePaints) do
-		if not paintData.serverVehicleID then
-			paintData.serverVehicleID = MPVehicleGE.getServerVehicleID(gameVehicleID)
-		end
-		if paintData.serverVehicleID then
-			local veh = be:getObjectByID(gameVehicleID)
-			if veh then
-				veh:queueLuaCommand('mileageEnabler.onConditionCheck()')
-			else
-				pendingRemotePaints[gameVehicleID] = nil
-			end
-		end
-	end
+-- Leaving the server: nothing held belongs to the next server's cars.
+local function onBeamMPServerLeave()
+	heldPaints, heldCars = {}, 0
 end
 
 local function onExtensionLoaded()
@@ -313,8 +365,6 @@ local function onExtensionUnloaded()
 	log("I", logTag, "Mileage perPartPaint UNLOADED")
 end
 
-M.onConditionCheckCallback = onConditionCheckCallback
-
 -- Enriched hooks from mileage_patches (the stock ones carry no vehicle id).
 M.onInventorySpawnVehicleMP = onInventorySpawnVehicleMP
 M.onPartShoppingStartedMP = onPartShoppingStartedMP
@@ -325,6 +375,7 @@ M.onVehicleReady = onVehicleReady
 M.onVehicleDestroyed = onVehicleDestroyed
 
 M.onUpdate = onUpdate
+M.onBeamMPServerLeave = onBeamMPServerLeave
 
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded

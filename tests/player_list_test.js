@@ -69,6 +69,19 @@ test("a player list update fills the table", () => {
 	assert.strictEqual(table.rows.length, 3, "header and two players");
 });
 
+test("#51: the ping button shows each player's ping and does nothing when clicked", () => {
+	const {scope, table} = load();
+	scope.emit("onBeamMPPlayerPings", JSON.stringify({Ann: 40}));
+	scope.emit("onBeamMPPlayerList", PLAYERS);
+	const pings = table.rows.slice(1).map((row) => row.cells[2].children[0]);
+	assert.deepStrictEqual(pings.map((btn) => btn.children[0].text), ["40ms", "?ms"], "ping texts");
+	for (const btn of pings) {
+		assert.strictEqual(btn.getAttribute("class"), "tp-button buttons", "button look");
+		assert.strictEqual(btn.getAttribute("onclick"), undefined, "click action");
+	}
+	assert.ok(!/teleportToPlayer/.test(fs.readFileSync(SOURCE, "utf8")), "the app names no teleport");
+});
+
 test("losing the connection empties the list and keeps it empty through BeamMP's updates", () => {
 	const {scope, table} = load();
 	scope.emit("onBeamMPPlayerList", PLAYERS);

@@ -2783,22 +2783,31 @@ end
 --- Race ids are built as "<stripId>-<number>" by the lobby, so the strip is recoverable
 --- from the id itself. Matching the longest one guards against a strip whose id is a
 --- prefix of another's.
-local function resolveAuthorityFor(d)
-	if not d then return nil end
+---
+--- When the message itself names neither, the sender's own strip decides: Mileage clients
+--- put it on the envelope (envelopeStripId) of every message for a leader. It is only
+--- ever used to look up a strip that already has a leader.
+local function resolveAuthorityFor(d, envelopeStripId)
+	if type(d) == "table" then
+		local named = d.stripId or d.lobbyId
+		if named and dragAuthority[named] then return dragAuthority[named] end
 
-	local named = d.stripId or d.lobbyId
-	if named and dragAuthority[named] then return dragAuthority[named] end
-
-	local raceId = d.raceId
-	if type(raceId) == "string" then
-		local best
-		for stripId, holder in pairs(dragAuthority) do
-			if holder and raceId:sub(1, #stripId + 1) == stripId .. "-" then
-				if not best or #stripId > #best then best = stripId end
+		local raceId = d.raceId
+		if type(raceId) == "string" then
+			local best
+			for stripId, holder in pairs(dragAuthority) do
+				if holder and raceId:sub(1, #stripId + 1) == stripId .. "-" then
+					if not best or #stripId > #best then best = stripId end
+				end
 			end
+			if best then return dragAuthority[best] end
 		end
-		if best then return dragAuthority[best] end
 	end
+
+	if type(envelopeStripId) == "string" and dragAuthority[envelopeStripId] then
+		return dragAuthority[envelopeStripId]
+	end
+	if type(d) ~= "table" then return nil end
 
 	-- Nothing matched. If exactly one strip is in play the answer is unambiguous anyway;
 	-- with several, guessing would hand a finish time to the wrong race, so send nothing.
@@ -2808,6 +2817,31 @@ local function resolveAuthorityFor(d)
 	end
 	if count == 1 then return only end
 	return nil
+end
+
+-- A leader message that reaches nobody is logged, by name and sender, at most once per
+-- 10 s for each pair, so a client sending one every frame cannot flood the console. The
+-- name comes from the client, so it is cut short and kept to one line.
+-- One top-level name: the main chunk is close to Lua's limit of 200 locals.
+local logUnsentDrag
+do
+	local LOG_SECONDS = 10
+	local KEYS_MAX = 256
+	local loggedAt, keys = {}, 0
+
+	function logUnsentDrag(msgName, player_id)
+		local name = tostring(msgName):gsub("%c", "?"):sub(1, 64)
+		local key = name .. "|" .. tostring(player_id)
+		local now = signalTimer:GetCurrent()
+		local last = loggedAt[key]
+		if last and now - last < LOG_SECONDS then return end
+		if not last then
+			if keys >= KEYS_MAX then loggedAt, keys = {}, 0 end
+			keys = keys + 1
+		end
+		loggedAt[key] = now
+		print(string.format("[Mileage] drag: no strip leader for %s from %s; not sent", name, tostring(player_id)))
+	end
 end
 
 --- A client asking who holds a strip (on join, or after reconnecting).
@@ -2848,9 +2882,12 @@ function dragMP(player_id, data)
 
 	if to == "host" then
 		-- To whoever holds the strip this message concerns.
-		local target = resolveAuthorityFor(d)
+		local target = resolveAuthorityFor(d, envelope.stripId)
 		if target and MP.IsPlayerConnected(target) then
 			send("drag", target, "rxDragMP", payload)
+		elseif envelope.msg ~= "mileageDragJoin" and envelope.msg ~= "mileageDragLeave" then
+			-- The presence messages have done their work above; anything else is lost.
+			logUnsentDrag(envelope.msg, player_id)
 		end
 		return
 	end

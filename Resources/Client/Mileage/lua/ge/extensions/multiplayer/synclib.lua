@@ -40,7 +40,6 @@ local logTag = "mileage.synclib"
 local offsets = {}
 
 local PROBE_INTERVAL = 10      -- seconds between probes to a given peer
-local PROBE_KEEP_BEST = 8      -- how many round trips to consider
 local MAX_SAMPLE_AGE = 120     -- drop stale estimates entirely
 
 local pendingProbes = {}
@@ -56,17 +55,19 @@ end
 
 --== offset estimation ========================================================
 
+-- updatedAt is when the stored sample was taken, so an estimate's age is its sample's age:
+-- a later, worse sample is counted but does not make an old estimate look fresh.
 local function recordSample(clientId, offset, rtt)
 	local entry = offsets[clientId]
-	if not entry or rtt < (entry.rtt or math.huge) then
-		-- Keep the lowest-RTT sample rather than an average: a delayed packet can only
-		-- ever inflate the apparent offset, never reduce it, so the minimum is the
-		-- closest estimate of the true difference.
+	-- Keep the lowest-RTT sample rather than an average: a delayed packet can only ever
+	-- inflate the apparent offset, never reduce it, so the minimum is the closest estimate
+	-- of the true difference. Once the kept sample is too old to be used, the next one
+	-- replaces it even if its round trip is longer, so a long session keeps an estimate.
+	if not entry or rtt < (entry.rtt or math.huge) or now() - entry.updatedAt > MAX_SAMPLE_AGE then
 		offsets[clientId] = { offset = offset, rtt = rtt, samples = ((entry and entry.samples) or 0) + 1, updatedAt = now() }
 		return true
 	end
 	entry.samples = (entry.samples or 0) + 1
-	entry.updatedAt = now()
 	return false
 end
 

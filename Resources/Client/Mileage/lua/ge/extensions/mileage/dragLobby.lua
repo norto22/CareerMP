@@ -307,7 +307,7 @@ function M.getLocalStripId()
 	return localContext and localContext.stripId or nil
 end
 
-function M.clearLocalContext()
+function M.clearLocalContext(keepRace)
 	if localContext then
 		-- Say how far, and in which vehicle. On 01/08 a car parked 1.5 m from the line was
 		-- dropped 29 s later with no vehicle event in the log: either it rolled past
@@ -329,8 +329,11 @@ function M.clearLocalContext()
 		-- poi.lua:52 and core.lua:1322 both do this on the way out, and both are gated on
 		-- NOT being multiplayer, so on the MP path nothing did -- the finished race just
 		-- stayed on screen until a timer got round to it.
+		--
+		-- Not when a mission took the strip over (keepRace): the drag core's racers are the
+		-- mission's then, and the last multiplayer race can still count as over.
 		local c = gameplay_drag_core
-		local data = c and c.getData and c.getData()
+		local data = not keepRace and c and c.getData and c.getData()
 		if data and data.racers and next(data.racers) then
 			local gm = gamemode()
 			if gm and gm.isRaceOver and gm.isRaceOver() and gm.tearDownRaceUI then
@@ -720,6 +723,28 @@ local function recipientsFor(stripId)
 		if playerId ~= own then table.insert(ids, playerId) end
 	end
 	return ids
+end
+
+M.recipientsFor = recipientsFor
+
+--- The strip a race belongs to, from its id ("<stripId>-<number>", see startRace), or nil.
+---
+--- Looks at every strip this machine knows: the ones it has players or a race at, and the
+--- level's strips. The longest match wins, so a strip whose id starts another's cannot
+--- take the other strip's race -- the same rule the server routes leader messages by.
+function M.stripIdForRace(raceId)
+	if type(raceId) ~= "string" then return nil end
+	local best
+	local function consider(stripId)
+		if type(stripId) == "string" and raceId:sub(1, #stripId + 1) == stripId .. "-"
+				and (not best or #stripId > #best) then
+			best = stripId
+		end
+	end
+	for stripId in pairs(presence) do consider(stripId) end
+	for stripId in pairs(activeRaceByStrip) do consider(stripId) end
+	for stripId in pairs(stripCache) do consider(stripId) end
+	return best
 end
 
 --- Send to everyone at the strip, then apply the same message to ourselves.
@@ -1189,20 +1214,23 @@ end
 --== lifecycle ================================================================
 
 local function onUpdate(dtReal)
+	-- A mission or performance test took over the strip while we were standing on it. Let
+	-- go of it on its first frame rather than holding a lane the mission is trying to use,
+	-- and tell the strip's leader. This comes before the enabled check below, which is
+	-- false for as long as the mission runs, so the claim would otherwise be kept until the
+	-- mission ends.
+	local gm = gamemode()
+	if localContext and gm and gm.isEnabled() and gm.inSoloDragActivity and gm.inSoloDragActivity() then
+		log("I", logTag, "a mission or performance test owns the strip now - releasing it")
+		M.clearLocalContext(true)
+		return
+	end
+
 	if not isEnabled() then return end
 
 	if (now() - lastScan) >= SCAN_INTERVAL then
 		lastScan = now()
 		scanForStrip()
-	end
-
-	-- A mission took over the strip while we were standing on it. Let go of it quietly
-	-- rather than holding a lane the mission is trying to use.
-	local gm = gamemode()
-	if localContext and gm and gm.inSoloDragActivity and gm.inSoloDragActivity() then
-		log("I", logTag, "a mission or performance test owns the strip now - releasing it")
-		M.clearLocalContext()
-		return
 	end
 
 	if localContext then
@@ -1215,7 +1243,6 @@ local function onUpdate(dtReal)
 	end
 
 	-- Wind the race up once the result has had its time on screen.
-	local gm = gamemode()
 	local finalizedAt = gm and gm.getFinalizedAt and gm.getFinalizedAt()
 	if finalizedAt and (now() - finalizedAt) >= RESULT_LINGER then
 		if gm.tearDownRaceUI then gm.tearDownRaceUI() end

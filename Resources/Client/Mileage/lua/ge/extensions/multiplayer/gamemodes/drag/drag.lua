@@ -331,6 +331,30 @@ local function send(msgName, to, data)
 	t.send(msgName, to, data)
 end
 
+--- The players at a race's strip (except us), as the lobby's own race messages use, so a
+--- player elsewhere on the server never gets a race they are not in. Without the lobby
+--- there is no way to tell, so the message goes to everyone, as it used to, and that is
+--- logged once.
+local warnedNoLobby = false
+local function raceRecipients(raceId)
+	local lobby = mileage_dragLobby
+	if not (lobby and lobby.recipientsFor and lobby.stripIdForRace) then
+		if not warnedNoLobby then
+			warnedNoLobby = true
+			log("W", logTag, "drag lobby not loaded - race start and rules go to every player")
+		end
+		return "all"
+	end
+	return lobby.recipientsFor(lobby.stripIdForRace(raceId))
+end
+
+-- Sends to the race's players; nothing goes out when nobody else is at the strip.
+local function sendToRace(msgName, raceId, data)
+	local to = raceRecipients(raceId)
+	if to ~= "all" and #to == 0 then return end
+	send(msgName, to, data)
+end
+
 local function activeRaceId(raceId)
 	if raceId then return raceId end
 	local active = M.getActiveDragRace()
@@ -388,9 +412,9 @@ function M.notifyRaceStart(raceId)
 		raceId = id,
 		startTime = os.clockhp(),
 	}
-	send("dragRaceStart", "all", payload)
+	sendToRace("dragRaceStart", id, payload)
 
-	-- And apply it to ourselves. The server's "all" excludes the sender, so without this
+	-- And apply it to ourselves. The send never includes the sender, so without this
 	-- the one client that declared the start is the only one that never records it:
 	-- entry.syncRaceStart stays nil, handleDragRaceFinishTime returns early, and the
 	-- authority collects no finish times and shows no timeslip.
@@ -442,7 +466,7 @@ function M.broadcastRulesUpdate(rules)
 	if not enabled or not M.isServerHost() then return end
 	local id = activeRaceId(nil)
 	if not id or not rules then return end
-	send("dragRaceRulesUpdate", "all", {
+	sendToRace("dragRaceRulesUpdate", id, {
 		type = "rulesUpdate",
 		raceId = id,
 		dragType = rules.dragType,
