@@ -140,6 +140,59 @@ test("#49: a paint for a car that is ready is applied at once, as before", funct
 	same(painted(10), "vehicle/hood:red", "paint")
 end)
 
+test("#49: a car that is ready but still not built keeps its paint until a later ready", function()
+	local paint = setup()
+	receive("1-0", "vehicle/hood")
+	game.listed["1-0"] = 10
+	paint.onVehicleReady(10)
+	same(painted(10), "", "paint while the car has no engine object")
+	game.built[10] = true
+	paint.onVehicleReady(10)
+	same(painted(10), "vehicle/hood:red", "paint once it is built")
+end)
+
+test("#49: the 60 s count starts at a car's first held paint, not its latest", function()
+	local paint = setup()
+	receive("1-0", "vehicle/hood")
+	game.now = 50
+	receive("1-0", "vehicle/door_L")
+	game.now = 61
+	paint.onUpdate()
+	game.listed["1-0"] = 10
+	game.built[10] = true
+	paint.onVehicleReady(10)
+	same(painted(10), "", "paint 61 s after the first held paint")
+end)
+
+test("#49: paints are held for at most 64 cars, and a car whose paint applied frees its place", function()
+	local paint = setup()
+	for n = 0, 64 do receive("1-" .. n, "vehicle/hood") end
+	game.listed["1-64"] = 74
+	game.built[74] = true
+	paint.onVehicleReady(74)
+	same(painted(74), "", "paint of the 65th car")
+	game.listed["1-0"] = 10
+	game.built[10] = true
+	paint.onVehicleReady(10)
+	same(painted(10), "vehicle/hood:red", "paint of the first car")
+	receive("1-65", "vehicle/hood")
+	game.listed["1-65"] = 75
+	game.built[75] = true
+	paint.onVehicleReady(75)
+	same(painted(75), "vehicle/hood:red", "paint of a car held after a place was freed")
+end)
+
+test("#49: a malformed paint message is ignored and nothing is held", function()
+	local paint = setup()
+	handlers.rxRemotePartPaint(nil)
+	handlers.rxRemotePartPaint("text")
+	handlers.rxRemotePartPaint({serverVehicleID = 5, partPath = "vehicle/hood", paints = RED})
+	game.listed[5] = 10
+	game.built[10] = true
+	paint.onVehicleReady(10)
+	same(painted(10), "", "paint from a malformed message")
+end)
+
 test("#49: a paint for another car is not applied to the one that became ready", function()
 	local paint = setup()
 	receive("1-1", "vehicle/hood")

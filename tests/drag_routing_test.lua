@@ -421,3 +421,54 @@ test("#24: a better sample replaces the stored one at any age", function()
 	same(sync.mapOtherClock(5, 200), 101, "the estimate from the better sample")
 	same(sync.getOffsetInfo(5).samples, 2, "samples counted")
 end)
+
+--== edges of the strip routing and the clock age =============================
+
+test("#18: a race id that is not text, or does not start with a known strip and a dash, has no strip", function()
+	local lobby = newGame({"A"})
+	arrive(lobby, 2, "A")
+	same(lobby.stripIdForRace(42), nil, "a number")
+	same(lobby.stripIdForRace(nil), nil, "nothing")
+	same(lobby.stripIdForRace("A"), nil, "the strip id alone")
+	same(lobby.stripIdForRace("AB-1"), nil, "a race at strip AB, which this game does not know")
+	same(lobby.stripIdForRace("A-1"), "A", "a race at strip A")
+end)
+
+test("#19: a message whose data is not a table still reaches the envelope strip's leader, and nothing raises", function()
+	finally(function()
+		twoBusyStrips()
+		same(relayedTo(dragFrom(3, {msg = "x", to = "host", data = 5, stripId = "B"})), "2", "data is a number")
+		same(relayedTo(dragFrom(3, {msg = "y", to = "host", data = "text", stripId = "A"})), "1", "data is text")
+		same(relayedTo(dragFrom(3, {msg = "z", to = "host", data = 5})), "", "data is a number, no envelope strip")
+	end)
+end)
+
+test("#19: a leader who has left the server: the message is logged, not sent", function()
+	finally(function()
+		twoBusyStrips()
+		server.players[2] = nil
+		server.printed = {}
+		same(relayedTo(dragFrom(3, {msg = "dragRaceFinishTime", to = "host", data = {rawTime = 1}, stripId = "B"})), "",
+			"relayed to")
+		same(countLines(server.printed, "drag: no strip leader for dragRaceFinishTime from 3; not sent"), 1, "log lines")
+	end)
+end)
+
+test("#19: the last player leaving a strip is not logged as an unsent message", function()
+	finally(function()
+		twoBusyStrips()
+		server.printed = {}
+		dragFrom(1, {msg = "mileageDragLeave", to = "host", data = {stripId = "A"}})
+		dragFrom(4, {msg = "mileageDragLeave", to = "host", data = {stripId = "C"}})
+		same(countLines(server.printed, "not sent"), 0, "unsent lines for presence messages")
+	end)
+end)
+
+test("#24: at exactly 120 s a worse sample does not replace the stored one, which is still used", function()
+	local sync = clock()
+	sample(sync, 0, 0.125, 100)
+	-- The stored sample was taken at START + 0.125; this one lands exactly 120 s later.
+	sample(sync, 119.875, 0.25, 105)
+	same(sync.getOffsetInfo(5).rtt, 0.125, "stored round trip")
+	same(sync.mapOtherClock(5, 200), 100, "the estimate at 120 s")
+end)

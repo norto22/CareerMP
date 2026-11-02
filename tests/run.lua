@@ -42,6 +42,7 @@ local files = {
 	"tests/career_start_test.lua",
 	"tests/drag_routing_test.lua",
 	"tests/paint_hold_test.lua",
+	"tests/lua_syntax_test.lua",
 }
 
 local passed, failed = 0, 0

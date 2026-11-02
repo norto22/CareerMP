@@ -257,3 +257,60 @@ test("#63: a missing game function at load time is still reported", function()
 	same(countLines(logs, "UNRESOLVED"), 1, "unresolved header")
 	same(countLines(logs, "core_gamestate.getLoadingStatus"), 1, "the function is named")
 end)
+
+--== edges of the career start wait and the join report ======================
+
+test("#11: no career protection extension at all: the start fails at once, it does not wait", function()
+	setup()
+	extensions.mileage_careerPatches = nil
+	handlers.rxCareerSync("{}")
+	same(count(events, FAILED), 1, "failure reports at once")
+	same(game.careerCalls, 0, "career starts")
+	same(countLines(logs, "waiting"), 0, "waiting lines")
+end)
+
+test("#63: a rejoin after leaving the server logs the settings report again", function()
+	local enabler = setup()
+	handlers.rxCareerSync("{}")
+	runUntil(enabler, 2)
+	enabler.onBeamMPServerLeave()
+	handlers.rxCareerSync("{}")
+	same(countLines(logs, "join compat (settings)"), 2, "settings report lines over two joins")
+end)
+
+test("#63: a module that is missing, or is not a table, has every function named and nothing raises", function()
+	setup()
+	MPConfig = nil
+	settings = "not a module"
+	extensions.ui_router = nil
+	logs = {}
+	same(extensions.mileage_compat.reportJoin("settings"), false, "report result")
+	same(countLines(logs, "join compat (settings): missing"), 1, "report lines")
+	for _, name in ipairs({"MPConfig.getNickname", "settings.getValue", "settings.setValue", "ui_router.navigate"}) do
+		same(countLines(logs, name), 1, name .. " named")
+	end
+	same(countLines(logs, "extensions.ui_router"), 0, "the extensions. prefix is left out")
+end)
+
+test("#63: a game field that is there but is not a function is reported missing", function()
+	setup()
+	career_career.isActive = true
+	logs = {}
+	same(extensions.mileage_compat.reportJoin("career"), false, "report result")
+	same(countLines(logs, "career_career.isActive"), 1, "isActive named")
+end)
+
+test("#63: a career module checked whole is named when it is absent", function()
+	setup()
+	career_modules_insurance_insurance = nil
+	logs = {}
+	same(extensions.mileage_compat.reportJoin("active"), false, "report result")
+	same(countLines(logs, "missing career_modules_insurance_insurance"), 1, "module named")
+end)
+
+test("#63: an unknown stage reports nothing and returns true", function()
+	setup()
+	logs = {}
+	same(extensions.mileage_compat.reportJoin("nonsense"), true, "report result")
+	same(countLines(logs, "join compat"), 0, "report lines")
+end)
