@@ -211,3 +211,30 @@ test("#49: a newer paint applied at once replaces an older held paint of the sam
 	paint.onVehicleReady(10)
 	same(painted(10), "vehicle/hood:green", "paints applied to the hood")
 end)
+
+--== a paint applied at once and the paints still held for the same car ========
+
+test("#49: a newer paint applied at once for one part keeps the car's other held parts", function()
+	local paint = setup()
+	receive("1-0", "vehicle/hood", RED)
+	receive("1-0", "vehicle/door_L", RED)
+	game.listed["1-0"] = 10
+	game.built[10] = true
+	receive("1-0", "vehicle/hood", GREEN)
+	paint.onVehicleReady(10)
+	same(painted(10), "vehicle/door_L:red,vehicle/hood:green", "paints applied to the car")
+end)
+
+test("#49: a car whose only held paint is replaced by one applied at once frees its hold place", function()
+	local paint = setup()
+	for n = 0, 63 do receive("1-" .. n, "vehicle/hood") end
+	game.listed["1-0"] = 10
+	game.built[10] = true
+	receive("1-0", "vehicle/hood", GREEN)
+	receive("1-64", "vehicle/hood")
+	game.listed["1-64"] = 74
+	game.built[74] = true
+	paint.onVehicleReady(74)
+	same(painted(74), "vehicle/hood:red", "paint of a car held after the place was freed")
+	same(painted(10), "vehicle/hood:green", "paint of the car that was painted at once")
+end)

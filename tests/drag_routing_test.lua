@@ -487,3 +487,22 @@ test("#24: at exactly 120 s a worse sample does not replace the stored one, whic
 	same(sync.getOffsetInfo(5).rtt, 0.125, "stored round trip")
 	same(sync.mapOtherClock(5, 200), 100, "the estimate at 120 s")
 end)
+
+--== leaving the strip by driving away still clears a finished race ===========
+
+test("#20: driving away from the strip after a finished race still takes the race off the screen", function()
+	local lobby = newGame({"A"})
+	lobby.setLocalContext(stripData("A"), 1)
+	local tornDown = 0
+	multiplayer_gamemodes_drag_drag.isRaceOver = function() return true end
+	multiplayer_gamemodes_drag_drag.tearDownRaceUI = function() tornDown = tornDown + 1 end
+	gameplay_drag_core.getData = function() return {racers = {[7] = {}}} end
+	local far = {getPosition = function() return newVec(500, 0, 0) end}
+	be.getObjectByID = function(_, id) return id == 7 and far or nil end
+	sent = {}
+	game.now = 1
+	lobby.onUpdate(1 / 60)
+	same(#sentNamed("mileageDragLeave"), 1, "leave messages")
+	same(lobby.getLocalStripId(), nil, "strip held after driving away")
+	same(tornDown, 1, "race displays torn down")
+end)

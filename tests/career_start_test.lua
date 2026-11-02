@@ -343,3 +343,44 @@ test("#11: protection that becomes ready only after the 60 s limit does not star
 	same(count(events, FAILED), 1, "failure reports")
 	same(count(events, STARTED), 0, "success reports")
 end)
+
+--== the join's two clocks: 60 s from the settings, 30 s for traffic from the start ======
+
+test("#11: after a 10 s wait the traffic screen is released 30 s after the career start, not 30 s after the settings", function()
+	local enabler = setup({protectionReady = false})
+	game.trafficHangs = true
+	handlers.rxCareerSync("{}")
+	runUntil(enabler, 10)
+	game.protectionReady = true
+	runUntil(enabler, 39)
+	same(game.careerCalls, 1, "career starts")
+	same(countLines(logs, "released loading screen 'careerVehicles'"), 0, "traffic screen released 29 s after the start")
+	runUntil(enabler, 41)
+	same(countLines(logs, "released loading screen 'careerVehicles'"), 1, "traffic screen released 30 s after the start")
+	same(count(events, STARTED), 1, "success reports once the traffic screen is released")
+	same(count(events, FAILED), 0, "failure reports")
+end)
+
+test("#11: protection that becomes ready on the frame at exactly 60 s does not start the career", function()
+	local enabler = setup({protectionReady = false})
+	handlers.rxCareerSync("{}")
+	runUntil(enabler, 30)
+	game.now = 60
+	game.protectionReady = true
+	enabler.onUpdate(30, 30, 30)
+	same(game.careerCalls, 0, "career starts at the limit")
+	same(count(events, FAILED), 1, "failure reports")
+	same(countLines(logs, "career vehicle protection not available"), 1, "the reason is logged")
+end)
+
+test("#11: settings at 5 s, protection ready, a career that never loads: it fails at 65 s, none before", function()
+	local enabler = setup({careerLoads = false})
+	game.now = 5
+	handlers.rxCareerSync("{}")
+	same(game.careerCalls, 1, "career starts")
+	runUntil(enabler, 64.9)
+	same(count(events, FAILED), 0, "failure reports before 60 s from the settings")
+	runUntil(enabler, 66)
+	same(count(events, FAILED), 1, "failure reports at 60 s from the settings")
+	same(countLines(logs, "career start did not finish within 60s"), 1, "the reason is logged")
+end)
