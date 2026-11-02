@@ -105,6 +105,12 @@ local function jsonDecode(text)
 	if ok then return decoded end
 end
 
+-- The version this branch's Mileage carries, which the stand-in GitHub serves.
+local BRANCH_VERSION = (function()
+	local v = assert(jsonDecode(BRANCH[SERVER_VERSION]), "cannot read " .. SERVER_VERSION)
+	return string.format("%d.%d.%d", v.major, v.minor, v.revision)
+end)()
+
 local function jsonEncode(v)
 	if type(v) == "table" then
 		if #v > 0 then
@@ -403,7 +409,7 @@ local function settledOnMileage(what)
 	expect(server and client, what .. ": Mileage version files")
 	same(server.lineage, "norto22/Mileage", what .. ": server version lineage")
 	same(client.lineage, "norto22/Mileage", what .. ": client version lineage")
-	same(string.format("%d.%d.%d", server.major, server.minor, server.revision), "0.3.0", what .. ": server version")
+	same(string.format("%d.%d.%d", server.major, server.minor, server.revision), BRANCH_VERSION, what .. ": server version")
 	for _, gone in ipairs({OLD_PLUGIN, OLD_CLIENT, OLD_CLIENT_VERSION, OLD_SERVER_VERSION, HELD_CLIENT, SET_ASIDE}) do
 		same(files[gone], nil, what .. ": " .. gone)
 	end
@@ -424,7 +430,8 @@ for _, order in ipairs({"folder", "reverse"}) do
 	test("a CareerMP 0.2.0 server moves to Mileage and keeps its settings (" .. order .. " order)", function()
 		local log = runMove(careerMPServer("0.2.0"), order)
 		settledOnMileage(order)
-		same(countLines(log, "[CareerMP] ---------- Moving to Mileage: installed Mileage 0.3.0"), 1, "bridge installed Mileage")
+		same(countLines(log, "[CareerMP] ---------- Moving to Mileage: installed Mileage " .. BRANCH_VERSION), 1,
+			"bridge installed Mileage")
 		same(countLines(log, "[Mileage] ---------- Moving from CareerMP: copied the settings"), 1, "settings copied once")
 	end)
 end
