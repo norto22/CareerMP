@@ -343,9 +343,14 @@ function M.report()
 		local _, matched = pick(module, unpack(names))
 		if matched then
 			log("D", "mileage.compat", string.format("%s -> %s", label, matched))
-		else
+		elseif module ~= nil or label:sub(1, #"career_saveSystem.") ~= "career_saveSystem." then
 			table.insert(missing, label)
 		end
+	end
+	-- The save system is created with the career, so at load it is usually absent; the
+	-- join report checks the career's functions once the career exists.
+	if career_saveSystem == nil then
+		log("D", "mileage.compat", "career_saveSystem not loaded yet - its functions are checked when a career starts")
 	end
 
 	if #missing > 0 then
@@ -360,6 +365,77 @@ function M.report()
 	end
 
 	return #missing == 0
+end
+
+--== join report =============================================================
+-- What each part of a join calls, checked just before that part runs, so a game update
+-- that renamed one shows up as one list in the log instead of a failure further on.
+-- Modules are named by path and looked up when the stage runs: the career modules exist
+-- only once a career starts. An entry with no function names checks the module alone.
+local JOIN_CHECKS = {
+	-- When the server's settings arrive, before anything else in the join runs.
+	settings = {
+		{"MPConfig", {"getNickname"}},
+		{"settings", {"getValue", "setValue"}},
+		{"extensions.core_input_actionFilter", {"setGroup", "addAction"}},
+		{"MPCoreNetwork", {"isMPSession"}},
+		{"MPVehicleGE", {"getVehicles", "isOwn"}},
+		{"extensions.ui_router", {"navigate"}},
+		{"core_gamestate", {"getLoadingStatus", "requestEnterLoadingScreen", "requestExitLoadingScreen"}},
+		{"extensions", {"hook", "hookUpdate", "getLoadedExtensionsNames"}},
+	},
+	-- Just before the career call, once the career module and its protection are ready.
+	career = {
+		{"career_career", {"createOrLoadCareerAndStart", "isActive"}},
+		{"gameplay_traffic", {"getTrafficList"}},
+		{"core_vehicles", {"removeAll"}},
+	},
+	-- Once the career is active: the career's own modules, used by the traffic screen
+	-- release and the insurance check.
+	active = {
+		{"career_modules_playerDriving", {"onTrafficOrParkingReady"}},
+		{"career_saveSystem", {"getCurrentProfile", "jsonWriteFileSafe"}},
+		{"career_modules_inventory", {"getVehicles"}},
+		{"career_modules_insurance_insurance", nil},
+	},
+}
+
+local function lookup(path)
+	local value = _G
+	for part in path:gmatch("[^.]+") do
+		if type(value) ~= "table" then return nil end
+		value = value[part]
+	end
+	return value
+end
+
+-- Logs every missing game function of one join stage ("settings", "career" or "active")
+-- and returns true when nothing is missing. Never stops the join.
+function M.reportJoin(stage)
+	local checks = JOIN_CHECKS[stage]
+	if not checks then return true end
+	local missing, total = {}, 0
+	for _, check in ipairs(checks) do
+		local path, names = check[1], check[2]
+		local module = lookup(path)
+		if not names then
+			total = total + 1
+			if type(module) ~= "table" then table.insert(missing, path) end
+		else
+			for _, name in ipairs(names) do
+				total = total + 1
+				if type(module) ~= "table" or type(module[name]) ~= "function" then
+					table.insert(missing, path:gsub("^extensions%.", "") .. "." .. name)
+				end
+			end
+		end
+	end
+	if #missing > 0 then
+		log("E", "mileage.compat", string.format("join compat (%s): missing %s", stage, table.concat(missing, ", ")))
+		return false
+	end
+	log("D", "mileage.compat", string.format("join compat (%s): all %d present", stage, total))
+	return true
 end
 
 M.pick = pick

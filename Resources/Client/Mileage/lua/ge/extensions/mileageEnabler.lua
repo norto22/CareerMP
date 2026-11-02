@@ -555,10 +555,12 @@ local TRAFFIC_SCREEN_MAX_SECONDS = 30
 local CAREER_SCREEN_TAGS = {"careerActivate", "careerVehicles"}
 local REASON_MAX_LENGTH = 200
 
--- hold:  time the join hold was taken, while Mileage holds the loading screen
--- start: {since, level, ...} from the career start until it settles
+-- hold:    time the join hold was taken, while Mileage holds the loading screen
+-- waiting: {since} from the settings' arrival while the career protection is not ready
+-- start:   {since, level, ...} from the career start until it settles
+-- checked: the join report stages already logged (compat.reportJoin)
 local function newJoin()
-	return {hold = nil, start = nil, reported = false, navigated = false}
+	return {hold = nil, waiting = nil, start = nil, reported = false, navigated = false, checked = {}}
 end
 
 local join = newJoin()
@@ -642,6 +644,13 @@ local function ensureInsuranceLoaded()
 	end
 end
 
+-- Each stage of the join report is logged once per join.
+local function reportJoinOnce(stage)
+	if join.checked[stage] then return end
+	join.checked[stage] = true
+	compat.reportJoin(stage)
+end
+
 -- Per frame while the career start settles: it is done once the career is active and
 -- its loading screens are released.
 local function updateCareerStart()
@@ -668,6 +677,7 @@ local function updateCareerStart()
 		join.start = nil
 		log("I", logTag, "join: career active")
 		releaseJoinHold("career active")
+		reportJoinOnce("active")
 		ensureInsuranceLoaded()
 		reportCareerStart(true)
 		moveToPlay()
@@ -695,34 +705,22 @@ local function updateJoinHold()
 	end
 end
 
-local function rxCareerSync(data)
-	clientConfig = jsonDecode(data)
-	if not clientConfig then
-		log("E", logTag, "rxCareerSync: could not decode client config")
-		failCareerStart("could not read the server's Mileage settings")
-		return
-	end
-	log("I", logTag, "join: settings received")
-	nickname = MPConfig.getNickname()
-	settingsCheck()
-	actionsCheck()
+local function refuseCareerStart()
+	log("E", logTag, "career patches not applied - refusing to start career " ..
+		"(would delete other players' vehicles)")
+	failCareerStart("career vehicle protection not available")
+end
 
-	if mileageActive or join.start then return end
-
-	-- Must be in place before the career activates, or activation deletes every
-	-- other player's vehicle.
+-- Starts the career once the career protection is in place. since is when the settings
+-- arrived: the start's 60 s limit counts from there, the same moment the server's confirm
+-- clock measures, so time spent waiting for the protection is not given back.
+local function beginCareerStart(since)
 	local careerPatches = extensions.mileage_careerPatches
-	if not (careerPatches and careerPatches.ensure()) then
-		log("E", logTag, "career patches not applied - refusing to start career " ..
-			"(would delete other players' vehicles)")
-		failCareerStart("career vehicle protection not available")
-		return
-	end
-
+	reportJoinOnce("career")
 	local profileName = resolveProfileName()
 	log("I", logTag, string.format("join: career start begun for profile '%s' (nickname '%s', startMode '%s')",
 		profileName, tostring(nickname), compat.defaultStartMode))
-	join.start = {since = os.clockhp(), level = currentLevel()}
+	join.start = {since = since, level = currentLevel()}
 
 	-- The shield has to wrap this call, not activateCareer.
 	--
@@ -747,6 +745,58 @@ local function rxCareerSync(data)
 	end
 	mileageActive = true
 	updateCareerStart()
+end
+
+local function rxCareerSync(data)
+	local arrived = os.clockhp()
+	clientConfig = jsonDecode(data)
+	if not clientConfig then
+		log("E", logTag, "rxCareerSync: could not decode client config")
+		failCareerStart("could not read the server's Mileage settings")
+		return
+	end
+	log("I", logTag, "join: settings received")
+	reportJoinOnce("settings")
+	nickname = MPConfig.getNickname()
+	settingsCheck()
+	actionsCheck()
+
+	if mileageActive or join.start or join.waiting then return end
+
+	-- Must be in place before the career activates, or activation deletes every
+	-- other player's vehicle. The game can load its career module after the settings
+	-- arrive; the start then waits for it (updateWaitingStart).
+	local careerPatches = extensions.mileage_careerPatches
+	if not careerPatches then
+		refuseCareerStart()
+		return
+	end
+	if not careerPatches.ensure() then
+		log("W", logTag, "join: career protection not ready, waiting")
+		join.waiting = {since = arrived}
+		return
+	end
+	beginCareerStart(arrived)
+end
+
+-- Per frame while the career start waits for the career protection: start on the first
+-- frame it is ready, or fail once the join's 60 s are up.
+local function updateWaitingStart()
+	local waiting = join.waiting
+	if not waiting then return end
+	if mileageActive or join.start then
+		join.waiting = nil
+		return
+	end
+	local careerPatches = extensions.mileage_careerPatches
+	if careerPatches and careerPatches.ensure() then
+		join.waiting = nil
+		log("I", logTag, string.format("join: career protection ready after %.1fs", os.clockhp() - waiting.since))
+		beginCareerStart(waiting.since)
+	elseif os.clockhp() - waiting.since >= JOIN_MAX_SECONDS then
+		join.waiting = nil
+		refuseCareerStart()
+	end
 end
 
 local function rxClientConfigUpdate(data)
@@ -810,6 +860,7 @@ local function onClientPostStartMission(levelPath)
 end
 
 local function onUpdate(dtReal, dtSim, dtRaw)
+	updateWaitingStart()
 	updateCareerStart()
 	updateJoinHold()
 	updateListRequest(dtReal)

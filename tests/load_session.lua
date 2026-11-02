@@ -435,6 +435,7 @@ local function runSession(root)
 			navigateToPlay = function() end,
 			releaseCareerTrafficScreen = function() end,
 			hasLegacyTopBar = function() return false end,
+			reportJoin = function() return true end,
 		}
 		-- The career's start: the traffic meter is armed, the career sets up traffic with
 		-- the player's own amounts (6 and 8) and their active amounts, and is active.
