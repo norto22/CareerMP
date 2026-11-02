@@ -1,7 +1,9 @@
 -- Runs every Mileage test file against the real sources, with the game and the
--- BeamMP server replaced by small stand-ins. Plain Lua 5.1 or later, no libraries.
+-- BeamMP server replaced by small stand-ins. LuaJIT (the game's Lua) or Lua 5.3 and
+-- later, no libraries.
 --
---   lua tests/run.lua          (from the repository root)
+--   luajit tests/run.lua       (from the repository root)
+--   lua5.4 tests/run.lua
 --
 -- Each test file calls test(name, fn); fn fails by raising an error (expect, same).
 
@@ -36,6 +38,7 @@ local files = {
 	"tests/race_events_test.lua",
 	"tests/money_oracle_test.lua",
 	"tests/money_edges_test.lua",
+	"tests/runtime_guard_test.lua",
 }
 
 local passed, failed = 0, 0

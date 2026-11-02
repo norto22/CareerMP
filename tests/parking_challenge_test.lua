@@ -9,6 +9,14 @@
 
 local ENABLER = "Resources/Client/Mileage/lua/ge/extensions/mileageEnabler.lua"
 local PARKING = "Resources/Client/Mileage/lua/ge/extensions/mileage/parkingChallenge.lua"
+
+-- An object with methods reached only through its metatable, like the engine's FS: a
+-- userdata where newproxy exists (LuaJIT, 5.1), an empty table elsewhere.
+local function engineObject(methods)
+	local proxy = newproxy and newproxy(true) or setmetatable({}, {})
+	getmetatable(proxy).__index = methods
+	return proxy
+end
 local SERVER = "Resources/Server/Mileage/mileage.lua"
 
 --== two stand-in games and the server =======================================
@@ -273,9 +281,7 @@ test("a game whose FS is an engine object, not a Lua table, still finds the clut
 	local me = twoPlayers()
 	-- The game's FS is an object of the engine called with a colon, like be; a userdata
 	-- with methods stands in for it.
-	local proxy = newproxy(true)
-	getmetatable(proxy).__index = {fileExists = function(_, path) return path == "/m/challenge/parkingLotClutter.prefab.json" end}
-	me.FS = proxy
+	me.FS = engineObject({fileExists = function(_, path) return path == "/m/challenge/parkingLotClutter.prefab.json" end})
 	startMission(me, {id = "challenge", missionType = "timeTrial", missionFolder = "/m/challenge"})
 	same(active(me, 1, 2), false, "my friend's parked car")
 	same(countLines(logs, "mission start: type=timeTrial parking=true"), 1, "log lines")
@@ -486,9 +492,7 @@ end)
 
 test("a game whose FS is an engine object finds a clutter layout shipped as a plain .prefab", function()
 	local me = twoPlayers()
-	local proxy = newproxy(true)
-	getmetatable(proxy).__index = {fileExists = function(_, path) return path == "/m/challenge/parkingLotClutter.prefab" end}
-	me.FS = proxy
+	me.FS = engineObject({fileExists = function(_, path) return path == "/m/challenge/parkingLotClutter.prefab" end})
 	startMission(me, {id = "challenge", missionType = "timeTrial", missionFolder = "/m/challenge"})
 	same(active(me, 1, 2), false, "my friend's parked car")
 	same(countLines(logs, "mission start: type=timeTrial parking=true"), 1, "log lines")

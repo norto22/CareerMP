@@ -15,6 +15,9 @@
 
 local M = {}
 
+-- LuaJIT has a global unpack; Lua 5.2 and later keep it in table.
+local unpack = table.unpack or unpack
+
 local logTag = "mileage.careerPatches"
 
 local applied = false

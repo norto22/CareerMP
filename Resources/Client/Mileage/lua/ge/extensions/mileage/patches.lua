@@ -34,6 +34,9 @@ local MP_UNICYCLE_CONFIG = "vehicles/unicycle/beammp_default.pc"
 
 local M = {}
 
+-- LuaJIT has a global unpack; Lua 5.2 and later keep it in table.
+local unpack = table.unpack or unpack
+
 local applied = false
 local originals = {}
 local failures = {}
