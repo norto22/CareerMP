@@ -2822,22 +2822,26 @@ end
 -- A leader message that reaches nobody is logged, by name and sender, at most once per
 -- 10 s for each pair, so a client sending one every frame cannot flood the console. The
 -- name comes from the client, so it is cut short and kept to one line.
-local DRAG_UNSENT_LOG_SECONDS = 10
-local DRAG_UNSENT_KEYS_MAX = 256
-local dragUnsentLoggedAt, dragUnsentKeys = {}, 0
+-- One top-level name: the main chunk is close to Lua's limit of 200 locals.
+local logUnsentDrag
+do
+	local LOG_SECONDS = 10
+	local KEYS_MAX = 256
+	local loggedAt, keys = {}, 0
 
-local function logUnsentDrag(msgName, player_id)
-	local name = tostring(msgName):gsub("%c", "?"):sub(1, 64)
-	local key = name .. "|" .. tostring(player_id)
-	local now = signalTimer:GetCurrent()
-	local last = dragUnsentLoggedAt[key]
-	if last and now - last < DRAG_UNSENT_LOG_SECONDS then return end
-	if not last then
-		if dragUnsentKeys >= DRAG_UNSENT_KEYS_MAX then dragUnsentLoggedAt, dragUnsentKeys = {}, 0 end
-		dragUnsentKeys = dragUnsentKeys + 1
+	function logUnsentDrag(msgName, player_id)
+		local name = tostring(msgName):gsub("%c", "?"):sub(1, 64)
+		local key = name .. "|" .. tostring(player_id)
+		local now = signalTimer:GetCurrent()
+		local last = loggedAt[key]
+		if last and now - last < LOG_SECONDS then return end
+		if not last then
+			if keys >= KEYS_MAX then loggedAt, keys = {}, 0 end
+			keys = keys + 1
+		end
+		loggedAt[key] = now
+		print(string.format("[Mileage] drag: no strip leader for %s from %s; not sent", name, tostring(player_id)))
 	end
-	dragUnsentLoggedAt[key] = now
-	print(string.format("[Mileage] drag: no strip leader for %s from %s; not sent", name, tostring(player_id)))
 end
 
 --- A client asking who holds a strip (on join, or after reconnecting).
