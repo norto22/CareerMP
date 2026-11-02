@@ -361,6 +361,21 @@ test("#20: starting a mission at the strip sends one leave on its first frame an
 	same(#sentNamed("mileageDragJoin"), 0, "the strip is not claimed again during the mission")
 end)
 
+test("#20: releasing the strip for a mission leaves the mission's race on screen", function()
+	local lobby = newGame({"A"})
+	lobby.setLocalContext(stripData("A"), 1)
+	local tornDown = 0
+	-- The last multiplayer race still counts as over, and the mission's racers are in the
+	-- drag core's data.
+	multiplayer_gamemodes_drag_drag.isRaceOver = function() return true end
+	multiplayer_gamemodes_drag_drag.tearDownRaceUI = function() tornDown = tornDown + 1 end
+	gameplay_drag_core.getData = function() return {racers = {[7] = {}}} end
+	game.mission = true
+	lobby.onUpdate(1 / 60)
+	same(#sentNamed("mileageDragLeave"), 1, "leave messages")
+	same(tornDown, 0, "race displays torn down")
+end)
+
 test("#20: a mission with no strip held sends nothing", function()
 	local lobby = newGame({"A"})
 	be.getObjectByID = function() return nil end

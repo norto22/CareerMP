@@ -201,3 +201,13 @@ test("#49: a paint for another car is not applied to the one that became ready",
 	paint.onVehicleReady(10)
 	same(painted(10), "", "paint on the wrong car")
 end)
+
+test("#49: a newer paint applied at once replaces an older held paint of the same part", function()
+	local paint = setup()
+	receive("1-0", "vehicle/hood", RED)
+	game.listed["1-0"] = 10
+	game.built[10] = true
+	receive("1-0", "vehicle/hood", GREEN)
+	paint.onVehicleReady(10)
+	same(painted(10), "vehicle/hood:green", "paints applied to the hood")
+end)

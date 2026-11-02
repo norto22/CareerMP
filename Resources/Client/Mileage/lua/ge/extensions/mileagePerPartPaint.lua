@@ -204,6 +204,15 @@ local function dropHeld(serverVehicleID)
 	end
 end
 
+local function forgetHeldPart(serverVehicleID, partPath)
+	local entry = heldPaints[serverVehicleID]
+	local part = tostring(partPath)
+	if not entry or not entry.parts[part] then return end
+	entry.parts[part] = nil
+	entry.count = entry.count - 1
+	if entry.count == 0 then dropHeld(serverVehicleID) end
+end
+
 -- Applies what was held for a car that is now ready; anything that still finds no
 -- engine object stays held.
 local function applyHeldPaints(serverVehicleID, gameVehicleID)
@@ -258,7 +267,10 @@ local function rxRemotePartPaint(data)
 	paintData.gameVehicleID = nil
 	if MPVehicleGE.getVehicles()[paintData.serverVehicleID] then
 		paintData.gameVehicleID = MPVehicleGE.getGameVehicleID(paintData.serverVehicleID)
-		if applyPartPaintRemote(paintData) ~= false then return end
+		local applied = applyPartPaintRemote(paintData)
+		-- An older paint of this part still held must not be applied over this one later.
+		if applied then forgetHeldPart(paintData.serverVehicleID, paintData.partPath) end
+		if applied ~= false then return end
 	end
 	holdPaint(paintData)
 end

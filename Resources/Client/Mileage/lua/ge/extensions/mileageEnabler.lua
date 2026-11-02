@@ -557,7 +557,8 @@ local REASON_MAX_LENGTH = 200
 
 -- hold:    time the join hold was taken, while Mileage holds the loading screen
 -- waiting: {since} from the settings' arrival while the career protection is not ready
--- start:   {since, level, ...} from the career start until it settles
+-- start:   {since, deadline, level, ...} from the career start until it settles; since is
+--          when the start began, deadline when the join's 60 s from the settings run out
 -- checked: the join report stages already logged (compat.reportJoin)
 local function newJoin()
 	return {hold = nil, waiting = nil, start = nil, reported = false, navigated = false, checked = {}}
@@ -689,7 +690,7 @@ local function updateCareerStart()
 		log("I", logTag, "join: waiting for loading screens still open: " .. table.concat(open, ", "))
 	end
 
-	if elapsed >= JOIN_MAX_SECONDS then
+	if os.clockhp() >= start.deadline then
 		failCareerStart(string.format("career start did not finish within %ds (loading screens open: %s; career active: %s)",
 			JOIN_MAX_SECONDS, #open > 0 and table.concat(open, ", ") or "none", tostring(compat.isCareerActive())))
 	end
@@ -711,16 +712,17 @@ local function refuseCareerStart()
 	failCareerStart("career vehicle protection not available")
 end
 
--- Starts the career once the career protection is in place. since is when the settings
+-- Starts the career once the career protection is in place. arrived is when the settings
 -- arrived: the start's 60 s limit counts from there, the same moment the server's confirm
--- clock measures, so time spent waiting for the protection is not given back.
-local function beginCareerStart(since)
+-- clock measures, so time spent waiting for the protection is not given back. The traffic
+-- screen's own 30 s count from the start itself.
+local function beginCareerStart(arrived)
 	local careerPatches = extensions.mileage_careerPatches
 	reportJoinOnce("career")
 	local profileName = resolveProfileName()
 	log("I", logTag, string.format("join: career start begun for profile '%s' (nickname '%s', startMode '%s')",
 		profileName, tostring(nickname), compat.defaultStartMode))
-	join.start = {since = since, level = currentLevel()}
+	join.start = {since = os.clockhp(), deadline = arrived + JOIN_MAX_SECONDS, level = currentLevel()}
 
 	-- The shield has to wrap this call, not activateCareer.
 	--
@@ -788,14 +790,18 @@ local function updateWaitingStart()
 		join.waiting = nil
 		return
 	end
+	-- The limit is checked first: a protection that only turns up after it (a long frame)
+	-- must not start a career the server is about to drop.
+	if os.clockhp() - waiting.since >= JOIN_MAX_SECONDS then
+		join.waiting = nil
+		refuseCareerStart()
+		return
+	end
 	local careerPatches = extensions.mileage_careerPatches
 	if careerPatches and careerPatches.ensure() then
 		join.waiting = nil
 		log("I", logTag, string.format("join: career protection ready after %.1fs", os.clockhp() - waiting.since))
 		beginCareerStart(waiting.since)
-	elseif os.clockhp() - waiting.since >= JOIN_MAX_SECONDS then
-		join.waiting = nil
-		refuseCareerStart()
 	end
 end
 

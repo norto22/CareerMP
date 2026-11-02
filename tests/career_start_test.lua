@@ -51,6 +51,8 @@ local function setup(opts)
 		createOrLoadCareerAndStart = function()
 			game.careerCalls = game.careerCalls + 1
 			if game.careerLoads then game.active = true else screens.careerActivate = true end
+			-- The game's traffic setup holds its own screen until traffic reports ready.
+			if game.trafficHangs then screens.careerVehicles = true end
 			return true
 		end,
 	}
@@ -313,4 +315,31 @@ test("#63: an unknown stage reports nothing and returns true", function()
 	logs = {}
 	same(extensions.mileage_compat.reportJoin("nonsense"), true, "report result")
 	same(countLines(logs, "join compat"), 0, "report lines")
+end)
+
+test("#11: after a 40 s wait the traffic screen still gets its own 30 s from the career start", function()
+	local enabler = setup({protectionReady = false})
+	game.trafficHangs = true
+	handlers.rxCareerSync("{}")
+	runUntil(enabler, 40)
+	game.protectionReady = true
+	runUntil(enabler, 41)
+	same(game.careerCalls, 1, "career starts")
+	same(countLines(logs, "released loading screen 'careerVehicles'"), 0, "traffic screen released on the first frames")
+	same(count(events, STARTED), 0, "success reported before traffic is ready")
+	runUntil(enabler, 61)
+	same(count(events, FAILED), 1, "the join still ends at 60 s after the settings")
+end)
+
+test("#11: protection that becomes ready only after the 60 s limit does not start the career", function()
+	local enabler = setup({protectionReady = false})
+	handlers.rxCareerSync("{}")
+	runUntil(enabler, 30)
+	-- A long frame: the next one comes at 61 s, with the protection ready by then.
+	game.now = 61
+	game.protectionReady = true
+	enabler.onUpdate(31, 31, 31)
+	same(game.careerCalls, 0, "career starts after the limit")
+	same(count(events, FAILED), 1, "failure reports")
+	same(count(events, STARTED), 0, "success reports")
 end)

@@ -307,7 +307,7 @@ function M.getLocalStripId()
 	return localContext and localContext.stripId or nil
 end
 
-function M.clearLocalContext()
+function M.clearLocalContext(keepRace)
 	if localContext then
 		-- Say how far, and in which vehicle. On 01/08 a car parked 1.5 m from the line was
 		-- dropped 29 s later with no vehicle event in the log: either it rolled past
@@ -329,8 +329,11 @@ function M.clearLocalContext()
 		-- poi.lua:52 and core.lua:1322 both do this on the way out, and both are gated on
 		-- NOT being multiplayer, so on the MP path nothing did -- the finished race just
 		-- stayed on screen until a timer got round to it.
+		--
+		-- Not when a mission took the strip over (keepRace): the drag core's racers are the
+		-- mission's then, and the last multiplayer race can still count as over.
 		local c = gameplay_drag_core
-		local data = c and c.getData and c.getData()
+		local data = not keepRace and c and c.getData and c.getData()
 		if data and data.racers and next(data.racers) then
 			local gm = gamemode()
 			if gm and gm.isRaceOver and gm.isRaceOver() and gm.tearDownRaceUI then
@@ -1219,7 +1222,7 @@ local function onUpdate(dtReal)
 	local gm = gamemode()
 	if localContext and gm and gm.isEnabled() and gm.inSoloDragActivity and gm.inSoloDragActivity() then
 		log("I", logTag, "a mission or performance test owns the strip now - releasing it")
-		M.clearLocalContext()
+		M.clearLocalContext(true)
 		return
 	end
 
